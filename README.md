@@ -21,3 +21,7 @@ Open the project in Android Studio or run it with a compatible Android Gradle Pl
 ```
 
 The current Termux environment does not include the Android SDK or Gradle, so APK compilation will be performed when the Android toolchain is available.
+
+## Resource guardrails
+
+The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the GUI phase.
