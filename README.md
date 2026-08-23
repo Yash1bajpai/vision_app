@@ -2,7 +2,19 @@
 
 Vision is an offline-first Android assistant for the iQOO Z9x. The first release is a normal APK, designed around explicit user confirmation before every meaningful action.
 
-## Phase 1
+## Phase 4 Hardened (0.3.1)
+
+- Deterministic typed-command parser for notification reading and supported app opening
+- Package visibility queries for Android 11+ (API 30-36) allowlisting WhatsApp, Telegram, Gmail, Messages, and Calendar
+- Robust launcher resolution handling Telegram (`org.telegram.messenger`), WhatsApp (`com.whatsapp` and `com.whatsapp.w4b`), Gmail (`com.google.android.gm`), Messages (`com.google.android.apps.messaging` and `com.android.messaging`), and Calendar (`com.google.android.calendar`)
+- Full in-memory notification extraction supporting `MessagingStyle`, `BigTextStyle` (`android.bigText`), and `InboxStyle` (`android.textLines`)
+- Stable notification key tracking to clear in-memory snapshots only on dismissal of the matching active notification
+- Structured action types and lifecycle states: proposed, approved, denied, running, succeeded, and failed
+- Strict Allow/Deny confirmation dialogs before every action execution
+- Unknown requests fail safely without execution
+- Notification content remains strictly in process memory
+
+## Earlier phases
 
 - Native Android project shell
 - Portrait-first Vision interface
@@ -14,7 +26,7 @@ Vision is an offline-first Android assistant for the iQOO Z9x. The first release
 - Explicit confirmation before reading notification content
 - Android notification-access status and settings link
 
-The local model, voice input, and app adapters will be added in later verified phases. Notification content is held only in memory for now.
+The local model, voice input, and app adapters will be added in later verified phases. Notification content is held only in memory.
 
 ## Build
 
@@ -24,7 +36,7 @@ Open the project in Android Studio or run it with a compatible Android Gradle Pl
 ./gradlew :app:assembleDebug
 ```
 
-The current Termux environment does not include the Android SDK or Gradle, so APK compilation will be performed when the Android toolchain is available.
+The phone-local Termux toolchain uses Gradle 8.7, Android API 34, and an ARM64-native `aapt2` override.
 
 ## Resource guardrails
 

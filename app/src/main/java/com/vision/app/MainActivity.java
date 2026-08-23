@@ -74,7 +74,7 @@ public class MainActivity extends Activity {
         status.addView(dot);
         statusText = label("  Offline mode     •     Model setup pending", 12, TEXT);
         status.addView(statusText);
-        status.setOnClickListener(v -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")));
+        status.setOnClickListener(v -> openNotificationSettings());
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
         statusParams.setMargins(0, dp(24), 0, dp(22));
         root.addView(status, statusParams);
@@ -84,7 +84,7 @@ public class MainActivity extends Activity {
         readNotification.setTextColor(TEXT);
         readNotification.setGravity(Gravity.CENTER);
         readNotification.setBackground(round(PANEL, 12));
-        readNotification.setOnClickListener(v -> requestNotificationRead());
+        readNotification.setOnClickListener(v -> onReadNotificationButtonClicked());
         LinearLayout.LayoutParams readParams = new LinearLayout.LayoutParams(-1, dp(48));
         readParams.setMargins(0, 0, 0, dp(22));
         root.addView(readNotification, readParams);
@@ -113,21 +113,57 @@ public class MainActivity extends Activity {
         send.setOnClickListener(v -> {
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
+                VisionAction action = VisionActionParser.parse(command);
+                if (action.type == VisionAction.Type.UNKNOWN) {
+                    activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Try:\n\nRead my latest notification\nOpen WhatsApp");
+                    return;
+                }
                 new AlertDialog.Builder(this)
                         .setTitle("Vision wants to proceed")
-                        .setMessage("I am going to process this request locally:\n\n" + command)
-                        .setNegativeButton("Deny", (dialog, which) -> activityText.setText("REQUEST DENIED\n\nVision stopped this action."))
+                        .setMessage("Action: " + action.label() + "\n\nRequest: " + command + "\n\nAllow Vision to continue?")
+                        .setNegativeButton("Deny", (dialog, which) -> {
+                            action.state = VisionAction.State.DENIED;
+                            activityText.setText("DENIED\n\n" + action.label() + "\n\nVision stopped this action.");
+                        })
                         .setPositiveButton("Allow", (dialog, which) -> {
-                            activityText.setText("JUST NOW\n\nYou asked: " + command + "\n\nVision is ready to process this locally.");
+                            action.state = VisionAction.State.APPROVED;
+                            executeAction(action);
                             input.setText("");
-                            ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE))
-                                    .hideSoftInputFromWindow(input.getWindowToken(), 0);
+                            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                            if (imm != null && input.getWindowToken() != null) {
+                                imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+                            }
                         }).show();
             }
         });
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    private void executeAction(VisionAction action) {
+        action.state = VisionAction.State.RUNNING;
+        if (action.type == VisionAction.Type.READ_NOTIFICATION) {
+            executeNotificationRead(action);
+        } else if (action.type == VisionAction.Type.OPEN_APP) {
+            Intent launch = resolveAppLaunchIntent(action.target);
+            if (launch == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nCould not open " + action.target + ".\nThe app is not installed or has no launch screen.");
+                return;
+            }
+            try {
+                startActivity(launch);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nOpened " + action.target + ".");
+            } catch (Exception e) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nCould not start " + action.target + ".");
+            }
+        } else {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nVision could not process this request.");
+        }
     }
 
     @Override
@@ -147,13 +183,50 @@ public class MainActivity extends Activity {
                 : "  Offline mode     •     Tap to connect notifications");
     }
 
-    private void requestNotificationRead() {
+    private void openNotificationSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        } catch (Exception e) {
+            try {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+            } catch (Exception ignored) {
+                activityText.setText("FAILED\n\nCould not open notification settings.");
+            }
+        }
+    }
+
+    private void executeNotificationRead(VisionAction action) {
+        if (!isNotificationAccessEnabled()) {
+            action.state = VisionAction.State.FAILED;
+            new AlertDialog.Builder(this)
+                    .setTitle("Notification access needed")
+                    .setMessage("Vision needs notification access to read supported-app notifications. Android will show exactly what access is being requested.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Open settings", (dialog, which) -> openNotificationSettings())
+                    .show();
+            activityText.setText("FAILED\n\nNotification access is not enabled.");
+            return;
+        }
+        VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
+        if (snapshot == null) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
+            return;
+        }
+        action.state = VisionAction.State.SUCCEEDED;
+        String source = sourceName(snapshot.packageName);
+        String title = snapshot.title.isEmpty() ? "(no sender shown)" : snapshot.title;
+        String text = snapshot.text.isEmpty() ? "(no message text shown)" : snapshot.text;
+        activityText.setText("SUCCEEDED\n\n" + source + "\n" + title + "\n\n" + text);
+    }
+
+    private void onReadNotificationButtonClicked() {
         if (!isNotificationAccessEnabled()) {
             new AlertDialog.Builder(this)
                     .setTitle("Notification access needed")
                     .setMessage("Vision needs notification access to read supported-app notifications. Android will show exactly what access is being requested.")
                     .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Open settings", (dialog, which) -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")))
+                    .setPositiveButton("Open settings", (dialog, which) -> openNotificationSettings())
                     .show();
             return;
         }
@@ -175,17 +248,76 @@ public class MainActivity extends Activity {
                 }).show();
     }
 
+    private java.util.List<String> getCandidatePackages(String target) {
+        java.util.List<String> list = new java.util.ArrayList<>();
+        if ("WhatsApp".equalsIgnoreCase(target)) {
+            list.add("com.whatsapp");
+            list.add("com.whatsapp.w4b");
+        } else if ("Telegram".equalsIgnoreCase(target)) {
+            list.add("org.telegram.messenger");
+        } else if ("Gmail".equalsIgnoreCase(target)) {
+            list.add("com.google.android.gm");
+        } else if ("Calendar".equalsIgnoreCase(target)) {
+            list.add("com.google.android.calendar");
+        } else if ("Messages".equalsIgnoreCase(target)) {
+            list.add("com.google.android.apps.messaging");
+            list.add("com.android.messaging");
+        }
+        return list;
+    }
+
+    private Intent resolveAppLaunchIntent(String target) {
+        android.content.pm.PackageManager pm = getPackageManager();
+        java.util.List<String> packages = getCandidatePackages(target);
+        for (String pkg : packages) {
+            try {
+                Intent launch = pm.getLaunchIntentForPackage(pkg);
+                if (launch != null) {
+                    return launch;
+                }
+            } catch (Exception ignored) { }
+            try {
+                Intent query = new Intent(Intent.ACTION_MAIN);
+                query.addCategory(Intent.CATEGORY_LAUNCHER);
+                query.setPackage(pkg);
+                java.util.List<android.content.pm.ResolveInfo> activities = pm.queryIntentActivities(query, 0);
+                if (activities != null && !activities.isEmpty()) {
+                    android.content.pm.ActivityInfo ai = activities.get(0).activityInfo;
+                    if (ai != null) {
+                        Intent explicit = new Intent(Intent.ACTION_MAIN);
+                        explicit.addCategory(Intent.CATEGORY_LAUNCHER);
+                        explicit.setComponent(new android.content.ComponentName(ai.packageName, ai.name));
+                        explicit.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        return explicit;
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        if ("Calendar".equalsIgnoreCase(target)) {
+            try {
+                Intent cal = new Intent(Intent.ACTION_MAIN);
+                cal.addCategory(Intent.CATEGORY_APP_CALENDAR);
+                cal.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (cal.resolveActivity(pm) != null) {
+                    return cal;
+                }
+            } catch (Exception ignored) { }
+        }
+        return null;
+    }
+
     private boolean isNotificationAccessEnabled() {
         String listeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
         return !TextUtils.isEmpty(listeners) && listeners.contains(getPackageName());
     }
 
     private String sourceName(String packageName) {
-        if ("com.whatsapp".equals(packageName)) return "WhatsApp";
+        if ("com.whatsapp".equals(packageName) || "com.whatsapp.w4b".equals(packageName)) return "WhatsApp";
         if ("org.telegram.messenger".equals(packageName)) return "Telegram";
         if ("com.google.android.gm".equals(packageName)) return "Gmail";
         if ("com.google.android.calendar".equals(packageName)) return "Calendar";
-        return "Messages";
+        if ("com.google.android.apps.messaging".equals(packageName) || "com.android.messaging".equals(packageName)) return "Messages";
+        return "Notification";
     }
 
     private Button actionButton(String text) {
