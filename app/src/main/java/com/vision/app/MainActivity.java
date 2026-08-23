@@ -11,6 +11,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.content.Context;
 import android.content.Intent;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.app.AlertDialog;
 import android.widget.Button;
 import android.widget.EditText;
@@ -24,6 +25,7 @@ public class MainActivity extends Activity {
     private static final int MUTED = Color.rgb(151, 165, 170);
     private static final int MINT = Color.rgb(158, 230, 194);
     private TextView activityText;
+    private TextView statusText;
 
     @Override
     public void onCreate(Bundle state) {
@@ -70,12 +72,22 @@ public class MainActivity extends Activity {
         status.setBackground(round(PANEL, 12));
         TextView dot = label("●", 13, MINT);
         status.addView(dot);
-        TextView statusText = label("  Offline mode     •     TinyLlama ready", 12, TEXT);
+        statusText = label("  Offline mode     •     Model setup pending", 12, TEXT);
         status.addView(statusText);
         status.setOnClickListener(v -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")));
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
         statusParams.setMargins(0, dp(24), 0, dp(22));
         root.addView(status, statusParams);
+
+        Button readNotification = actionButton("Read latest notification");
+        readNotification.setTextSize(13);
+        readNotification.setTextColor(TEXT);
+        readNotification.setGravity(Gravity.CENTER);
+        readNotification.setBackground(round(PANEL, 12));
+        readNotification.setOnClickListener(v -> requestNotificationRead());
+        LinearLayout.LayoutParams readParams = new LinearLayout.LayoutParams(-1, dp(48));
+        readParams.setMargins(0, 0, 0, dp(22));
+        root.addView(readNotification, readParams);
 
         root.addView(label("RECENT ACTIVITY", 11, MUTED));
         activityText = label("No activity yet\n\nYour actions will appear here after you start a conversation.", 14, MUTED);
@@ -115,6 +127,65 @@ public class MainActivity extends Activity {
         });
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
+        updateAccessStatus();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (statusText != null) updateAccessStatus();
+    }
+
+    private void updateAccessStatus() {
+        boolean enabled = false;
+        String listeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        if (!TextUtils.isEmpty(listeners)) {
+            enabled = listeners.contains(getPackageName());
+        }
+        statusText.setText(enabled
+                ? "  Offline mode     •     Notifications connected"
+                : "  Offline mode     •     Tap to connect notifications");
+    }
+
+    private void requestNotificationRead() {
+        if (!isNotificationAccessEnabled()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Notification access needed")
+                    .setMessage("Vision needs notification access to read supported-app notifications. Android will show exactly what access is being requested.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Open settings", (dialog, which) -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")))
+                    .show();
+            return;
+        }
+        VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
+        if (snapshot == null) {
+            activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
+            return;
+        }
+        String preview = snapshot.title.isEmpty() ? "the latest notification" : "the notification from " + snapshot.title;
+        new AlertDialog.Builder(this)
+                .setTitle("Vision wants to read a notification")
+                .setMessage("I am going to read " + preview + ". Continue?")
+                .setNegativeButton("Deny", (dialog, which) -> activityText.setText("REQUEST DENIED\n\nVision did not read the notification."))
+                .setPositiveButton("Allow", (dialog, which) -> {
+                    String source = sourceName(snapshot.packageName);
+                    String title = snapshot.title.isEmpty() ? "(no sender shown)" : snapshot.title;
+                    String text = snapshot.text.isEmpty() ? "(no message text shown)" : snapshot.text;
+                    activityText.setText("JUST NOW\n\n" + source + "\n" + title + "\n\n" + text);
+                }).show();
+    }
+
+    private boolean isNotificationAccessEnabled() {
+        String listeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        return !TextUtils.isEmpty(listeners) && listeners.contains(getPackageName());
+    }
+
+    private String sourceName(String packageName) {
+        if ("com.whatsapp".equals(packageName)) return "WhatsApp";
+        if ("org.telegram.messenger".equals(packageName)) return "Telegram";
+        if ("com.google.android.gm".equals(packageName)) return "Gmail";
+        if ("com.google.android.calendar".equals(packageName)) return "Calendar";
+        return "Messages";
     }
 
     private Button actionButton(String text) {

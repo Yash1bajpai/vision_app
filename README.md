@@ -10,7 +10,9 @@ Vision is an offline-first Android assistant for the iQOO Z9x. The first release
 - Local command composer
 - Recent activity surface
 - Mandatory allow/deny confirmation dialog for every command
-- Notification Listener service entry point and Android settings link
+- In-memory notification snapshots for Gmail, WhatsApp, Telegram, Messages, and Calendar
+- Explicit confirmation before reading notification content
+- Android notification-access status and settings link
 
 The local model, voice input, and app adapters will be added in later verified phases. Notification content is held only in memory for now.
 
