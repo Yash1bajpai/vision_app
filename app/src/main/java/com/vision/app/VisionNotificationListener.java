@@ -1,13 +1,17 @@
 package com.vision.app;
 
 import android.app.Notification;
+import android.app.PendingIntent;
+import android.app.RemoteInput;
+import android.content.Context;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Parcelable;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import java.util.List;
 
-/** Keeps only the latest supported notification in process memory. */
+/** Keeps only the latest supported notification and reply capability in process memory. */
 public class VisionNotificationListener extends NotificationListenerService {
     private static final String[] SUPPORTED_PACKAGES = {
             "com.google.android.gm",
@@ -19,6 +23,7 @@ public class VisionNotificationListener extends NotificationListenerService {
             "com.google.android.calendar"
     };
     private static volatile NotificationSnapshot latestNotification;
+    private static volatile NotificationReplyCapability latestReplyCapability;
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
@@ -107,17 +112,45 @@ public class VisionNotificationListener extends NotificationListenerService {
 
         String key = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
         latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, sbn.getPostTime());
+
+        // Extract RemoteInput reply action if present
+        NotificationReplyCapability replyCap = null;
+        if (notification.actions != null) {
+            for (Notification.Action act : notification.actions) {
+                if (act != null && act.actionIntent != null) {
+                    RemoteInput[] remoteInputs = act.getRemoteInputs();
+                    if (remoteInputs != null && remoteInputs.length > 0) {
+                        for (RemoteInput ri : remoteInputs) {
+                            if (ri != null && ri.getResultKey() != null) {
+                                replyCap = new NotificationReplyCapability(
+                                        key,
+                                        sbn.getPackageName(),
+                                        title,
+                                        act.actionIntent,
+                                        ri
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (replyCap != null) break;
+            }
+        }
+        latestReplyCapability = replyCap;
     }
 
     @Override
     public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
+        String removeKey = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
         NotificationSnapshot current = latestNotification;
-        if (current != null) {
-            String removeKey = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
-            if (current.key.equals(removeKey)) {
-                latestNotification = null;
-            }
+        if (current != null && current.key.equals(removeKey)) {
+            latestNotification = null;
+        }
+        NotificationReplyCapability currentReply = latestReplyCapability;
+        if (currentReply != null && currentReply.key.equals(removeKey)) {
+            latestReplyCapability = null;
         }
     }
 
@@ -125,8 +158,34 @@ public class VisionNotificationListener extends NotificationListenerService {
         return latestNotification;
     }
 
+    public static NotificationReplyCapability getLatestReplyCapability() {
+        return latestReplyCapability;
+    }
+
     public static void clearLatestNotification() {
         latestNotification = null;
+        latestReplyCapability = null;
+    }
+
+    public static boolean sendReply(Context context, NotificationReplyCapability capability, String replyText) {
+        if (context == null || capability == null || capability.pendingIntent == null || capability.remoteInput == null) {
+            return false;
+        }
+        if (replyText == null) {
+            replyText = "";
+        }
+        try {
+            Intent fillInIntent = new Intent();
+            Bundle bundle = new Bundle();
+            bundle.putCharSequence(capability.remoteInput.getResultKey(), replyText);
+            RemoteInput.addResultsToIntent(new RemoteInput[] { capability.remoteInput }, fillInIntent, bundle);
+            capability.pendingIntent.send(context, 0, fillInIntent);
+            return true;
+        } catch (PendingIntent.CanceledException e) {
+            return false;
+        } catch (Throwable e) {
+            return false;
+        }
     }
 
     public static boolean isSupported(String packageName) {
@@ -154,6 +213,23 @@ public class VisionNotificationListener extends NotificationListenerService {
             this.title = title != null ? title : "";
             this.text = text != null ? text : "";
             this.postTime = postTime;
+        }
+    }
+
+    public static final class NotificationReplyCapability {
+        public final String key;
+        public final String packageName;
+        public final String senderOrTitle;
+        public final PendingIntent pendingIntent;
+        public final RemoteInput remoteInput;
+
+        public NotificationReplyCapability(String key, String packageName, String senderOrTitle,
+                                           PendingIntent pendingIntent, RemoteInput remoteInput) {
+            this.key = key != null ? key : "";
+            this.packageName = packageName != null ? packageName : "";
+            this.senderOrTitle = senderOrTitle != null ? senderOrTitle : "";
+            this.pendingIntent = pendingIntent;
+            this.remoteInput = remoteInput;
         }
     }
 }

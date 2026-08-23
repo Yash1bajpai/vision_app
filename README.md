@@ -2,6 +2,20 @@
 
 Vision is an offline-first Android assistant for the iQOO Z9x. The first release is a normal APK, designed around explicit user confirmation before every meaningful action.
 
+## Phase 5 Notification Reply MVP (0.4.0)
+
+- Smallest safe notification reply implementation using standard Android `RemoteInput` and notification action `PendingIntent`s
+- In-memory retention of latest reply capability only (no SQLite, SharedPreferences, files, or background persistence)
+- Deterministic typed commands for drafting and sending replies:
+  - `reply <message>` (e.g. `reply I'll be there in 5 minutes`)
+  - `reply: <message>` (e.g. `reply: Sounds great!`)
+  - `reply to <app/target>: <message>` (e.g. `reply to WhatsApp: On my way!`, `reply to Alice: Yes, confirmed`)
+  - `send reply <message>` (e.g. `send reply Confirmed`)
+  - `answer <message>` (e.g. `answer Thank you`)
+- Strict confirmation gating: dialog explicitly displays target source/recipient and exact reply text with immediate mandatory Allow/Deny gating before dispatch
+- Zero accessibility, zero root, zero hidden APIs, and zero silent actions
+- Safe handling of expired/cancelled `PendingIntent`s, unsupported notifications without reply actions, and process restarts
+
 ## Phase 4 Hardened (0.3.1)
 
 - Deterministic typed-command parser for notification reading and supported app opening

@@ -115,12 +115,19 @@ public class MainActivity extends Activity {
             if (!command.isEmpty()) {
                 VisionAction action = VisionActionParser.parse(command);
                 if (action.type == VisionAction.Type.UNKNOWN) {
-                    activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Try:\n\nRead my latest notification\nOpen WhatsApp");
+                    activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Try:\n\nRead my latest notification\nReply I'll be there soon\nOpen WhatsApp");
                     return;
                 }
+                String dialogTitle = action.type == VisionAction.Type.REPLY_NOTIFICATION
+                        ? "Vision wants to send a reply"
+                        : "Vision wants to proceed";
+                String dialogMessage = action.type == VisionAction.Type.REPLY_NOTIFICATION
+                        ? "Action: " + action.label() + "\n\nReply text:\n\"" + action.replyText + "\"\n\nAllow Vision to send this reply?"
+                        : "Action: " + action.label() + "\n\nRequest: " + command + "\n\nAllow Vision to continue?";
+
                 new AlertDialog.Builder(this)
-                        .setTitle("Vision wants to proceed")
-                        .setMessage("Action: " + action.label() + "\n\nRequest: " + command + "\n\nAllow Vision to continue?")
+                        .setTitle(dialogTitle)
+                        .setMessage(dialogMessage)
                         .setNegativeButton("Deny", (dialog, which) -> {
                             action.state = VisionAction.State.DENIED;
                             activityText.setText("DENIED\n\n" + action.label() + "\n\nVision stopped this action.");
@@ -145,6 +152,8 @@ public class MainActivity extends Activity {
         action.state = VisionAction.State.RUNNING;
         if (action.type == VisionAction.Type.READ_NOTIFICATION) {
             executeNotificationRead(action);
+        } else if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
+            executeNotificationReply(action);
         } else if (action.type == VisionAction.Type.OPEN_APP) {
             Intent launch = resolveAppLaunchIntent(action.target);
             if (launch == null) {
@@ -218,6 +227,43 @@ public class MainActivity extends Activity {
         String title = snapshot.title.isEmpty() ? "(no sender shown)" : snapshot.title;
         String text = snapshot.text.isEmpty() ? "(no message text shown)" : snapshot.text;
         activityText.setText("SUCCEEDED\n\n" + source + "\n" + title + "\n\n" + text);
+    }
+
+    private void executeNotificationReply(VisionAction action) {
+        if (!isNotificationAccessEnabled()) {
+            action.state = VisionAction.State.FAILED;
+            new AlertDialog.Builder(this)
+                    .setTitle("Notification access needed")
+                    .setMessage("Vision needs notification access to reply to notifications. Android will show exactly what access is being requested.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Open settings", (dialog, which) -> openNotificationSettings())
+                    .show();
+            activityText.setText("FAILED\n\nNotification access is not enabled.");
+            return;
+        }
+        VisionNotificationListener.NotificationReplyCapability replyCap = VisionNotificationListener.getLatestReplyCapability();
+        if (replyCap == null) {
+            action.state = VisionAction.State.FAILED;
+            VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
+            if (snapshot != null) {
+                String source = sourceName(snapshot.packageName);
+                activityText.setText("NO REPLYABLE NOTIFICATION\n\nThe latest notification from " + source + " does not support direct reply.");
+            } else {
+                activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a notification to reply to yet.");
+            }
+            return;
+        }
+
+        boolean success = VisionNotificationListener.sendReply(this, replyCap, action.replyText);
+        if (success) {
+            action.state = VisionAction.State.SUCCEEDED;
+            String source = sourceName(replyCap.packageName);
+            String recipient = replyCap.senderOrTitle.isEmpty() ? source : replyCap.senderOrTitle;
+            activityText.setText("SUCCEEDED\n\nReplied to " + source + " (" + recipient + "):\n\n\"" + action.replyText + "\"");
+        } else {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not send reply. The notification action may have expired or was cancelled by Android.");
+        }
     }
 
     private void onReadNotificationButtonClicked() {

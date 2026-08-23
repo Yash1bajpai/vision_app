@@ -4,6 +4,7 @@ package com.vision.app;
 public final class VisionAction {
     public enum Type {
         READ_NOTIFICATION,
+        REPLY_NOTIFICATION,
         OPEN_APP,
         UNKNOWN
     }
@@ -20,16 +21,28 @@ public final class VisionAction {
     public final Type type;
     public final String request;
     public final String target;
+    public final String replyText;
     public State state = State.PROPOSED;
 
     public VisionAction(Type type, String request, String target) {
+        this(type, request, target, "");
+    }
+
+    public VisionAction(Type type, String request, String target, String replyText) {
         this.type = type != null ? type : Type.UNKNOWN;
         this.request = request != null ? request : "";
         this.target = target != null ? target : "";
+        this.replyText = replyText != null ? replyText : "";
     }
 
     public String label() {
         if (type == Type.READ_NOTIFICATION) return "Read the latest supported notification";
+        if (type == Type.REPLY_NOTIFICATION) {
+            String dest = target.isEmpty() || "latest notification".equalsIgnoreCase(target)
+                    ? "the latest notification"
+                    : target;
+            return "Reply to " + dest;
+        }
         if (type == Type.OPEN_APP) return "Open " + target;
         return "Process this request locally";
     }

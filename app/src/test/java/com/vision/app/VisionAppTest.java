@@ -5,7 +5,7 @@ public class VisionAppTest {
         int passed = 0;
         int failed = 0;
 
-        System.out.println("Running Vision Phase A deterministic test suite...");
+        System.out.println("Running Vision deterministic test suite (Phases 1-5)...");
 
         // Test 1: Null and empty parser inputs
         try {
@@ -63,7 +63,27 @@ public class VisionAppTest {
             failed++;
         }
 
-        // Test 4: Unrecognized requests
+        // Test 4: Notification reply requests (Phase 5 MVP)
+        try {
+            assertReply("reply I will be there soon", "latest notification", "I will be there soon");
+            assertReply("reply: Sounds great!", "latest notification", "Sounds great!");
+            assertReply("reply to WhatsApp: On my way!", "WhatsApp", "On my way!");
+            assertReply("reply to Alice: Yes, confirmed", "Alice", "Yes, confirmed");
+            assertReply("send reply OK, see you then", "latest notification", "OK, see you then");
+            assertReply("answer Perfect, thank you", "latest notification", "Perfect, thank you");
+            assertReply("please reply: Will do.", "latest notification", "Will do.");
+
+            // Empty reply text returns UNKNOWN
+            assertCondition(VisionActionParser.parse("reply").type == VisionAction.Type.UNKNOWN, "reply without text -> UNKNOWN");
+            assertCondition(VisionActionParser.parse("reply:").type == VisionAction.Type.UNKNOWN, "reply: without text -> UNKNOWN");
+            assertCondition(VisionActionParser.parse("send reply").type == VisionAction.Type.UNKNOWN, "send reply without text -> UNKNOWN");
+            passed++;
+        } catch (Throwable t) {
+            System.err.println("Test 4 FAILED: " + t.getMessage());
+            failed++;
+        }
+
+        // Test 5: Unrecognized requests
         try {
             String[] unknownRequests = {
                     "hello",
@@ -78,11 +98,11 @@ public class VisionAppTest {
             }
             passed++;
         } catch (Throwable t) {
-            System.err.println("Test 4 FAILED: " + t.getMessage());
+            System.err.println("Test 5 FAILED: " + t.getMessage());
             failed++;
         }
 
-        // Test 5: VisionAction state machine and labels
+        // Test 6: VisionAction state machine and labels
         try {
             VisionAction a1 = new VisionAction(VisionAction.Type.READ_NOTIFICATION, "read notification", "latest notification");
             assertCondition(a1.state == VisionAction.State.PROPOSED, "initial state is PROPOSED");
@@ -97,17 +117,25 @@ public class VisionAppTest {
             VisionAction a2 = new VisionAction(VisionAction.Type.OPEN_APP, "open telegram", "Telegram");
             assertCondition(a2.label().equals("Open Telegram"), "open app label matches");
 
-            VisionAction a3 = new VisionAction(null, null, null);
-            assertCondition(a3.type == VisionAction.Type.UNKNOWN, "null type defaults to UNKNOWN");
-            assertCondition(a3.request.isEmpty(), "null request defaults to empty");
-            assertCondition(a3.target.isEmpty(), "null target defaults to empty");
+            VisionAction a3 = new VisionAction(VisionAction.Type.REPLY_NOTIFICATION, "reply OK", "WhatsApp", "OK");
+            assertCondition(a3.label().equals("Reply to WhatsApp"), "reply label matches");
+            assertCondition(a3.replyText.equals("OK"), "replyText matches");
+
+            VisionAction a4 = new VisionAction(VisionAction.Type.REPLY_NOTIFICATION, "reply OK", "", "OK");
+            assertCondition(a4.label().equals("Reply to the latest notification"), "reply label defaults to latest notification");
+
+            VisionAction aNull = new VisionAction(null, null, null, null);
+            assertCondition(aNull.type == VisionAction.Type.UNKNOWN, "null type defaults to UNKNOWN");
+            assertCondition(aNull.request.isEmpty(), "null request defaults to empty");
+            assertCondition(aNull.target.isEmpty(), "null target defaults to empty");
+            assertCondition(aNull.replyText.isEmpty(), "null replyText defaults to empty");
             passed++;
         } catch (Throwable t) {
-            System.err.println("Test 5 FAILED: " + t.getMessage());
+            System.err.println("Test 6 FAILED: " + t.getMessage());
             failed++;
         }
 
-        // Test 6: Notification package support allowlist
+        // Test 7: Notification package support allowlist
         try {
             assertCondition(VisionNotificationListener.isSupported("com.google.android.gm"), "Gmail supported");
             assertCondition(VisionNotificationListener.isSupported("com.whatsapp"), "WhatsApp supported");
@@ -122,11 +150,11 @@ public class VisionAppTest {
             assertCondition(!VisionNotificationListener.isSupported(null), "null rejected");
             passed++;
         } catch (Throwable t) {
-            System.err.println("Test 6 FAILED: " + t.getMessage());
+            System.err.println("Test 7 FAILED: " + t.getMessage());
             failed++;
         }
 
-        // Test 7: Notification snapshot creation and key matching
+        // Test 8: Notification snapshot creation and key matching
         try {
             VisionNotificationListener.NotificationSnapshot s1 =
                     new VisionNotificationListener.NotificationSnapshot("key1", "com.whatsapp", "Alice", "Hello there", 1000L);
@@ -144,7 +172,26 @@ public class VisionAppTest {
             assertCondition(sNull.text.isEmpty(), "null text defaults to empty");
             passed++;
         } catch (Throwable t) {
-            System.err.println("Test 7 FAILED: " + t.getMessage());
+            System.err.println("Test 8 FAILED: " + t.getMessage());
+            failed++;
+        }
+
+        // Test 9: NotificationReplyCapability structure and safety
+        try {
+            VisionNotificationListener.NotificationReplyCapability cap =
+                    new VisionNotificationListener.NotificationReplyCapability("key2", "org.telegram.messenger", "Bob", null, null);
+            assertCondition(cap.key.equals("key2"), "cap key matches");
+            assertCondition(cap.packageName.equals("org.telegram.messenger"), "cap package matches");
+            assertCondition(cap.senderOrTitle.equals("Bob"), "cap sender matches");
+            assertCondition(cap.pendingIntent == null, "cap pendingIntent is null");
+            assertCondition(cap.remoteInput == null, "cap remoteInput is null");
+
+            // sendReply returns false when capability or intent is null
+            assertCondition(!VisionNotificationListener.sendReply(null, null, "test"), "sendReply(null, null) returns false");
+            assertCondition(!VisionNotificationListener.sendReply(null, cap, "test"), "sendReply(null, cap) returns false");
+            passed++;
+        } catch (Throwable t) {
+            System.err.println("Test 9 FAILED: " + t.getMessage());
             failed++;
         }
 
@@ -152,6 +199,13 @@ public class VisionAppTest {
         if (failed > 0) {
             System.exit(1);
         }
+    }
+
+    private static void assertReply(String command, String expectedTarget, String expectedText) {
+        VisionAction action = VisionActionParser.parse(command);
+        assertCondition(action.type == VisionAction.Type.REPLY_NOTIFICATION, "Expected REPLY_NOTIFICATION for: " + command);
+        assertCondition(action.target.equals(expectedTarget), "Expected target " + expectedTarget + " but got " + action.target + " for: " + command);
+        assertCondition(action.replyText.equals(expectedText), "Expected replyText \"" + expectedText + "\" but got \"" + action.replyText + "\" for: " + command);
     }
 
     private static void assertAppLaunch(String command, String expectedTarget) {
