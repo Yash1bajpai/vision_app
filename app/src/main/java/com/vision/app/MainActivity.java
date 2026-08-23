@@ -9,6 +9,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 import android.content.Context;
+import android.content.Intent;
+import android.provider.Settings;
+import android.app.AlertDialog;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -69,6 +72,7 @@ public class MainActivity extends Activity {
         status.addView(dot);
         TextView statusText = label("  Offline mode     •     TinyLlama ready", 12, TEXT);
         status.addView(statusText);
+        status.setOnClickListener(v -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")));
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
         statusParams.setMargins(0, dp(24), 0, dp(22));
         root.addView(status, statusParams);
@@ -97,10 +101,16 @@ public class MainActivity extends Activity {
         send.setOnClickListener(v -> {
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
-                activityText.setText("JUST NOW\n\nYou asked: " + command + "\n\nVision is ready to process this locally.");
-                input.setText("");
-                ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE))
-                        .hideSoftInputFromWindow(input.getWindowToken(), 0);
+                new AlertDialog.Builder(this)
+                        .setTitle("Vision wants to proceed")
+                        .setMessage("I am going to process this request locally:\n\n" + command)
+                        .setNegativeButton("Deny", (dialog, which) -> activityText.setText("REQUEST DENIED\n\nVision stopped this action."))
+                        .setPositiveButton("Allow", (dialog, which) -> {
+                            activityText.setText("JUST NOW\n\nYou asked: " + command + "\n\nVision is ready to process this locally.");
+                            input.setText("");
+                            ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE))
+                                    .hideSoftInputFromWindow(input.getWindowToken(), 0);
+                        }).show();
             }
         });
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
