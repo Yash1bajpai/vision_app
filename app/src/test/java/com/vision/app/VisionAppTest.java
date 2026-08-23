@@ -195,6 +195,131 @@ public class VisionAppTest {
             failed++;
         }
 
+        // Test 10: Target validation and conservative mismatch rejection
+        try {
+            // Explicit contact target matching
+            assertCondition(VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Alice"), "Exact contact match");
+            assertCondition(VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Alice Smith"), "Substring contact match");
+            assertCondition(VisionNotificationListener.validateTarget("Alice Smith", "com.whatsapp", "WhatsApp", "Alice"), "Superset contact match");
+            assertCondition(VisionNotificationListener.validateTarget("alice", "com.whatsapp", "WhatsApp", "Alice"), "Case-insensitive contact match");
+
+            // Explicit contact target mismatch
+            assertCondition(!VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Bob"), "Mismatch sender rejected");
+            assertCondition(!VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", ""), "Empty sender with explicit target rejected");
+            assertCondition(!VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", null), "Null sender with explicit target rejected");
+
+            // Explicit app target matching
+            assertCondition(VisionNotificationListener.validateTarget("WhatsApp", "com.whatsapp", "WhatsApp", "Bob"), "WhatsApp app match");
+            assertCondition(VisionNotificationListener.validateTarget("WhatsApp Business", "com.whatsapp.w4b", "WhatsApp", "Bob"), "WhatsApp Business app match");
+            assertCondition(VisionNotificationListener.validateTarget("Telegram", "org.telegram.messenger", "Telegram", "Bob"), "Telegram app match");
+            assertCondition(VisionNotificationListener.validateTarget("Gmail", "com.google.android.gm", "Gmail", "Bob"), "Gmail app match");
+            assertCondition(VisionNotificationListener.validateTarget("Messages", "com.google.android.apps.messaging", "Messages", "Bob"), "Messages app match");
+            assertCondition(VisionNotificationListener.validateTarget("Calendar", "com.google.android.calendar", "Calendar", "Bob"), "Calendar app match");
+
+            // Explicit app target mismatch
+            assertCondition(!VisionNotificationListener.validateTarget("Telegram", "com.whatsapp", "WhatsApp", "Bob"), "App mismatch (Telegram vs WhatsApp) rejected");
+            assertCondition(!VisionNotificationListener.validateTarget("WhatsApp", "org.telegram.messenger", "Telegram", "Bob"), "App mismatch (WhatsApp vs Telegram) rejected");
+            assertCondition(!VisionNotificationListener.validateTarget("Gmail", "com.google.android.apps.messaging", "Messages", "Bob"), "App mismatch (Gmail vs Messages) rejected");
+
+            // Unspecified / default targets
+            assertCondition(VisionNotificationListener.validateTarget("latest notification", "com.whatsapp", "WhatsApp", "Bob"), "Default target accepted");
+            assertCondition(VisionNotificationListener.validateTarget("latest", "org.telegram.messenger", "Telegram", "Alice"), "'latest' accepted");
+            assertCondition(VisionNotificationListener.validateTarget("", "com.whatsapp", "WhatsApp", "Bob"), "Empty target accepted");
+            assertCondition(VisionNotificationListener.validateTarget(null, "com.whatsapp", "WhatsApp", "Bob"), "Null target accepted");
+            passed++;
+        } catch (Throwable t) {
+            System.err.println("Test 10 FAILED: " + t.getMessage());
+            failed++;
+        }
+
+        // Test 11: Notification replacement between proposal and approval (TOCTOU race prevention)
+        try {
+            VisionNotificationListener.NotificationReplyCapability capAlice =
+                    new VisionNotificationListener.NotificationReplyCapability("key_alice", "com.whatsapp", "Alice", null, null);
+            VisionNotificationListener.NotificationReplyCapability capBob =
+                    new VisionNotificationListener.NotificationReplyCapability("key_bob", "com.whatsapp", "Bob", null, null);
+
+            // Proposal binds capAlice
+            VisionNotificationListener.setLatestReplyCapabilityForTesting(capAlice);
+            VisionNotificationListener.NotificationReplyCapability boundCap = VisionNotificationListener.getLatestReplyCapability();
+            assertCondition(boundCap == capAlice, "Bound capability is capAlice at proposal");
+
+            // Incoming notification from Bob replaces active capability
+            VisionNotificationListener.setLatestReplyCapabilityForTesting(capBob);
+
+            // User taps Allow on dialog that was bound to capAlice
+            VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(null, boundCap, "Approved reply text");
+            assertCondition(result == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, "TOCTOU replaced capability rejected as STALE_OR_REMOVED");
+
+            // Same chat updated with new capability instance
+            VisionNotificationListener.NotificationReplyCapability capAliceNew =
+                    new VisionNotificationListener.NotificationReplyCapability("key_alice", "com.whatsapp", "Alice", null, null);
+            VisionNotificationListener.setLatestReplyCapabilityForTesting(capAliceNew);
+            VisionNotificationListener.ReplyResult resultNew = VisionNotificationListener.sendBoundReply(null, boundCap, "Approved reply text");
+            assertCondition(resultNew == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, "Replaced instance rejected as STALE_OR_REMOVED");
+            passed++;
+        } catch (Throwable t) {
+            System.err.println("Test 11 FAILED: " + t.getMessage());
+            failed++;
+        }
+
+        // Test 12: Notification removal / stale key dispatch prevention
+        try {
+            VisionNotificationListener.NotificationReplyCapability cap1 =
+                    new VisionNotificationListener.NotificationReplyCapability("key_dismiss", "org.telegram.messenger", "Charlie", null, null);
+
+            // Proposal binds cap1
+            VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
+            VisionNotificationListener.NotificationReplyCapability boundCap = VisionNotificationListener.getLatestReplyCapability();
+
+            // Notification dismissed/cleared
+            VisionNotificationListener.clearLatestNotification();
+
+            // Approval attempts dispatch on cleared capability
+            VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(null, boundCap, "Reply text");
+            assertCondition(result == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, "Dismissed notification rejected as STALE_OR_REMOVED");
+
+            // Invalid arguments test
+            assertCondition(VisionNotificationListener.sendBoundReply(null, null, "text") == VisionNotificationListener.ReplyResult.INVALID_ARGUMENTS, "null cap returns INVALID_ARGUMENTS");
+            VisionNotificationListener.NotificationReplyCapability emptyKeyCap =
+                    new VisionNotificationListener.NotificationReplyCapability("", "com.whatsapp", "User", null, null);
+            assertCondition(VisionNotificationListener.sendBoundReply(null, emptyKeyCap, "text") == VisionNotificationListener.ReplyResult.INVALID_ARGUMENTS, "empty key cap returns INVALID_ARGUMENTS");
+            passed++;
+        } catch (Throwable t) {
+            System.err.println("Test 12 FAILED: " + t.getMessage());
+            failed++;
+        }
+
+        // Test 13: Capability active match verification and bound lifecycle flow
+        try {
+            VisionNotificationListener.NotificationReplyCapability cap1 =
+                    new VisionNotificationListener.NotificationReplyCapability("key_active", "com.whatsapp", "David", null, null);
+            VisionNotificationListener.NotificationReplyCapability cap2 =
+                    new VisionNotificationListener.NotificationReplyCapability("key_other", "com.whatsapp", "Eve", null, null);
+
+            VisionNotificationListener.clearLatestNotification();
+            assertCondition(!VisionNotificationListener.isCapabilityActive(cap1), "cap1 is inactive when empty");
+
+            VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
+            assertCondition(VisionNotificationListener.isCapabilityActive(cap1), "cap1 is active when set");
+            assertCondition(!VisionNotificationListener.isCapabilityActive(cap2), "cap2 is inactive");
+            assertCondition(!VisionNotificationListener.isCapabilityActive(null), "null is inactive");
+
+            // Source name resolution
+            assertCondition(VisionNotificationListener.resolveSourceName("com.whatsapp").equals("WhatsApp"), "com.whatsapp -> WhatsApp");
+            assertCondition(VisionNotificationListener.resolveSourceName("com.whatsapp.w4b").equals("WhatsApp"), "com.whatsapp.w4b -> WhatsApp");
+            assertCondition(VisionNotificationListener.resolveSourceName("org.telegram.messenger").equals("Telegram"), "org.telegram.messenger -> Telegram");
+            assertCondition(VisionNotificationListener.resolveSourceName("com.google.android.gm").equals("Gmail"), "com.google.android.gm -> Gmail");
+            assertCondition(VisionNotificationListener.resolveSourceName("com.google.android.calendar").equals("Calendar"), "com.google.android.calendar -> Calendar");
+            assertCondition(VisionNotificationListener.resolveSourceName("com.google.android.apps.messaging").equals("Messages"), "Google Messages -> Messages");
+            assertCondition(VisionNotificationListener.resolveSourceName("com.android.messaging").equals("Messages"), "AOSP Messages -> Messages");
+            assertCondition(VisionNotificationListener.resolveSourceName("unknown.pkg").equals("Notification"), "unknown.pkg -> Notification");
+            passed++;
+        } catch (Throwable t) {
+            System.err.println("Test 13 FAILED: " + t.getMessage());
+            failed++;
+        }
+
         System.out.println("Tests passed: " + passed + ", failed: " + failed);
         if (failed > 0) {
             System.exit(1);

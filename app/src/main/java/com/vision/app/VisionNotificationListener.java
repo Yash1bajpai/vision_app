@@ -10,6 +10,7 @@ import android.os.Parcelable;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import java.util.List;
+import java.util.Locale;
 
 /** Keeps only the latest supported notification and reply capability in process memory. */
 public class VisionNotificationListener extends NotificationListenerService {
@@ -24,6 +25,13 @@ public class VisionNotificationListener extends NotificationListenerService {
     };
     private static volatile NotificationSnapshot latestNotification;
     private static volatile NotificationReplyCapability latestReplyCapability;
+
+    public enum ReplyResult {
+        SUCCESS,
+        STALE_OR_REMOVED,
+        FAILED_INTENT,
+        INVALID_ARGUMENTS
+    }
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
@@ -167,9 +175,35 @@ public class VisionNotificationListener extends NotificationListenerService {
         latestReplyCapability = null;
     }
 
-    public static boolean sendReply(Context context, NotificationReplyCapability capability, String replyText) {
-        if (context == null || capability == null || capability.pendingIntent == null || capability.remoteInput == null) {
+    public static void setLatestNotificationForTesting(NotificationSnapshot snapshot) {
+        latestNotification = snapshot;
+    }
+
+    public static void setLatestReplyCapabilityForTesting(NotificationReplyCapability capability) {
+        latestReplyCapability = capability;
+    }
+
+    public static boolean isCapabilityActive(NotificationReplyCapability capability) {
+        if (capability == null || capability.key.isEmpty()) {
             return false;
+        }
+        NotificationReplyCapability current = latestReplyCapability;
+        return current == capability && current.key.equals(capability.key);
+    }
+
+    public static synchronized ReplyResult sendBoundReply(Context context, NotificationReplyCapability boundCapability, String replyText) {
+        if (boundCapability == null || boundCapability.key.isEmpty()) {
+            return ReplyResult.INVALID_ARGUMENTS;
+        }
+        NotificationReplyCapability current = latestReplyCapability;
+        if (current == null || current != boundCapability || !current.key.equals(boundCapability.key)) {
+            return ReplyResult.STALE_OR_REMOVED;
+        }
+        if (boundCapability.pendingIntent == null || boundCapability.remoteInput == null) {
+            return ReplyResult.FAILED_INTENT;
+        }
+        if (context == null) {
+            return ReplyResult.INVALID_ARGUMENTS;
         }
         if (replyText == null) {
             replyText = "";
@@ -177,15 +211,74 @@ public class VisionNotificationListener extends NotificationListenerService {
         try {
             Intent fillInIntent = new Intent();
             Bundle bundle = new Bundle();
-            bundle.putCharSequence(capability.remoteInput.getResultKey(), replyText);
-            RemoteInput.addResultsToIntent(new RemoteInput[] { capability.remoteInput }, fillInIntent, bundle);
-            capability.pendingIntent.send(context, 0, fillInIntent);
-            return true;
+            bundle.putCharSequence(boundCapability.remoteInput.getResultKey(), replyText);
+            RemoteInput.addResultsToIntent(new RemoteInput[] { boundCapability.remoteInput }, fillInIntent, bundle);
+            boundCapability.pendingIntent.send(context, 0, fillInIntent);
+            return ReplyResult.SUCCESS;
         } catch (PendingIntent.CanceledException e) {
-            return false;
+            return ReplyResult.FAILED_INTENT;
         } catch (Throwable e) {
-            return false;
+            return ReplyResult.FAILED_INTENT;
         }
+    }
+
+    public static boolean sendReply(Context context, NotificationReplyCapability capability, String replyText) {
+        return sendBoundReply(context, capability, replyText) == ReplyResult.SUCCESS;
+    }
+
+    public static String resolveSourceName(String packageName) {
+        if ("com.whatsapp".equals(packageName) || "com.whatsapp.w4b".equals(packageName)) return "WhatsApp";
+        if ("org.telegram.messenger".equals(packageName)) return "Telegram";
+        if ("com.google.android.gm".equals(packageName)) return "Gmail";
+        if ("com.google.android.calendar".equals(packageName)) return "Calendar";
+        if ("com.google.android.apps.messaging".equals(packageName) || "com.android.messaging".equals(packageName)) return "Messages";
+        return "Notification";
+    }
+
+    public static boolean validateTarget(String requestedTarget, String packageName, String sourceName, String senderOrTitle) {
+        if (requestedTarget == null) return true;
+        String target = requestedTarget.trim();
+        if (target.isEmpty()) return true;
+
+        String normTarget = target.toLowerCase(Locale.US);
+        if (normTarget.equals("latest notification") || normTarget.equals("latest") ||
+                normTarget.equals("latest message") || normTarget.equals("the latest notification") ||
+                normTarget.equals("notification")) {
+            return true;
+        }
+
+        String normPkg = packageName != null ? packageName.trim().toLowerCase(Locale.US) : "";
+        String normSrc = sourceName != null ? sourceName.trim().toLowerCase(Locale.US) : "";
+        String normSender = senderOrTitle != null ? senderOrTitle.trim().toLowerCase(Locale.US) : "";
+
+        // 1. Match against app source / package
+        if (!normSrc.isEmpty() && normTarget.equals(normSrc)) return true;
+        if (!normPkg.isEmpty() && normPkg.contains(normTarget)) return true;
+        if (normTarget.equals("whatsapp") || normTarget.equals("whatsapp business") || normTarget.equals("wa")) {
+            if (normPkg.contains("whatsapp") || normSrc.contains("whatsapp")) return true;
+        }
+        if (normTarget.equals("telegram") || normTarget.equals("tg")) {
+            if (normPkg.contains("telegram") || normSrc.contains("telegram")) return true;
+        }
+        if (normTarget.equals("gmail") || normTarget.equals("mail") || normTarget.equals("email") || normTarget.equals("google mail")) {
+            if (normPkg.contains("gm") || normSrc.contains("gmail")) return true;
+        }
+        if (normTarget.equals("messages") || normTarget.equals("message") || normTarget.equals("sms") ||
+                normTarget.equals("google messages") || normTarget.equals("text")) {
+            if (normPkg.contains("messaging") || normSrc.contains("messages")) return true;
+        }
+        if (normTarget.equals("calendar") || normTarget.equals("google calendar")) {
+            if (normPkg.contains("calendar") || normSrc.contains("calendar")) return true;
+        }
+
+        // 2. Match against sender / title
+        if (!normSender.isEmpty()) {
+            if (normSender.equals(normTarget)) return true;
+            if (normTarget.length() >= 2 && normSender.contains(normTarget)) return true;
+            if (normSender.length() >= 2 && normTarget.contains(normSender)) return true;
+        }
+
+        return false;
     }
 
     public static boolean isSupported(String packageName) {
