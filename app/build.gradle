@@ -10,7 +10,11 @@ android {
         applicationId "com.vision.app"
         minSdk 26
         targetSdk 34
-        versionCode 7
-        versionName "0.5.0"
+        versionCode 8
+        versionName "0.5.1"
     }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
 }

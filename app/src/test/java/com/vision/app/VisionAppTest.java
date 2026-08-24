@@ -1,430 +1,381 @@
 package com.vision.app;
 
 import android.app.Notification;
+import org.junit.Test;
+import static org.junit.Assert.*;
 
 public class VisionAppTest {
-    public static void main(String[] args) {
-        int passed = 0;
-        int failed = 0;
 
-        System.out.println("Running Vision deterministic test suite (Phases 1-5 + F1-F11 + Risk Policy)...");
+    // Test 1: Null and empty parser inputs
+    @Test
+    public void test01_nullAndEmptyParserInputs() {
+        assertEquals("parse(null) == UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse(null).type);
+        assertEquals("parse(\"\") == UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("").type);
+        assertEquals("parse(whitespace) == UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("   \n\t  ").type);
+    }
 
-        // Test 1: Null and empty parser inputs
-        try {
-            assertCondition(VisionActionParser.parse(null).type == VisionAction.Type.UNKNOWN, "parse(null) == UNKNOWN");
-            assertCondition(VisionActionParser.parse("").type == VisionAction.Type.UNKNOWN, "parse(\"\") == UNKNOWN");
-            assertCondition(VisionActionParser.parse("   \n\t  ").type == VisionAction.Type.UNKNOWN, "parse(whitespace) == UNKNOWN");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 1 FAILED: " + t.getMessage());
-            failed++;
+    // Test 2: Notification reading requests (including F6 reordering & gerunds)
+    @Test
+    public void test02_notificationReadingRequests() {
+        String[] notifRequests = {
+                "read notification",
+                "read notifications",
+                "read my notification",
+                "read latest notification",
+                "read the newest notification",
+                "show notification",
+                "show my latest message",
+                "check notifications",
+                "check messages",
+                "get latest notification",
+                "see latest notification",
+                "please read my latest notification",
+                "read notification now",
+                "start reading my messages",
+                "start reading notifications"
+        };
+        for (String req : notifRequests) {
+            VisionAction action = VisionActionParser.parse(req);
+            assertEquals("Expected READ_NOTIFICATION for: " + req, VisionAction.Type.READ_NOTIFICATION, action.type);
         }
+    }
 
-        // Test 2: Notification reading requests (including F6 reordering & gerunds)
-        try {
-            String[] notifRequests = {
-                    "read notification",
-                    "read notifications",
-                    "read my notification",
-                    "read latest notification",
-                    "read the newest notification",
-                    "show notification",
-                    "show my latest message",
-                    "check notifications",
-                    "check messages",
-                    "get latest notification",
-                    "see latest notification",
-                    "please read my latest notification",
-                    "read notification now",
-                    "start reading my messages",
-                    "start reading notifications"
-            };
-            for (String req : notifRequests) {
-                VisionAction action = VisionActionParser.parse(req);
-                assertCondition(action.type == VisionAction.Type.READ_NOTIFICATION, "Expected READ_NOTIFICATION for: " + req);
-            }
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 2 FAILED: " + t.getMessage());
-            failed++;
+    // Test 3: App launching requests (including F5 WhatsApp Business distinct target)
+    @Test
+    public void test03_appLaunchingRequests() {
+        assertAppLaunch("open whatsapp", "WhatsApp");
+        assertAppLaunch("open whatsapp business", "WhatsApp Business");
+        assertAppLaunch("launch whatsapp business", "WhatsApp Business");
+        assertAppLaunch("start w4b", "WhatsApp Business");
+        assertAppLaunch("launch telegram", "Telegram");
+        assertAppLaunch("start gmail", "Gmail");
+        assertAppLaunch("open messages", "Messages");
+        assertAppLaunch("open calendar", "Calendar");
+        assertAppLaunch("launch calendar", "Calendar");
+        assertAppLaunch("open sms", "Messages");
+        assertAppLaunch("open whatsapp now", "WhatsApp");
+        assertAppLaunch("please open telegram", "Telegram");
+    }
+
+    // Test 4: Notification reply requests (F3 colon requirement, F9 reply-to-colon, N13 word boundaries)
+    @Test
+    public void test04_notificationReplyRequests() {
+        assertReply("reply I will be there soon", "latest notification", "I will be there soon");
+        assertReply("reply: Sounds great!", "latest notification", "Sounds great!");
+        assertReply("reply to: Sounds great!", "latest notification", "Sounds great!");
+        assertReply("please reply to: Will do.", "latest notification", "Will do.");
+        assertReply("reply to WhatsApp: On my way!", "WhatsApp", "On my way!");
+        assertReply("reply to Alice: Yes, confirmed", "Alice", "Yes, confirmed");
+        assertReply("reply to Bob Smith: thanks", "Bob Smith", "thanks");
+        assertReply("send reply OK, see you then", "latest notification", "OK, see you then");
+        assertReply("answer Perfect, thank you", "latest notification", "Perfect, thank you");
+        assertReply("please reply: Will do.", "latest notification", "Will do.");
+
+        // N13: Target token beginning with "to" (tokyo, Tom, tony) and colons in message body
+        assertReply("reply to Alice: hello: world", "Alice", "hello: world");
+        assertReply("reply to tokyo: hi", "tokyo", "hi");
+        assertReply("reply to Tom: hi", "Tom", "hi");
+        assertReply("reply to tony: hi", "tony", "hi");
+        assertReply("reply to: tokyo", "latest notification", "tokyo");
+        assertReply("reply to: hi", "latest notification", "hi");
+        assertReply("reply tokyo: hi", "latest notification", "tokyo: hi");
+
+        // F3: Space-separated "reply to <target> <text>" without colon is rejected as UNKNOWN
+        assertEquals("reply to Bob Smith thanks -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("reply to Bob Smith thanks").type);
+        assertEquals("reply to Alice thanks -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("reply to Alice thanks").type);
+
+        // Empty reply text returns UNKNOWN
+        assertEquals("reply without text -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("reply").type);
+        assertEquals("reply: without text -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("reply:").type);
+        assertEquals("reply to: without text -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("reply to:").type);
+        assertEquals("send reply without text -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("send reply").type);
+        assertEquals("reply to Alice without text -> UNKNOWN", VisionAction.Type.UNKNOWN, VisionActionParser.parse("reply to Alice").type);
+    }
+
+    // Test 5: Unrecognized requests
+    @Test
+    public void test05_unrecognizedRequests() {
+        String[] unknownRequests = {
+                "hello",
+                "play music",
+                "open random app",
+                "search google",
+                "take a photo",
+                "reply to Bob Smith thanks",
+                "reply to Alice"
+        };
+        for (String req : unknownRequests) {
+            VisionAction action = VisionActionParser.parse(req);
+            assertEquals("Expected UNKNOWN for: " + req, VisionAction.Type.UNKNOWN, action.type);
         }
+    }
 
-        // Test 3: App launching requests (including F5 WhatsApp Business distinct target)
-        try {
-            assertAppLaunch("open whatsapp", "WhatsApp");
-            assertAppLaunch("open whatsapp business", "WhatsApp Business");
-            assertAppLaunch("launch whatsapp business", "WhatsApp Business");
-            assertAppLaunch("start w4b", "WhatsApp Business");
-            assertAppLaunch("launch telegram", "Telegram");
-            assertAppLaunch("start gmail", "Gmail");
-            assertAppLaunch("open messages", "Messages");
-            assertAppLaunch("open calendar", "Calendar");
-            assertAppLaunch("launch calendar", "Calendar");
-            assertAppLaunch("open sms", "Messages");
-            assertAppLaunch("open whatsapp now", "WhatsApp");
-            assertAppLaunch("please open telegram", "Telegram");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 3 FAILED: " + t.getMessage());
-            failed++;
-        }
+    // Test 6: VisionAction state machine, labels, and Risk Policy (N33 fail-closed)
+    @Test
+    public void test06_actionStateMachineAndRiskPolicy() {
+        VisionAction a1 = new VisionAction(VisionAction.Type.READ_NOTIFICATION, "read notification", "latest notification");
+        assertEquals("initial state is PROPOSED", VisionAction.State.PROPOSED, a1.state);
+        assertEquals("label matches", "Read the latest supported notification", a1.label());
+        assertFalse("READ_NOTIFICATION requiresConfirmation() must be false (Tier SAFE)", a1.requiresConfirmation());
+        assertEquals("READ_NOTIFICATION is SAFE tier", VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(a1.type));
 
-        // Test 4: Notification reply requests (F3 colon requirement, F9 reply-to-colon)
-        try {
-            assertReply("reply I will be there soon", "latest notification", "I will be there soon");
-            assertReply("reply: Sounds great!", "latest notification", "Sounds great!");
-            assertReply("reply to: Sounds great!", "latest notification", "Sounds great!");
-            assertReply("please reply to: Will do.", "latest notification", "Will do.");
-            assertReply("reply to WhatsApp: On my way!", "WhatsApp", "On my way!");
-            assertReply("reply to Alice: Yes, confirmed", "Alice", "Yes, confirmed");
-            assertReply("reply to Bob Smith: thanks", "Bob Smith", "thanks");
-            assertReply("send reply OK, see you then", "latest notification", "OK, see you then");
-            assertReply("answer Perfect, thank you", "latest notification", "Perfect, thank you");
-            assertReply("please reply: Will do.", "latest notification", "Will do.");
+        a1.state = VisionAction.State.APPROVED;
+        assertEquals("approved state", VisionAction.State.APPROVED, a1.state);
+        a1.state = VisionAction.State.RUNNING;
+        assertEquals("running state", VisionAction.State.RUNNING, a1.state);
+        a1.state = VisionAction.State.SUCCEEDED;
+        assertEquals("succeeded state", VisionAction.State.SUCCEEDED, a1.state);
 
-            // F3: Space-separated "reply to <target> <text>" without colon is rejected as UNKNOWN
-            assertCondition(VisionActionParser.parse("reply to Bob Smith thanks").type == VisionAction.Type.UNKNOWN, "reply to Bob Smith thanks -> UNKNOWN");
-            assertCondition(VisionActionParser.parse("reply to Alice thanks").type == VisionAction.Type.UNKNOWN, "reply to Alice thanks -> UNKNOWN");
+        VisionAction a2 = new VisionAction(VisionAction.Type.OPEN_APP, "open telegram", "Telegram");
+        assertEquals("open app label matches", "Open Telegram", a2.label());
+        assertFalse("OPEN_APP requiresConfirmation() must be false (Tier SAFE)", a2.requiresConfirmation());
+        assertEquals("OPEN_APP is SAFE tier", VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(a2.type));
 
-            // Empty reply text returns UNKNOWN
-            assertCondition(VisionActionParser.parse("reply").type == VisionAction.Type.UNKNOWN, "reply without text -> UNKNOWN");
-            assertCondition(VisionActionParser.parse("reply:").type == VisionAction.Type.UNKNOWN, "reply: without text -> UNKNOWN");
-            assertCondition(VisionActionParser.parse("reply to:").type == VisionAction.Type.UNKNOWN, "reply to: without text -> UNKNOWN");
-            assertCondition(VisionActionParser.parse("send reply").type == VisionAction.Type.UNKNOWN, "send reply without text -> UNKNOWN");
-            assertCondition(VisionActionParser.parse("reply to Alice").type == VisionAction.Type.UNKNOWN, "reply to Alice without text -> UNKNOWN");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 4 FAILED: " + t.getMessage());
-            failed++;
-        }
+        VisionAction a3 = new VisionAction(VisionAction.Type.REPLY_NOTIFICATION, "reply OK", "WhatsApp", "OK");
+        assertEquals("reply label matches", "Reply to WhatsApp", a3.label());
+        assertEquals("replyText matches", "OK", a3.replyText);
+        assertTrue("REPLY_NOTIFICATION requiresConfirmation() must be true (Tier CONFIRMED)", a3.requiresConfirmation());
+        assertEquals("REPLY_NOTIFICATION is CONFIRMED tier", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(a3.type));
 
-        // Test 5: Unrecognized requests
-        try {
-            String[] unknownRequests = {
-                    "hello",
-                    "play music",
-                    "open random app",
-                    "search google",
-                    "take a photo",
-                    "reply to Bob Smith thanks",
-                    "reply to Alice"
-            };
-            for (String req : unknownRequests) {
-                VisionAction action = VisionActionParser.parse(req);
-                assertCondition(action.type == VisionAction.Type.UNKNOWN, "Expected UNKNOWN for: " + req);
-            }
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 5 FAILED: " + t.getMessage());
-            failed++;
-        }
+        VisionAction a4 = new VisionAction(VisionAction.Type.REPLY_NOTIFICATION, "reply OK", "", "OK");
+        assertEquals("reply label defaults to latest notification", "Reply to the latest notification", a4.label());
+        assertTrue("REPLY_NOTIFICATION requiresConfirmation() must be true", a4.requiresConfirmation());
 
-        // Test 6: VisionAction state machine, labels, and Risk Policy (Task 2)
-        try {
-            VisionAction a1 = new VisionAction(VisionAction.Type.READ_NOTIFICATION, "read notification", "latest notification");
-            assertCondition(a1.state == VisionAction.State.PROPOSED, "initial state is PROPOSED");
-            assertCondition(a1.label().equals("Read the latest supported notification"), "label matches");
-            assertCondition(!a1.requiresConfirmation(), "READ_NOTIFICATION requiresConfirmation() must be false (Tier SAFE)");
-            assertCondition(VisionRiskPolicy.getRiskTier(a1.type) == VisionRiskPolicy.RiskTier.SAFE, "READ_NOTIFICATION is SAFE tier");
+        VisionAction aNull = new VisionAction(null, null, null, null);
+        assertEquals("null type defaults to UNKNOWN", VisionAction.Type.UNKNOWN, aNull.type);
+        assertTrue("null request defaults to empty", aNull.request.isEmpty());
+        assertTrue("null target defaults to empty", aNull.target.isEmpty());
+        assertTrue("null replyText defaults to empty", aNull.replyText.isEmpty());
+        assertTrue("UNKNOWN requiresConfirmation() must be true under fail-closed policy (N33)", aNull.requiresConfirmation());
+    }
 
-            a1.state = VisionAction.State.APPROVED;
-            assertCondition(a1.state == VisionAction.State.APPROVED, "approved state");
-            a1.state = VisionAction.State.RUNNING;
-            assertCondition(a1.state == VisionAction.State.RUNNING, "running state");
-            a1.state = VisionAction.State.SUCCEEDED;
-            assertCondition(a1.state == VisionAction.State.SUCCEEDED, "succeeded state");
+    // Test 7: Notification package support allowlist
+    @Test
+    public void test07_notificationPackageAllowlist() {
+        assertTrue("Gmail supported", VisionNotificationListener.isSupported("com.google.android.gm"));
+        assertTrue("WhatsApp supported", VisionNotificationListener.isSupported("com.whatsapp"));
+        assertTrue("WhatsApp Business supported", VisionNotificationListener.isSupported("com.whatsapp.w4b"));
+        assertTrue("Telegram supported", VisionNotificationListener.isSupported("org.telegram.messenger"));
+        assertTrue("Google Messages supported", VisionNotificationListener.isSupported("com.google.android.apps.messaging"));
+        assertTrue("AOSP Messages supported", VisionNotificationListener.isSupported("com.android.messaging"));
+        assertTrue("Calendar supported", VisionNotificationListener.isSupported("com.google.android.calendar"));
 
-            VisionAction a2 = new VisionAction(VisionAction.Type.OPEN_APP, "open telegram", "Telegram");
-            assertCondition(a2.label().equals("Open Telegram"), "open app label matches");
-            assertCondition(!a2.requiresConfirmation(), "OPEN_APP requiresConfirmation() must be false (Tier SAFE)");
-            assertCondition(VisionRiskPolicy.getRiskTier(a2.type) == VisionRiskPolicy.RiskTier.SAFE, "OPEN_APP is SAFE tier");
+        assertFalse("Facebook rejected", VisionNotificationListener.isSupported("com.facebook.katana"));
+        assertFalse("Instagram rejected", VisionNotificationListener.isSupported("com.instagram.android"));
+        assertFalse("null rejected", VisionNotificationListener.isSupported(null));
+    }
 
-            VisionAction a3 = new VisionAction(VisionAction.Type.REPLY_NOTIFICATION, "reply OK", "WhatsApp", "OK");
-            assertCondition(a3.label().equals("Reply to WhatsApp"), "reply label matches");
-            assertCondition(a3.replyText.equals("OK"), "replyText matches");
-            assertCondition(a3.requiresConfirmation(), "REPLY_NOTIFICATION requiresConfirmation() must be true (Tier CONFIRMED)");
-            assertCondition(VisionRiskPolicy.getRiskTier(a3.type) == VisionRiskPolicy.RiskTier.CONFIRMED, "REPLY_NOTIFICATION is CONFIRMED tier");
+    // Test 8: Notification snapshot creation and key matching
+    @Test
+    public void test08_notificationSnapshotCreationAndKeyMatching() {
+        VisionNotificationListener.NotificationSnapshot s1 =
+                new VisionNotificationListener.NotificationSnapshot("key1", "com.whatsapp", "Alice", "Hello there", 1000L);
+        assertEquals("key matches", "key1", s1.key);
+        assertEquals("package matches", "com.whatsapp", s1.packageName);
+        assertEquals("title matches", "Alice", s1.title);
+        assertEquals("text matches", "Hello there", s1.text);
+        assertEquals("postTime matches", 1000L, s1.postTime);
 
-            VisionAction a4 = new VisionAction(VisionAction.Type.REPLY_NOTIFICATION, "reply OK", "", "OK");
-            assertCondition(a4.label().equals("Reply to the latest notification"), "reply label defaults to latest notification");
-            assertCondition(a4.requiresConfirmation(), "REPLY_NOTIFICATION requiresConfirmation() must be true");
+        VisionNotificationListener.NotificationSnapshot sNull =
+                new VisionNotificationListener.NotificationSnapshot(null, null, null, null, 0L);
+        assertTrue("null key defaults to empty", sNull.key.isEmpty());
+        assertTrue("null packageName defaults to empty", sNull.packageName.isEmpty());
+        assertTrue("null title defaults to empty", sNull.title.isEmpty());
+        assertTrue("null text defaults to empty", sNull.text.isEmpty());
+    }
 
-            VisionAction aNull = new VisionAction(null, null, null, null);
-            assertCondition(aNull.type == VisionAction.Type.UNKNOWN, "null type defaults to UNKNOWN");
-            assertCondition(aNull.request.isEmpty(), "null request defaults to empty");
-            assertCondition(aNull.target.isEmpty(), "null target defaults to empty");
-            assertCondition(aNull.replyText.isEmpty(), "null replyText defaults to empty");
-            assertCondition(!aNull.requiresConfirmation(), "UNKNOWN requiresConfirmation() must be false");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 6 FAILED: " + t.getMessage());
-            failed++;
-        }
+    // Test 9: NotificationReplyCapability structure and safety (F7 fields included)
+    @Test
+    public void test09_replyCapabilityStructureAndSafety() {
+        VisionNotificationListener.NotificationReplyCapability cap =
+                new VisionNotificationListener.NotificationReplyCapability("key2", "org.telegram.messenger", "Bob", null, null, "Group", "Bob");
+        assertEquals("cap key matches", "key2", cap.key);
+        assertEquals("cap package matches", "org.telegram.messenger", cap.packageName);
+        assertEquals("cap sender matches", "Bob", cap.senderOrTitle);
+        assertEquals("cap conversationTitle matches", "Group", cap.conversationTitle);
+        assertEquals("cap senderPerson matches", "Bob", cap.senderPerson);
+        assertNull("cap pendingIntent is null", cap.pendingIntent);
+        assertNull("cap remoteInput is null", cap.remoteInput);
 
-        // Test 7: Notification package support allowlist
-        try {
-            assertCondition(VisionNotificationListener.isSupported("com.google.android.gm"), "Gmail supported");
-            assertCondition(VisionNotificationListener.isSupported("com.whatsapp"), "WhatsApp supported");
-            assertCondition(VisionNotificationListener.isSupported("com.whatsapp.w4b"), "WhatsApp Business supported");
-            assertCondition(VisionNotificationListener.isSupported("org.telegram.messenger"), "Telegram supported");
-            assertCondition(VisionNotificationListener.isSupported("com.google.android.apps.messaging"), "Google Messages supported");
-            assertCondition(VisionNotificationListener.isSupported("com.android.messaging"), "AOSP Messages supported");
-            assertCondition(VisionNotificationListener.isSupported("com.google.android.calendar"), "Calendar supported");
+        // sendReply returns false when capability or intent is null
+        assertFalse("sendReply(null, null) returns false", VisionNotificationListener.sendReply(null, null, "test"));
+        assertFalse("sendReply(null, cap) returns false", VisionNotificationListener.sendReply(null, cap, "test"));
+    }
 
-            assertCondition(!VisionNotificationListener.isSupported("com.facebook.katana"), "Facebook rejected");
-            assertCondition(!VisionNotificationListener.isSupported("com.instagram.android"), "Instagram rejected");
-            assertCondition(!VisionNotificationListener.isSupported(null), "null rejected");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 7 FAILED: " + t.getMessage());
-            failed++;
-        }
+    // Test 10: Target validation hardening (F2, F5, F7)
+    @Test
+    public void test10_targetValidationHardening() {
+        // Explicit contact target matching (exact, full, token)
+        assertTrue("Exact contact match", VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Alice"));
+        assertTrue("Full sender match", VisionNotificationListener.validateTarget("Alice Smith", "com.whatsapp", "WhatsApp", "Alice Smith"));
+        assertTrue("Token contact match (Alice in Alice Smith)", VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Alice Smith"));
+        assertTrue("Token contact match (Smith in Alice Smith)", VisionNotificationListener.validateTarget("Smith", "com.whatsapp", "WhatsApp", "Alice Smith"));
+        assertTrue("Case-insensitive contact match", VisionNotificationListener.validateTarget("alice", "com.whatsapp", "WhatsApp", "Alice"));
 
-        // Test 8: Notification snapshot creation and key matching
-        try {
-            VisionNotificationListener.NotificationSnapshot s1 =
-                    new VisionNotificationListener.NotificationSnapshot("key1", "com.whatsapp", "Alice", "Hello there", 1000L);
-            assertCondition(s1.key.equals("key1"), "key matches");
-            assertCondition(s1.packageName.equals("com.whatsapp"), "package matches");
-            assertCondition(s1.title.equals("Alice"), "title matches");
-            assertCondition(s1.text.equals("Hello there"), "text matches");
-            assertCondition(s1.postTime == 1000L, "postTime matches");
+        // F2 Hardened contact matching: loose substring matches MUST fail
+        assertFalse("'li' vs Alice substring must FAIL", VisionNotificationListener.validateTarget("li", "com.whatsapp", "WhatsApp", "Alice"));
+        assertFalse("'lic' vs Alice substring must FAIL", VisionNotificationListener.validateTarget("lic", "com.whatsapp", "WhatsApp", "Alice"));
+        assertFalse("Mismatch sender rejected", VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Bob"));
+        assertFalse("Empty sender with explicit target rejected", VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", ""));
+        assertFalse("Null sender with explicit target rejected", VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", null));
 
-            VisionNotificationListener.NotificationSnapshot sNull =
-                    new VisionNotificationListener.NotificationSnapshot(null, null, null, null, 0L);
-            assertCondition(sNull.key.isEmpty(), "null key defaults to empty");
-            assertCondition(sNull.packageName.isEmpty(), "null packageName defaults to empty");
-            assertCondition(sNull.title.isEmpty(), "null title defaults to empty");
-            assertCondition(sNull.text.isEmpty(), "null text defaults to empty");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 8 FAILED: " + t.getMessage());
-            failed++;
-        }
+        // Explicit app target matching (canonical aliases)
+        assertTrue("WhatsApp app match", VisionNotificationListener.validateTarget("WhatsApp", "com.whatsapp", "WhatsApp", "Bob"));
+        assertTrue("WhatsApp matches w4b (F5)", VisionNotificationListener.validateTarget("WhatsApp", "com.whatsapp.w4b", "WhatsApp", "Bob"));
+        assertTrue("WhatsApp Business app match", VisionNotificationListener.validateTarget("WhatsApp Business", "com.whatsapp.w4b", "WhatsApp", "Bob"));
+        assertTrue("Telegram app match", VisionNotificationListener.validateTarget("Telegram", "org.telegram.messenger", "Telegram", "Bob"));
+        assertTrue("Gmail app match", VisionNotificationListener.validateTarget("Gmail", "com.google.android.gm", "Gmail", "Bob"));
+        assertTrue("Messages app match", VisionNotificationListener.validateTarget("Messages", "com.google.android.apps.messaging", "Messages", "Bob"));
+        assertTrue("Calendar app match", VisionNotificationListener.validateTarget("Calendar", "com.google.android.calendar", "Calendar", "Bob"));
 
-        // Test 9: NotificationReplyCapability structure and safety (F7 fields included)
-        try {
-            VisionNotificationListener.NotificationReplyCapability cap =
-                    new VisionNotificationListener.NotificationReplyCapability("key2", "org.telegram.messenger", "Bob", null, null, "Group", "Bob");
-            assertCondition(cap.key.equals("key2"), "cap key matches");
-            assertCondition(cap.packageName.equals("org.telegram.messenger"), "cap package matches");
-            assertCondition(cap.senderOrTitle.equals("Bob"), "cap sender matches");
-            assertCondition(cap.conversationTitle.equals("Group"), "cap conversationTitle matches");
-            assertCondition(cap.senderPerson.equals("Bob"), "cap senderPerson matches");
-            assertCondition(cap.pendingIntent == null, "cap pendingIntent is null");
-            assertCondition(cap.remoteInput == null, "cap remoteInput is null");
+        // F2 Hardened app matching: loose package substrings MUST fail
+        assertFalse("'Messenger' vs Telegram must FAIL", VisionNotificationListener.validateTarget("Messenger", "org.telegram.messenger", "Telegram", "Bob"));
+        assertFalse("'Me' vs Google Messages must FAIL", VisionNotificationListener.validateTarget("Me", "com.google.android.apps.messaging", "Messages", "Bob"));
+        assertFalse("Cross-app composite target must FAIL closed", VisionNotificationListener.validateTarget("Telegram Bob", "com.whatsapp", "WhatsApp", "Bob"));
+        assertFalse("App mismatch (Telegram vs WhatsApp) rejected", VisionNotificationListener.validateTarget("Telegram", "com.whatsapp", "WhatsApp", "Bob"));
+        assertFalse("App mismatch (WhatsApp vs Telegram) rejected", VisionNotificationListener.validateTarget("WhatsApp", "org.telegram.messenger", "Telegram", "Bob"));
+        assertFalse("App mismatch (Gmail vs Messages) rejected", VisionNotificationListener.validateTarget("Gmail", "com.google.android.apps.messaging", "Messages", "Bob"));
 
-            // sendReply returns false when capability or intent is null
-            assertCondition(!VisionNotificationListener.sendReply(null, null, "test"), "sendReply(null, null) returns false");
-            assertCondition(!VisionNotificationListener.sendReply(null, cap, "test"), "sendReply(null, cap) returns false");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 9 FAILED: " + t.getMessage());
-            failed++;
-        }
+        // F7: Group chat validation with conversationTitle and senderPerson
+        assertTrue("Group conversationTitle match", VisionNotificationListener.validateTarget("Dev Team", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"));
+        assertTrue("Group conversationTitle token match", VisionNotificationListener.validateTarget("Team", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"));
+        assertTrue("Group senderPerson match", VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"));
+        assertFalse("Group non-member rejected", VisionNotificationListener.validateTarget("Bob", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"));
 
-        // Test 10: Target validation hardening (F2, F5, F7)
-        try {
-            // Explicit contact target matching (exact, full, token)
-            assertCondition(VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Alice"), "Exact contact match");
-            assertCondition(VisionNotificationListener.validateTarget("Alice Smith", "com.whatsapp", "WhatsApp", "Alice Smith"), "Full sender match");
-            assertCondition(VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Alice Smith"), "Token contact match (Alice in Alice Smith)");
-            assertCondition(VisionNotificationListener.validateTarget("Smith", "com.whatsapp", "WhatsApp", "Alice Smith"), "Token contact match (Smith in Alice Smith)");
-            assertCondition(VisionNotificationListener.validateTarget("alice", "com.whatsapp", "WhatsApp", "Alice"), "Case-insensitive contact match");
+        // Unspecified / default targets
+        assertTrue("Default target accepted", VisionNotificationListener.validateTarget("latest notification", "com.whatsapp", "WhatsApp", "Bob"));
+        assertTrue("'latest' accepted", VisionNotificationListener.validateTarget("latest", "org.telegram.messenger", "Telegram", "Alice"));
+        assertTrue("Empty target accepted", VisionNotificationListener.validateTarget("", "com.whatsapp", "WhatsApp", "Bob"));
+        assertTrue("Null target accepted", VisionNotificationListener.validateTarget(null, "com.whatsapp", "WhatsApp", "Bob"));
+    }
 
-            // F2 Hardened contact matching: loose substring matches MUST fail
-            assertCondition(!VisionNotificationListener.validateTarget("li", "com.whatsapp", "WhatsApp", "Alice"), "'li' vs Alice substring must FAIL");
-            assertCondition(!VisionNotificationListener.validateTarget("lic", "com.whatsapp", "WhatsApp", "Alice"), "'lic' vs Alice substring must FAIL");
-            assertCondition(!VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Bob"), "Mismatch sender rejected");
-            assertCondition(!VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", ""), "Empty sender with explicit target rejected");
-            assertCondition(!VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", null), "Null sender with explicit target rejected");
+    // Test 11: Notification replacement between proposal and approval (TOCTOU race prevention)
+    @Test
+    public void test11_notificationReplacementToctouRace() {
+        VisionNotificationListener.NotificationReplyCapability capAlice =
+                new VisionNotificationListener.NotificationReplyCapability("key_alice", "com.whatsapp", "Alice", null, null);
+        VisionNotificationListener.NotificationReplyCapability capBob =
+                new VisionNotificationListener.NotificationReplyCapability("key_bob", "com.whatsapp", "Bob", null, null);
 
-            // Explicit app target matching (canonical aliases)
-            assertCondition(VisionNotificationListener.validateTarget("WhatsApp", "com.whatsapp", "WhatsApp", "Bob"), "WhatsApp app match");
-            assertCondition(VisionNotificationListener.validateTarget("WhatsApp", "com.whatsapp.w4b", "WhatsApp", "Bob"), "WhatsApp matches w4b (F5)");
-            assertCondition(VisionNotificationListener.validateTarget("WhatsApp Business", "com.whatsapp.w4b", "WhatsApp", "Bob"), "WhatsApp Business app match");
-            assertCondition(VisionNotificationListener.validateTarget("Telegram", "org.telegram.messenger", "Telegram", "Bob"), "Telegram app match");
-            assertCondition(VisionNotificationListener.validateTarget("Gmail", "com.google.android.gm", "Gmail", "Bob"), "Gmail app match");
-            assertCondition(VisionNotificationListener.validateTarget("Messages", "com.google.android.apps.messaging", "Messages", "Bob"), "Messages app match");
-            assertCondition(VisionNotificationListener.validateTarget("Calendar", "com.google.android.calendar", "Calendar", "Bob"), "Calendar app match");
+        // Proposal binds capAlice
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(capAlice);
+        VisionNotificationListener.NotificationReplyCapability boundCap = VisionNotificationListener.getLatestReplyCapability();
+        assertSame("Bound capability is capAlice at proposal", capAlice, boundCap);
 
-            // F2 Hardened app matching: loose package substrings MUST fail
-            assertCondition(!VisionNotificationListener.validateTarget("Messenger", "org.telegram.messenger", "Telegram", "Bob"), "'Messenger' vs Telegram must FAIL");
-            assertCondition(!VisionNotificationListener.validateTarget("Me", "com.google.android.apps.messaging", "Messages", "Bob"), "'Me' vs Google Messages must FAIL");
-            assertCondition(!VisionNotificationListener.validateTarget("Telegram Bob", "com.whatsapp", "WhatsApp", "Bob"), "Cross-app composite target must FAIL closed");
-            assertCondition(!VisionNotificationListener.validateTarget("Telegram", "com.whatsapp", "WhatsApp", "Bob"), "App mismatch (Telegram vs WhatsApp) rejected");
-            assertCondition(!VisionNotificationListener.validateTarget("WhatsApp", "org.telegram.messenger", "Telegram", "Bob"), "App mismatch (WhatsApp vs Telegram) rejected");
-            assertCondition(!VisionNotificationListener.validateTarget("Gmail", "com.google.android.apps.messaging", "Messages", "Bob"), "App mismatch (Gmail vs Messages) rejected");
+        // Incoming notification from Bob replaces active capability
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(capBob);
 
-            // F7: Group chat validation with conversationTitle and senderPerson
-            assertCondition(VisionNotificationListener.validateTarget("Dev Team", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"), "Group conversationTitle match");
-            assertCondition(VisionNotificationListener.validateTarget("Team", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"), "Group conversationTitle token match");
-            assertCondition(VisionNotificationListener.validateTarget("Alice", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"), "Group senderPerson match");
-            assertCondition(!VisionNotificationListener.validateTarget("Bob", "com.whatsapp", "WhatsApp", "Dev Team", "Dev Team", "Alice"), "Group non-member rejected");
+        // User taps Allow on dialog that was bound to capAlice
+        VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(null, boundCap, "Approved reply text");
+        assertEquals("TOCTOU replaced capability rejected as STALE_OR_REMOVED", VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, result);
 
-            // Unspecified / default targets
-            assertCondition(VisionNotificationListener.validateTarget("latest notification", "com.whatsapp", "WhatsApp", "Bob"), "Default target accepted");
-            assertCondition(VisionNotificationListener.validateTarget("latest", "org.telegram.messenger", "Telegram", "Alice"), "'latest' accepted");
-            assertCondition(VisionNotificationListener.validateTarget("", "com.whatsapp", "WhatsApp", "Bob"), "Empty target accepted");
-            assertCondition(VisionNotificationListener.validateTarget(null, "com.whatsapp", "WhatsApp", "Bob"), "Null target accepted");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 10 FAILED: " + t.getMessage());
-            failed++;
-        }
+        // Same chat updated with new capability instance
+        VisionNotificationListener.NotificationReplyCapability capAliceNew =
+                new VisionNotificationListener.NotificationReplyCapability("key_alice", "com.whatsapp", "Alice", null, null);
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(capAliceNew);
+        VisionNotificationListener.ReplyResult resultNew = VisionNotificationListener.sendBoundReply(null, boundCap, "Approved reply text");
+        assertEquals("Replaced instance rejected as STALE_OR_REMOVED", VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, resultNew);
+    }
 
-        // Test 11: Notification replacement between proposal and approval (TOCTOU race prevention)
-        try {
-            VisionNotificationListener.NotificationReplyCapability capAlice =
-                    new VisionNotificationListener.NotificationReplyCapability("key_alice", "com.whatsapp", "Alice", null, null);
-            VisionNotificationListener.NotificationReplyCapability capBob =
-                    new VisionNotificationListener.NotificationReplyCapability("key_bob", "com.whatsapp", "Bob", null, null);
+    // Test 12: Notification removal / stale key dispatch prevention
+    @Test
+    public void test12_notificationRemovalStaleKeyDispatch() {
+        VisionNotificationListener.NotificationReplyCapability cap1 =
+                new VisionNotificationListener.NotificationReplyCapability("key_dismiss", "org.telegram.messenger", "Charlie", null, null);
 
-            // Proposal binds capAlice
-            VisionNotificationListener.setLatestReplyCapabilityForTesting(capAlice);
-            VisionNotificationListener.NotificationReplyCapability boundCap = VisionNotificationListener.getLatestReplyCapability();
-            assertCondition(boundCap == capAlice, "Bound capability is capAlice at proposal");
+        // Proposal binds cap1
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
+        VisionNotificationListener.NotificationReplyCapability boundCap = VisionNotificationListener.getLatestReplyCapability();
 
-            // Incoming notification from Bob replaces active capability
-            VisionNotificationListener.setLatestReplyCapabilityForTesting(capBob);
+        // Notification dismissed/cleared
+        VisionNotificationListener.clearLatestNotification();
 
-            // User taps Allow on dialog that was bound to capAlice
-            VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(null, boundCap, "Approved reply text");
-            assertCondition(result == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, "TOCTOU replaced capability rejected as STALE_OR_REMOVED");
+        // Approval attempts dispatch on cleared capability
+        VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(null, boundCap, "Reply text");
+        assertEquals("Dismissed notification rejected as STALE_OR_REMOVED", VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, result);
 
-            // Same chat updated with new capability instance
-            VisionNotificationListener.NotificationReplyCapability capAliceNew =
-                    new VisionNotificationListener.NotificationReplyCapability("key_alice", "com.whatsapp", "Alice", null, null);
-            VisionNotificationListener.setLatestReplyCapabilityForTesting(capAliceNew);
-            VisionNotificationListener.ReplyResult resultNew = VisionNotificationListener.sendBoundReply(null, boundCap, "Approved reply text");
-            assertCondition(resultNew == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, "Replaced instance rejected as STALE_OR_REMOVED");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 11 FAILED: " + t.getMessage());
-            failed++;
-        }
+        // Invalid arguments test
+        assertEquals("null cap returns INVALID_ARGUMENTS", VisionNotificationListener.ReplyResult.INVALID_ARGUMENTS, VisionNotificationListener.sendBoundReply(null, null, "text"));
+        VisionNotificationListener.NotificationReplyCapability emptyKeyCap =
+                new VisionNotificationListener.NotificationReplyCapability("", "com.whatsapp", "User", null, null);
+        assertEquals("empty key cap returns INVALID_ARGUMENTS", VisionNotificationListener.ReplyResult.INVALID_ARGUMENTS, VisionNotificationListener.sendBoundReply(null, emptyKeyCap, "text"));
+    }
 
-        // Test 12: Notification removal / stale key dispatch prevention
-        try {
-            VisionNotificationListener.NotificationReplyCapability cap1 =
-                    new VisionNotificationListener.NotificationReplyCapability("key_dismiss", "org.telegram.messenger", "Charlie", null, null);
+    // Test 13: Capability active match verification and bound lifecycle flow
+    @Test
+    public void test13_capabilityActiveMatchAndLifecycle() {
+        VisionNotificationListener.NotificationReplyCapability cap1 =
+                new VisionNotificationListener.NotificationReplyCapability("key_active", "com.whatsapp", "David", null, null);
+        VisionNotificationListener.NotificationReplyCapability cap2 =
+                new VisionNotificationListener.NotificationReplyCapability("key_other", "com.whatsapp", "Eve", null, null);
 
-            // Proposal binds cap1
-            VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
-            VisionNotificationListener.NotificationReplyCapability boundCap = VisionNotificationListener.getLatestReplyCapability();
+        VisionNotificationListener.clearLatestNotification();
+        assertFalse("cap1 is inactive when empty", VisionNotificationListener.isCapabilityActive(cap1));
 
-            // Notification dismissed/cleared
-            VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
+        assertTrue("cap1 is active when set", VisionNotificationListener.isCapabilityActive(cap1));
+        assertFalse("cap2 is inactive", VisionNotificationListener.isCapabilityActive(cap2));
+        assertFalse("null is inactive", VisionNotificationListener.isCapabilityActive(null));
 
-            // Approval attempts dispatch on cleared capability
-            VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(null, boundCap, "Reply text");
-            assertCondition(result == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED, "Dismissed notification rejected as STALE_OR_REMOVED");
+        // Source name resolution
+        assertEquals("com.whatsapp -> WhatsApp", "WhatsApp", VisionNotificationListener.resolveSourceName("com.whatsapp"));
+        assertEquals("com.whatsapp.w4b -> WhatsApp", "WhatsApp", VisionNotificationListener.resolveSourceName("com.whatsapp.w4b"));
+        assertEquals("org.telegram.messenger -> Telegram", "Telegram", VisionNotificationListener.resolveSourceName("org.telegram.messenger"));
+        assertEquals("com.google.android.gm -> Gmail", "Gmail", VisionNotificationListener.resolveSourceName("com.google.android.gm"));
+        assertEquals("com.google.android.calendar -> Calendar", "Calendar", VisionNotificationListener.resolveSourceName("com.google.android.calendar"));
+        assertEquals("Google Messages -> Messages", "Messages", VisionNotificationListener.resolveSourceName("com.google.android.apps.messaging"));
+        assertEquals("AOSP Messages -> Messages", "Messages", VisionNotificationListener.resolveSourceName("com.android.messaging"));
+        assertEquals("unknown.pkg -> Notification", "Notification", VisionNotificationListener.resolveSourceName("unknown.pkg"));
+    }
 
-            // Invalid arguments test
-            assertCondition(VisionNotificationListener.sendBoundReply(null, null, "text") == VisionNotificationListener.ReplyResult.INVALID_ARGUMENTS, "null cap returns INVALID_ARGUMENTS");
-            VisionNotificationListener.NotificationReplyCapability emptyKeyCap =
-                    new VisionNotificationListener.NotificationReplyCapability("", "com.whatsapp", "User", null, null);
-            assertCondition(VisionNotificationListener.sendBoundReply(null, emptyKeyCap, "text") == VisionNotificationListener.ReplyResult.INVALID_ARGUMENTS, "empty key cap returns INVALID_ARGUMENTS");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 12 FAILED: " + t.getMessage());
-            failed++;
-        }
+    // Test 14: Flag filtering logic (N9 group-summary with reply action accepted)
+    @Test
+    public void test14_flagFilteringLogic() {
+        // N9: Group summary without reply -> ignored; group summary with reply -> accepted
+        assertTrue("FLAG_GROUP_SUMMARY without reply -> ignored", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_GROUP_SUMMARY, false));
+        assertFalse("FLAG_GROUP_SUMMARY with reply -> accepted (N9)", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_GROUP_SUMMARY, true));
 
-        // Test 13: Capability active match verification and bound lifecycle flow
-        try {
-            VisionNotificationListener.NotificationReplyCapability cap1 =
-                    new VisionNotificationListener.NotificationReplyCapability("key_active", "com.whatsapp", "David", null, null);
-            VisionNotificationListener.NotificationReplyCapability cap2 =
-                    new VisionNotificationListener.NotificationReplyCapability("key_other", "com.whatsapp", "Eve", null, null);
+        // Ongoing event / Foreground service without reply action -> ignored
+        assertTrue("FLAG_ONGOING_EVENT without reply -> ignored", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT, false));
+        assertTrue("FLAG_FOREGROUND_SERVICE without reply -> ignored", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_FOREGROUND_SERVICE, false));
+        assertTrue("Ongoing+FG without reply -> ignored", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE, false));
 
-            VisionNotificationListener.clearLatestNotification();
-            assertCondition(!VisionNotificationListener.isCapabilityActive(cap1), "cap1 is inactive when empty");
+        // Ongoing event / Foreground service WITH reply action -> NOT ignored
+        assertFalse("FLAG_ONGOING_EVENT with reply -> accepted", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT, true));
+        assertFalse("FLAG_FOREGROUND_SERVICE with reply -> accepted", VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_FOREGROUND_SERVICE, true));
 
-            VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
-            assertCondition(VisionNotificationListener.isCapabilityActive(cap1), "cap1 is active when set");
-            assertCondition(!VisionNotificationListener.isCapabilityActive(cap2), "cap2 is inactive");
-            assertCondition(!VisionNotificationListener.isCapabilityActive(null), "null is inactive");
+        // Normal notification (flags = 0) -> NOT ignored
+        assertFalse("Standard notification -> accepted", VisionNotificationListener.shouldIgnoreNotification(0, false));
+        assertFalse("Standard notification with reply -> accepted", VisionNotificationListener.shouldIgnoreNotification(0, true));
+    }
 
-            // Source name resolution
-            assertCondition(VisionNotificationListener.resolveSourceName("com.whatsapp").equals("WhatsApp"), "com.whatsapp -> WhatsApp");
-            assertCondition(VisionNotificationListener.resolveSourceName("com.whatsapp.w4b").equals("WhatsApp"), "com.whatsapp.w4b -> WhatsApp");
-            assertCondition(VisionNotificationListener.resolveSourceName("org.telegram.messenger").equals("Telegram"), "org.telegram.messenger -> Telegram");
-            assertCondition(VisionNotificationListener.resolveSourceName("com.google.android.gm").equals("Gmail"), "com.google.android.gm -> Gmail");
-            assertCondition(VisionNotificationListener.resolveSourceName("com.google.android.calendar").equals("Calendar"), "com.google.android.calendar -> Calendar");
-            assertCondition(VisionNotificationListener.resolveSourceName("com.google.android.apps.messaging").equals("Messages"), "Google Messages -> Messages");
-            assertCondition(VisionNotificationListener.resolveSourceName("com.android.messaging").equals("Messages"), "AOSP Messages -> Messages");
-            assertCondition(VisionNotificationListener.resolveSourceName("unknown.pkg").equals("Notification"), "unknown.pkg -> Notification");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 13 FAILED: " + t.getMessage());
-            failed++;
-        }
+    // Test 15: Risk policy tier verification (N33 fail-closed policy)
+    @Test
+    public void test15_riskPolicyTierVerification() {
+        assertFalse("OPEN_APP requiresConfirmation == false", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.OPEN_APP));
+        assertFalse("READ_NOTIFICATION requiresConfirmation == false", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.READ_NOTIFICATION));
+        assertTrue("UNKNOWN requiresConfirmation == true under fail-closed (N33)", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.UNKNOWN));
+        assertTrue("null requiresConfirmation == true under fail-closed (N33)", VisionRiskPolicy.requiresConfirmation(null));
 
-        // Test 14: F1 Flag filtering logic (shouldIgnoreNotification pure helper)
-        try {
-            // Group summary is always ignored regardless of reply action
-            assertCondition(VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_GROUP_SUMMARY, false), "FLAG_GROUP_SUMMARY without reply -> ignored");
-            assertCondition(VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_GROUP_SUMMARY, true), "FLAG_GROUP_SUMMARY with reply -> ignored");
+        assertTrue("REPLY_NOTIFICATION requiresConfirmation == true", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.REPLY_NOTIFICATION));
 
-            // Ongoing event / Foreground service without reply action -> ignored
-            assertCondition(VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT, false), "FLAG_ONGOING_EVENT without reply -> ignored");
-            assertCondition(VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_FOREGROUND_SERVICE, false), "FLAG_FOREGROUND_SERVICE without reply -> ignored");
-            assertCondition(VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE, false), "Ongoing+FG without reply -> ignored");
-
-            // Ongoing event / Foreground service WITH reply action -> NOT ignored
-            assertCondition(!VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT, true), "FLAG_ONGOING_EVENT with reply -> accepted");
-            assertCondition(!VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_FOREGROUND_SERVICE, true), "FLAG_FOREGROUND_SERVICE with reply -> accepted");
-
-            // Normal notification (flags = 0) -> NOT ignored
-            assertCondition(!VisionNotificationListener.shouldIgnoreNotification(0, false), "Standard notification -> accepted");
-            assertCondition(!VisionNotificationListener.shouldIgnoreNotification(0, true), "Standard notification with reply -> accepted");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 14 FAILED: " + t.getMessage());
-            failed++;
-        }
-
-        // Test 15: Risk policy tier verification (VisionRiskPolicy)
-        try {
-            assertCondition(!VisionRiskPolicy.requiresConfirmation(VisionAction.Type.OPEN_APP), "OPEN_APP requiresConfirmation == false");
-            assertCondition(!VisionRiskPolicy.requiresConfirmation(VisionAction.Type.READ_NOTIFICATION), "READ_NOTIFICATION requiresConfirmation == false");
-            assertCondition(!VisionRiskPolicy.requiresConfirmation(VisionAction.Type.UNKNOWN), "UNKNOWN requiresConfirmation == false");
-            assertCondition(!VisionRiskPolicy.requiresConfirmation(null), "null requiresConfirmation == false");
-
-            assertCondition(VisionRiskPolicy.requiresConfirmation(VisionAction.Type.REPLY_NOTIFICATION), "REPLY_NOTIFICATION requiresConfirmation == true");
-
-            assertCondition(VisionRiskPolicy.getRiskTier(VisionAction.Type.OPEN_APP) == VisionRiskPolicy.RiskTier.SAFE, "OPEN_APP is SAFE tier");
-            assertCondition(VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_NOTIFICATION) == VisionRiskPolicy.RiskTier.SAFE, "READ_NOTIFICATION is SAFE tier");
-            assertCondition(VisionRiskPolicy.getRiskTier(VisionAction.Type.REPLY_NOTIFICATION) == VisionRiskPolicy.RiskTier.CONFIRMED, "REPLY_NOTIFICATION is CONFIRMED tier");
-            passed++;
-        } catch (Throwable t) {
-            System.err.println("Test 15 FAILED: " + t.getMessage());
-            failed++;
-        }
-
-        System.out.println("Tests passed: " + passed + ", failed: " + failed);
-        if (failed > 0) {
-            System.exit(1);
-        }
+        assertEquals("OPEN_APP is SAFE tier", VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.OPEN_APP));
+        assertEquals("READ_NOTIFICATION is SAFE tier", VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_NOTIFICATION));
+        assertEquals("REPLY_NOTIFICATION is CONFIRMED tier", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(VisionAction.Type.REPLY_NOTIFICATION));
+        assertEquals("UNKNOWN is CONFIRMED tier under fail-closed (N33)", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(VisionAction.Type.UNKNOWN));
+        assertEquals("null is CONFIRMED tier under fail-closed (N33)", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(null));
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {
         VisionAction action = VisionActionParser.parse(command);
-        assertCondition(action.type == VisionAction.Type.REPLY_NOTIFICATION, "Expected REPLY_NOTIFICATION for: " + command);
-        assertCondition(action.target.equals(expectedTarget), "Expected target \"" + expectedTarget + "\" but got \"" + action.target + "\" for: " + command);
-        assertCondition(action.replyText.equals(expectedText), "Expected replyText \"" + expectedText + "\" but got \"" + action.replyText + "\" for: " + command);
+        assertEquals("Expected REPLY_NOTIFICATION for: " + command, VisionAction.Type.REPLY_NOTIFICATION, action.type);
+        assertEquals("Expected target \"" + expectedTarget + "\" for: " + command, expectedTarget, action.target);
+        assertEquals("Expected replyText \"" + expectedText + "\" for: " + command, expectedText, action.replyText);
     }
 
     private static void assertAppLaunch(String command, String expectedTarget) {
         VisionAction action = VisionActionParser.parse(command);
-        assertCondition(action.type == VisionAction.Type.OPEN_APP, "Expected OPEN_APP for: " + command);
-        assertCondition(action.target.equals(expectedTarget), "Expected target \"" + expectedTarget + "\" but got \"" + action.target + "\" for: " + command);
-    }
-
-    private static void assertCondition(boolean condition, String message) {
-        if (!condition) {
-            throw new AssertionError("Assertion failed: " + message);
-        }
+        assertEquals("Expected OPEN_APP for: " + command, VisionAction.Type.OPEN_APP, action.type);
+        assertEquals("Expected target \"" + expectedTarget + "\" for: " + command, expectedTarget, action.target);
     }
 }
