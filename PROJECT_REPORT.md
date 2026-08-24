@@ -19,8 +19,8 @@ In v0.5.1, two major milestones and critical audit remediations were accomplishe
    - **N9 (MED):** Modified group-summary handling so that `FLAG_GROUP_SUMMARY` notifications carrying a direct `RemoteInput` reply action are accepted rather than unconditionally dropped.
    - **N13 (MED):** Hardened reply regex token boundaries with `\b`, ensuring targets beginning with "to" (`reply to tokyo: hi`, `reply to Tom: hi`) and message bodies containing colons (`reply to Alice: hello: world`) route without target swallowing or truncation.
    - **N19 (MED):** Resolved activity recreation / configuration-change lifecycle vulnerability by tracking `activeDialog`, dismissing active dialogs in `onDestroy()`, and guarding all dialog callbacks with `isFinishing() || isDestroyed()` checks.
+   - **N28 (CRITICAL/PROCESS):** Identified that `VisionAppTest.java` was a plain `public static void main()` class with no JUnit `@Test` methods, causing Gradle to execute zero tests and rendering prior green test claims vacuous; fixed by `db085f3` converting the suite to 15 real JUnit 4 `@Test` methods (`tests=15 failures=0 errors=0`).
    - **N33 (MED):** Inverted `VisionRiskPolicy` from fail-open to **Fail-Closed**: only an explicit `SAFE_TYPES` EnumSet (`OPEN_APP`, `READ_NOTIFICATION`) auto-executes; all other types (including `UNKNOWN`, `null`, and unlisted future types) strictly require modal confirmation (`RiskTier.CONFIRMED`).
-   - **N28 (LOW/NOISE):** Evaluated and rejected as false-positive / speculative over-engineering noise.
 
 ---
 
@@ -32,7 +32,7 @@ In v0.5.1, two major milestones and critical audit remediations were accomplishe
 | **N9** | MEDIUM | Unconditional drop of `FLAG_GROUP_SUMMARY` drops actionable group reply capabilities | **FIXED:** Updated `shouldIgnoreNotification(flags, hasReplyAction)` to drop `FLAG_GROUP_SUMMARY` ONLY when `hasReplyAction == false`. Group summaries with direct `RemoteInput` actions are accepted and made available for reply. |
 | **N13** | MEDIUM | Potential target swallowing or body truncation for reply targets beginning with "to" or bodies with colons | **FIXED & TESTED:** Added `\b` word boundary to `REPLY_TO_PATTERN` (`reply\s+to\b...`). Verified empirically that `"reply to tokyo: hi"`, `"reply to Tom: hi"`, and `"reply to Alice: hello: world"` parse cleanly with correct target and body isolation, while `"reply to: text"` preserves default latest-notification routing. |
 | **N19** | MEDIUM (was HIGH) | `AlertDialog` callbacks firing against destroyed Activity after configuration / theme change | **FIXED:** `MainActivity` tracks `activeDialog`, cleanly dismisses it in `onDestroy()`, and guards all positive and negative dialog callbacks with `if (isFinishing() || isDestroyed()) return;`. Prevents leaked windows and ensures dead activities perform no actions. |
-| **N28** | LOW / NOISE | Speculative abstraction / architectural boilerplate suggestion | **REJECTED (NOISE):** Evaluated as speculative over-engineering that introduces unnecessary dependencies and layer indirection without addressing any concrete runtime defect. Rejected in accordance with the minimal, robust architectural design. |
+| **N28** | CRITICAL / PROCESS | `VisionAppTest.java` was a plain `public static void main()` class with no JUnit `@Test` methods; Gradle executed zero tests and prior green test claims were vacuous | **FIXED in `db085f3`:** Converted the deterministic test suite to 15 real JUnit 4 `@Test` methods using `testImplementation "junit:junit:4.13.2"`. Gradle `:app:testDebugUnitTest` now executes the full suite with XML evidence confirming `tests=15 failures=0 errors=0`. |
 | **N33** | MEDIUM | `VisionRiskPolicy` defaulted to SAFE for unlisted action types (fail-open) | **FIXED:** Inverted risk policy to **FAIL-CLOSED**. Replaced `CONFIRMED_TYPES` with an explicit `SAFE_TYPES` EnumSet containing only `OPEN_APP` and `READ_NOTIFICATION`. All other types (including `UNKNOWN`, `null`, and future actions) return `RiskTier.CONFIRMED` and `requiresConfirmation() == true`. |
 
 ---
@@ -50,9 +50,10 @@ Defined in `VisionRiskPolicy` and enforced via `VisionAction.requiresConfirmatio
 
 ## 4. Deterministic JUnit 4 Test Suite Conversion & Evidence
 
-The entire test suite (`com.vision.app.VisionAppTest`) has been converted to JUnit 4 `@Test` methods using `testImplementation "junit:junit:4.13.2"`:
+In v0.5.0, `VisionAppTest.java` was structured as a standalone `public static void main()` runner with zero JUnit `@Test` methods, which caused Gradle `:app:testDebugUnitTest` to execute zero tests (0 executed tests) despite passing builds. In v0.5.1, the entire test suite (`com.vision.app.VisionAppTest`) has been converted to JUnit 4 `@Test` methods using `testImplementation "junit:junit:4.13.2"`, resolving finding N28 (fixed in `db085f3`):
 
 ### Execution Summary from Gradle XML (`TEST-com.vision.app.VisionAppTest.xml`)
+- **Version Comparison:** v0.5.0 executed 0 tests -> v0.5.1 executes 15 tests
 - **Total Test Groups Executed:** 15
 - **Failures:** 0
 - **Errors:** 0
