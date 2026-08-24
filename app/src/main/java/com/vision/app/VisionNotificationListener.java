@@ -33,6 +33,20 @@ public class VisionNotificationListener extends NotificationListenerService {
         INVALID_ARGUMENTS
     }
 
+    /**
+     * Determines whether an incoming notification should be ignored based on flags and reply capability.
+     * F1: Skip group summaries completely. Skip ongoing/foreground noise ONLY when no direct reply action exists.
+     */
+    public static boolean shouldIgnoreNotification(int flags, boolean hasReplyAction) {
+        if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) {
+            return true;
+        }
+        if ((flags & (Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE)) != 0 && !hasReplyAction) {
+            return true;
+        }
+        return false;
+    }
+
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null || sbn.getPackageName() == null) return;
@@ -44,14 +58,21 @@ public class VisionNotificationListener extends NotificationListenerService {
         Bundle extras = notification.extras;
         String title = "";
         String text = "";
+        String conversationTitle = "";
+        String senderPerson = "";
 
         if (extras != null) {
+            CharSequence convTitleCs = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE);
+            if (convTitleCs != null && convTitleCs.length() > 0) {
+                conversationTitle = convTitleCs.toString().trim();
+            }
+
             CharSequence titleCs = extras.getCharSequence(Notification.EXTRA_TITLE);
             if (titleCs == null || titleCs.length() == 0) {
                 titleCs = extras.getCharSequence(Notification.EXTRA_TITLE_BIG);
             }
             if (titleCs == null || titleCs.length() == 0) {
-                titleCs = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE);
+                titleCs = convTitleCs;
             }
             title = value(titleCs);
 
@@ -70,6 +91,9 @@ public class VisionNotificationListener extends NotificationListenerService {
                             }
                             if (sender == null || sender.length() == 0) {
                                 sender = lastMsg.getSender();
+                            }
+                            if (sender != null && sender.length() > 0) {
+                                senderPerson = sender.toString().trim();
                             }
                             if (sender != null && sender.length() > 0 && !sender.toString().equals(title)) {
                                 text = sender + ": " + lastMsg.getText();
@@ -119,7 +143,6 @@ public class VisionNotificationListener extends NotificationListenerService {
         }
 
         String key = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
-        latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, sbn.getPostTime());
 
         // Extract RemoteInput reply action if present
         NotificationReplyCapability replyCap = null;
@@ -130,12 +153,15 @@ public class VisionNotificationListener extends NotificationListenerService {
                     if (remoteInputs != null && remoteInputs.length > 0) {
                         for (RemoteInput ri : remoteInputs) {
                             if (ri != null && ri.getResultKey() != null) {
+                                String senderOrTitle = !title.isEmpty() ? title : (!senderPerson.isEmpty() ? senderPerson : conversationTitle);
                                 replyCap = new NotificationReplyCapability(
                                         key,
                                         sbn.getPackageName(),
-                                        title,
+                                        senderOrTitle,
                                         act.actionIntent,
-                                        ri
+                                        ri,
+                                        conversationTitle,
+                                        senderPerson
                                 );
                                 break;
                             }
@@ -145,45 +171,57 @@ public class VisionNotificationListener extends NotificationListenerService {
                 if (replyCap != null) break;
             }
         }
-        latestReplyCapability = replyCap;
+
+        // F1: Check flag filtering before destroying valid in-memory snapshot or capability
+        if (shouldIgnoreNotification(notification.flags, replyCap != null)) {
+            return;
+        }
+
+        // F4: Synchronize binder-thread write to prevent race conditions with dispatch checks
+        synchronized (VisionNotificationListener.class) {
+            latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, sbn.getPostTime());
+            latestReplyCapability = replyCap;
+        }
     }
 
     @Override
     public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
         String removeKey = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
-        NotificationSnapshot current = latestNotification;
-        if (current != null && current.key.equals(removeKey)) {
-            latestNotification = null;
-        }
-        NotificationReplyCapability currentReply = latestReplyCapability;
-        if (currentReply != null && currentReply.key.equals(removeKey)) {
-            latestReplyCapability = null;
+        synchronized (VisionNotificationListener.class) {
+            NotificationSnapshot current = latestNotification;
+            if (current != null && current.key.equals(removeKey)) {
+                latestNotification = null;
+            }
+            NotificationReplyCapability currentReply = latestReplyCapability;
+            if (currentReply != null && currentReply.key.equals(removeKey)) {
+                latestReplyCapability = null;
+            }
         }
     }
 
-    public static NotificationSnapshot getLatestNotification() {
+    public static synchronized NotificationSnapshot getLatestNotification() {
         return latestNotification;
     }
 
-    public static NotificationReplyCapability getLatestReplyCapability() {
+    public static synchronized NotificationReplyCapability getLatestReplyCapability() {
         return latestReplyCapability;
     }
 
-    public static void clearLatestNotification() {
+    public static synchronized void clearLatestNotification() {
         latestNotification = null;
         latestReplyCapability = null;
     }
 
-    public static void setLatestNotificationForTesting(NotificationSnapshot snapshot) {
+    public static synchronized void setLatestNotificationForTesting(NotificationSnapshot snapshot) {
         latestNotification = snapshot;
     }
 
-    public static void setLatestReplyCapabilityForTesting(NotificationReplyCapability capability) {
+    public static synchronized void setLatestReplyCapabilityForTesting(NotificationReplyCapability capability) {
         latestReplyCapability = capability;
     }
 
-    public static boolean isCapabilityActive(NotificationReplyCapability capability) {
+    public static synchronized boolean isCapabilityActive(NotificationReplyCapability capability) {
         if (capability == null || capability.key.isEmpty()) {
             return false;
         }
@@ -236,6 +274,11 @@ public class VisionNotificationListener extends NotificationListenerService {
     }
 
     public static boolean validateTarget(String requestedTarget, String packageName, String sourceName, String senderOrTitle) {
+        return validateTarget(requestedTarget, packageName, sourceName, senderOrTitle, "", "");
+    }
+
+    public static boolean validateTarget(String requestedTarget, String packageName, String sourceName,
+                                          String senderOrTitle, String conversationTitle, String senderPerson) {
         if (requestedTarget == null) return true;
         String target = requestedTarget.trim();
         if (target.isEmpty()) return true;
@@ -247,37 +290,60 @@ public class VisionNotificationListener extends NotificationListenerService {
             return true;
         }
 
-        String normPkg = packageName != null ? packageName.trim().toLowerCase(Locale.US) : "";
+        String pkg = packageName != null ? packageName.trim() : "";
         String normSrc = sourceName != null ? sourceName.trim().toLowerCase(Locale.US) : "";
-        String normSender = senderOrTitle != null ? senderOrTitle.trim().toLowerCase(Locale.US) : "";
 
-        // 1. Match against app source / package
-        if (!normSrc.isEmpty() && normTarget.equals(normSrc)) return true;
-        if (!normPkg.isEmpty() && normPkg.contains(normTarget)) return true;
-        if (normTarget.equals("whatsapp") || normTarget.equals("whatsapp business") || normTarget.equals("wa")) {
-            if (normPkg.contains("whatsapp") || normSrc.contains("whatsapp")) return true;
+        // 1. Strict app matching against canonical source names and aliases (no generic substring on package name)
+        if (!normSrc.isEmpty() && normTarget.equals(normSrc)) {
+            return true;
         }
+
+        // WhatsApp aliases
+        if (normTarget.equals("whatsapp") || normTarget.equals("wa")) {
+            if ("com.whatsapp".equals(pkg) || "com.whatsapp.w4b".equals(pkg)) return true;
+        }
+        if (normTarget.equals("whatsapp business") || normTarget.equals("w4b")) {
+            if ("com.whatsapp.w4b".equals(pkg) || "com.whatsapp".equals(pkg)) return true;
+        }
+
+        // Telegram aliases
         if (normTarget.equals("telegram") || normTarget.equals("tg")) {
-            if (normPkg.contains("telegram") || normSrc.contains("telegram")) return true;
+            if ("org.telegram.messenger".equals(pkg)) return true;
         }
-        if (normTarget.equals("gmail") || normTarget.equals("mail") || normTarget.equals("email") || normTarget.equals("google mail")) {
-            if (normPkg.contains("gm") || normSrc.contains("gmail")) return true;
+
+        // Gmail aliases
+        if (normTarget.equals("gmail") || normTarget.equals("google mail") || normTarget.equals("mail") || normTarget.equals("email")) {
+            if ("com.google.android.gm".equals(pkg)) return true;
         }
+
+        // Messages aliases
         if (normTarget.equals("messages") || normTarget.equals("message") || normTarget.equals("sms") ||
                 normTarget.equals("google messages") || normTarget.equals("text")) {
-            if (normPkg.contains("messaging") || normSrc.contains("messages")) return true;
+            if ("com.google.android.apps.messaging".equals(pkg) || "com.android.messaging".equals(pkg)) return true;
         }
+
+        // Calendar aliases
         if (normTarget.equals("calendar") || normTarget.equals("google calendar")) {
-            if (normPkg.contains("calendar") || normSrc.contains("calendar")) return true;
+            if ("com.google.android.calendar".equals(pkg)) return true;
         }
 
-        // 2. Match against sender / title
-        if (!normSender.isEmpty()) {
-            if (normSender.equals(normTarget)) return true;
-            if (normTarget.length() >= 2 && normSender.contains(normTarget)) return true;
-            if (normSender.length() >= 2 && normTarget.contains(normSender)) return true;
-        }
+        // 2. Sender matching: exact full match or whole-token match against senderOrTitle, conversationTitle, senderPerson
+        if (matchSender(normTarget, senderOrTitle)) return true;
+        if (matchSender(normTarget, conversationTitle)) return true;
+        if (matchSender(normTarget, senderPerson)) return true;
 
+        return false;
+    }
+
+    private static boolean matchSender(String normTarget, String candidate) {
+        if (candidate == null) return false;
+        String normCandidate = candidate.trim().toLowerCase(Locale.US);
+        if (normCandidate.isEmpty()) return false;
+        if (normCandidate.equals(normTarget)) return true;
+        String[] tokens = normCandidate.split("\\s+");
+        for (String token : tokens) {
+            if (token.equals(normTarget)) return true;
+        }
         return false;
     }
 
@@ -315,14 +381,24 @@ public class VisionNotificationListener extends NotificationListenerService {
         public final String senderOrTitle;
         public final PendingIntent pendingIntent;
         public final RemoteInput remoteInput;
+        public final String conversationTitle;
+        public final String senderPerson;
 
         public NotificationReplyCapability(String key, String packageName, String senderOrTitle,
                                            PendingIntent pendingIntent, RemoteInput remoteInput) {
+            this(key, packageName, senderOrTitle, pendingIntent, remoteInput, "", "");
+        }
+
+        public NotificationReplyCapability(String key, String packageName, String senderOrTitle,
+                                           PendingIntent pendingIntent, RemoteInput remoteInput,
+                                           String conversationTitle, String senderPerson) {
             this.key = key != null ? key : "";
             this.packageName = packageName != null ? packageName : "";
             this.senderOrTitle = senderOrTitle != null ? senderOrTitle : "";
             this.pendingIntent = pendingIntent;
             this.remoteInput = remoteInput;
+            this.conversationTitle = conversationTitle != null ? conversationTitle : "";
+            this.senderPerson = senderPerson != null ? senderPerson : "";
         }
     }
 }
