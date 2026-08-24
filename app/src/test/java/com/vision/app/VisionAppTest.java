@@ -366,6 +366,76 @@ public class VisionAppTest {
         assertEquals("null is CONFIRMED tier under fail-closed (N33)", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(null));
     }
 
+    // Test 16: Multiline composer reply and command input preservation
+    @Test
+    public void test16_multilineReplyAndCommandParsing() {
+        // Preserves internal newlines in reply body with target
+        assertReply("reply to Alice:\nHello Alice,\nI will be there in 5 minutes.\nSee you soon!",
+                "Alice",
+                "Hello Alice,\nI will be there in 5 minutes.\nSee you soon!");
+
+        // Preserves internal newlines in reply body without target
+        assertReply("reply:\nLine 1\nLine 2\nLine 3",
+                "latest notification",
+                "Line 1\nLine 2\nLine 3");
+
+        // Preserves internal blank lines / paragraphs
+        assertReply("reply to:\nFirst paragraph.\n\nSecond paragraph.",
+                "latest notification",
+                "First paragraph.\n\nSecond paragraph.");
+
+        // Preserves multiline reply to contacts with multi-word names
+        assertReply("reply to Bob Smith:\nMeeting at 3 PM\nRoom 402",
+                "Bob Smith",
+                "Meeting at 3 PM\nRoom 402");
+
+        // Multiline open app command normalization
+        assertAppLaunch("open\nwhatsapp", "WhatsApp");
+        assertAppLaunch("launch\nwhatsapp business", "WhatsApp Business");
+
+        // Multiline read notification command normalization
+        VisionAction readAction = VisionActionParser.parse("read\nmy latest\nnotification");
+        assertEquals("Multiline read command parsed as READ_NOTIFICATION", VisionAction.Type.READ_NOTIFICATION, readAction.type);
+
+        // Multiline without colon (REPLY_NO_TO_PATTERN)
+        assertReply("send reply\nMultiline message\nwithout colon",
+                "latest notification",
+                "Multiline message\nwithout colon");
+    }
+
+    // Test 17: Jarvis-style conversational reply confirmation formatting and destination display
+    @Test
+    public void test17_jarvisStyleReplyConfirmationFormatting() {
+        // Dialog Title
+        assertEquals("Dialog title is respectful Jarvis request",
+                "Tony, may I send this message?",
+                VisionRiskPolicy.formatReplyConfirmationTitle());
+
+        // Dialog Message with recipient and single-line text
+        String msg1 = VisionRiskPolicy.formatReplyConfirmationMessage("WhatsApp (Alice)", "I will be there soon");
+        String expected1 = "I am ready to send this message to WhatsApp (Alice):\n\n\"I will be there soon\"\n\nMay I proceed?";
+        assertEquals("Confirmation message matches Jarvis specification", expected1, msg1);
+
+        // Dialog Message with multiline text
+        String msg2 = VisionRiskPolicy.formatReplyConfirmationMessage("Telegram (Dev Team - Bob)", "Line 1\nLine 2");
+        String expected2 = "I am ready to send this message to Telegram (Dev Team - Bob):\n\n\"Line 1\nLine 2\"\n\nMay I proceed?";
+        assertEquals("Confirmation message handles multiline text", expected2, msg2);
+
+        // Dialog Message null fallback safety
+        String msgNull = VisionRiskPolicy.formatReplyConfirmationMessage(null, null);
+        String expectedNull = "I am ready to send this message to the recipient:\n\n\"\"\n\nMay I proceed?";
+        assertEquals("Confirmation message handles null inputs safely", expectedNull, msgNull);
+
+        // Destination display formatting helper
+        assertEquals("WhatsApp (Alice)", VisionNotificationListener.formatDestinationDisplay("WhatsApp", "Alice", "", ""));
+        assertEquals("WhatsApp", VisionNotificationListener.formatDestinationDisplay("WhatsApp", "WhatsApp", "", ""));
+        assertEquals("WhatsApp (Dev Team - Alice)", VisionNotificationListener.formatDestinationDisplay("WhatsApp", "Dev Team", "Dev Team", "Alice"));
+        assertEquals("Telegram (Group - Charlie)", VisionNotificationListener.formatDestinationDisplay("Telegram", "", "Group", "Charlie"));
+        assertEquals("Telegram", VisionNotificationListener.formatDestinationDisplay("Telegram", "", "", ""));
+        assertEquals("the latest notification", VisionNotificationListener.formatDestinationDisplay(null, (VisionNotificationListener.NotificationReplyCapability) null));
+        assertEquals("Notification", VisionNotificationListener.formatDestinationDisplay(null, null, null, null));
+    }
+
     private static void assertReply(String command, String expectedTarget, String expectedText) {
         VisionAction action = VisionActionParser.parse(command);
         assertEquals("Expected REPLY_NOTIFICATION for: " + command, VisionAction.Type.REPLY_NOTIFICATION, action.type);

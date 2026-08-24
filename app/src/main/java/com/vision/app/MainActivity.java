@@ -9,10 +9,12 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
 import android.view.View;
+import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -122,16 +124,32 @@ public class MainActivity extends Activity {
         LinearLayout composer = row();
         composer.setPadding(dp(14), dp(8), dp(8), dp(8));
         composer.setBackground(round(PANEL, 18));
+        composer.setGravity(Gravity.BOTTOM);
         EditText input = new EditText(this);
-        input.setHint("Ask Vision anything...");
+        input.setHint("Ask Vision anything... (Enter for newline)");
         input.setHintTextColor(MUTED);
         input.setTextColor(TEXT);
         input.setTextSize(14);
-        input.setSingleLine(true);
+        input.setSingleLine(false);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setImeOptions(EditorInfo.IME_ACTION_NONE | EditorInfo.IME_FLAG_NO_ENTER_ACTION);
+        input.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        input.setMinLines(1);
+        input.setMaxLines(5);
+        input.setVerticalScrollBarEnabled(true);
+        input.setMovementMethod(new ScrollingMovementMethod());
         input.setBackgroundColor(Color.TRANSPARENT);
-        composer.addView(input, new LinearLayout.LayoutParams(0, dp(48), 1));
+        input.setPadding(dp(4), dp(6), dp(8), dp(6));
+        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        inputParams.gravity = Gravity.CENTER_VERTICAL;
+        composer.addView(input, inputParams);
         Button send = actionButton("↑");
-        composer.addView(send, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+        sendParams.gravity = Gravity.BOTTOM;
+        sendParams.setMargins(dp(4), 0, 0, dp(2));
+        composer.addView(send, sendParams);
         send.setOnClickListener(v -> {
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
@@ -227,8 +245,8 @@ public class MainActivity extends Activity {
         final VisionNotificationListener.NotificationReplyCapability boundCap = replyCap;
         String destDisplay = formatDestinationDisplay(source, replyCap);
 
-        String dialogTitle = "Vision wants to send a reply";
-        String dialogMessage = "Action: Reply to " + destDisplay + "\n\nReply text:\n\"" + action.replyText + "\"\n\nAllow Vision to send this reply?";
+        String dialogTitle = VisionRiskPolicy.formatReplyConfirmationTitle();
+        String dialogMessage = VisionRiskPolicy.formatReplyConfirmationMessage(destDisplay, action.replyText);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(dialogTitle)
@@ -429,15 +447,7 @@ public class MainActivity extends Activity {
     }
 
     private String formatDestinationDisplay(String source, VisionNotificationListener.NotificationReplyCapability cap) {
-        if (cap == null) return source;
-        if (!cap.conversationTitle.isEmpty() && !cap.senderPerson.isEmpty() && !cap.conversationTitle.equalsIgnoreCase(cap.senderPerson)) {
-            return source + " (" + cap.conversationTitle + " - " + cap.senderPerson + ")";
-        }
-        String recipient = !cap.senderOrTitle.isEmpty() ? cap.senderOrTitle : (!cap.senderPerson.isEmpty() ? cap.senderPerson : cap.conversationTitle);
-        if (recipient.isEmpty() || recipient.equalsIgnoreCase(source)) {
-            return source;
-        }
-        return source + " (" + recipient + ")";
+        return VisionNotificationListener.formatDestinationDisplay(source, cap);
     }
 
     private String sourceName(String packageName) {

@@ -50,4 +50,14 @@ public final class VisionRiskPolicy {
     public static boolean requiresConfirmation(VisionAction.Type type) {
         return getRiskTier(type) == RiskTier.CONFIRMED;
     }
+
+    public static String formatReplyConfirmationTitle() {
+        return "Tony, may I send this message?";
+    }
+
+    public static String formatReplyConfirmationMessage(String destination, String replyText) {
+        String dest = (destination != null && !destination.trim().isEmpty()) ? destination.trim() : "the recipient";
+        String body = replyText != null ? replyText : "";
+        return "I am ready to send this message to " + dest + ":\n\n\"" + body + "\"\n\nMay I proceed?";
+    }
 }

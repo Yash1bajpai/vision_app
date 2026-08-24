@@ -268,6 +268,27 @@ public class VisionNotificationListener extends NotificationListenerService {
         return "Notification";
     }
 
+    public static String formatDestinationDisplay(String source, NotificationReplyCapability cap) {
+        if (cap == null) return source != null && !source.isEmpty() ? source : "the latest notification";
+        return formatDestinationDisplay(source, cap.senderOrTitle, cap.conversationTitle, cap.senderPerson);
+    }
+
+    public static String formatDestinationDisplay(String source, String senderOrTitle, String conversationTitle, String senderPerson) {
+        String src = (source != null && !source.isEmpty()) ? source : "Notification";
+        String sOrT = senderOrTitle != null ? senderOrTitle.trim() : "";
+        String convTitle = conversationTitle != null ? conversationTitle.trim() : "";
+        String senderP = senderPerson != null ? senderPerson.trim() : "";
+
+        if (!convTitle.isEmpty() && !senderP.isEmpty() && !convTitle.equalsIgnoreCase(senderP)) {
+            return src + " (" + convTitle + " - " + senderP + ")";
+        }
+        String recipient = !sOrT.isEmpty() ? sOrT : (!senderP.isEmpty() ? senderP : convTitle);
+        if (recipient.isEmpty() || recipient.equalsIgnoreCase(src)) {
+            return src;
+        }
+        return src + " (" + recipient + ")";
+    }
+
     public static boolean validateTarget(String requestedTarget, String packageName, String sourceName, String senderOrTitle) {
         return validateTarget(requestedTarget, packageName, sourceName, senderOrTitle, "", "");
     }
