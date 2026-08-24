@@ -2,27 +2,34 @@
 
 Vision is an offline-first Android assistant for the iQOO Z9x. The first release is a normal APK, designed around explicit user authorization and risk-tiered execution safety.
 
-## Risk-Tiered Confirmation Policy (v0.5.0)
+## Risk-Tiered Confirmation Policy (v0.5.1 — Inverted Fail-Closed)
 
 Vision eliminates unnecessary prompt fatigue while maintaining security: low-risk actions are authorized directly by the typed command itself, whereas high-risk external mutations strictly require explicit modal user confirmation immediately prior to dispatch.
+
+Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYPES` auto-execute without confirmation. Any unlisted, future, or unparsed action type defaults to requiring explicit user confirmation (`RiskTier.CONFIRMED`).
 
 | Risk Tier | Policy | Action Types | Execution Flow |
 |---|---|---|---|
 | **Tier SAFE** | Auto-execute immediately (NO modal dialog) | `OPEN_APP`, `READ_NOTIFICATION` | Typed command is direct intent. Executes immediately upon validation and outputs concise `SUCCEEDED` / `FAILED` status to the Recent Activity surface. |
-| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION` *(Active MVP)*<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING` | Proposal binds in-memory capability identity; modal dialog shows exact source, recipient, and payload; re-verifies active capability atomically before dispatch. Never auto-executed. |
+| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION` *(Active MVP)*<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Proposal binds in-memory capability identity; modal dialog shows exact source, recipient, and payload; re-verifies active capability atomically before dispatch. Never auto-executed. |
 
 ---
 
-## Phase 5.1 Hardened & Risk-Tiered Release (0.5.0)
+## Phase 5.2 Release & Audit Hardening (0.5.1)
 
-- **Risk-Tiered Execution Policy:** `VisionRiskPolicy` and `VisionAction.requiresConfirmation()` centralize action gating. `OPEN_APP` and `READ_NOTIFICATION` auto-execute cleanly without modal confirmation dialogs; `REPLY_NOTIFICATION` strictly preserves proposal-time capability binding and modal confirmation dialogs.
-- **Flag & Summary Filtering (F1):** `VisionNotificationListener` ignores group summaries (`FLAG_GROUP_SUMMARY`) and ongoing/foreground service noise (`FLAG_ONGOING_EVENT`, `FLAG_FOREGROUND_SERVICE`) lacking direct reply capabilities, preventing summaries from overwriting active message snapshots.
-- **Strict Canonical Target Validation (F2):** Target validation requires exact canonical alias equality per app (no loose package substring paths) and whole-token or exact full-name matching for senders. Cross-app composite targets fail closed.
-- **Reply Pattern Target Delimiter (F3 & F9):** When `to <target>` is specified, a colon delimiter (`:`) is strictly required before the reply body (`reply to <target>: <text>`), preventing multi-word contact names from splitting into body text. `reply to: <text>` routes to the latest notification.
-- **Binder-Thread Synchronization (F4):** All listener writes (`onNotificationPosted`, `onNotificationRemoved`) and dispatch checks (`sendBoundReply`) synchronize on the same class monitor lock, eliminating binder-dispatch TOCTOU races.
-- **WhatsApp Business Support (F5):** Parser generates distinct `"WhatsApp Business"` target for business/w4b requests. Launcher candidate resolution prioritizes `com.whatsapp.w4b` then `com.whatsapp`, while plain `"open whatsapp"` prioritizes `com.whatsapp`. Target validation seamlessly accepts either package.
-- **Parser Routing & Gerunds (F6):** `READ_NOTIFICATION` intent is evaluated prior to `OPEN_APP`, correctly routing gerund requests like `start reading my messages` to notification reading while keeping `open messages` and `open sms` intact.
-- **Group Chat Sender & Title Tracking (F7):** `NotificationReplyCapability` stores distinct `conversationTitle` and `senderPerson` metadata from `MessagingStyle` bundles, accepting either identifier in target validation.
+- **Real JUnit 4 Test Suite Execution (Task 1):** Full test suite converted from standalone main to JUnit 4 `@Test` methods with `testImplementation "junit:junit:4.13.2"`, producing real XML execution reports under `app/build/test-results/testDebugUnitTest/` with 15 test groups and 0 failures.
+- **Fail-Closed Risk Policy (N33):** Inverted `VisionRiskPolicy` to fail-closed with an explicit `SAFE_TYPES` EnumSet (`OPEN_APP`, `READ_NOTIFICATION`). All other current or future action types default to `RiskTier.CONFIRMED` requiring explicit modal confirmation.
+- **Atomic Filter & Write Synchronization (N2):** `VisionNotificationListener.onNotificationPosted` checks `shouldIgnoreNotification` inside the `synchronized (VisionNotificationListener.class)` block, ensuring flag filtering and snapshot/capability writes are atomic together.
+- **Replyable Group Summary Support (N9):** Group summary notifications (`FLAG_GROUP_SUMMARY`) are only dropped when they lack a `RemoteInput` reply action. Group summaries carrying direct reply capabilities are accepted.
+- **Hardened Reply Target Token Boundaries (N13):** Added `\b` word boundary to `REPLY_TO_PATTERN` so recipient names starting with "to" (e.g. Tokyo, Tom, Tony) and colons in message bodies (`reply to Alice: hello: world`) route cleanly without swallowing target tokens.
+- **AlertDialog Lifecycle & Memory Safety (N19):** `MainActivity` tracks `activeDialog`, dismisses dialogs cleanly in `onDestroy()`, and guards all positive/negative dialog callbacks with `isFinishing() || isDestroyed()` checks to prevent execution against destroyed activities.
+- **Flag & Summary Filtering (F1):** Filters background service noise lacking direct reply actions before modifying process snapshots.
+- **Strict Canonical Target Validation (F2):** Requires exact canonical alias equality per app and whole-token / full-name matching for senders.
+- **Reply Pattern Target Delimiter (F3 & F9):** When `to <target>` is specified, a colon delimiter (`:`) is strictly required before the reply body (`reply to <target>: <text>`). `reply to: <text>` routes to the latest notification.
+- **Binder-Thread Synchronization (F4):** All listener writes and dispatch checks synchronize on the same class monitor lock.
+- **WhatsApp Business Support (F5):** Distinct `"WhatsApp Business"` target handling and package priority resolution.
+- **Parser Routing & Gerunds (F6):** `READ_NOTIFICATION` intent is evaluated prior to `OPEN_APP`, correctly routing gerund requests like `start reading my messages`.
+- **Group Chat Sender & Title Tracking (F7):** `NotificationReplyCapability` stores distinct `conversationTitle` and `senderPerson` metadata from `MessagingStyle` bundles.
 - **Scrollable Activity Log (F8):** `activityText` is backed by `ScrollingMovementMethod` for reading long messages.
 - **Accurate Component Listener Check (F10):** `isNotificationAccessEnabled()` parses flattened `ComponentName` entries instead of raw substring matching.
 - **Clean Destination Formatting (F11):** Eliminates redundant `from WhatsApp (WhatsApp)` formatting when sender name equals the source application.
@@ -49,7 +56,7 @@ Vision eliminates unnecessary prompt fatigue while maintaining security: low-ris
 - `reply <message>` (e.g. `reply I'll be there soon`)
 - `reply: <message>` (e.g. `reply: Sounds great!`)
 - `reply to: <message>` (e.g. `reply to: Sounds great!`)
-- `reply to <target>: <message>` (e.g. `reply to WhatsApp: On my way!`, `reply to Alice: Yes, confirmed`, `reply to WhatsApp Business: Order ready`)
+- `reply to <target>: <message>` (e.g. `reply to WhatsApp: On my way!`, `reply to Alice: Yes, confirmed`, `reply to tokyo: hi`, `reply to WhatsApp Business: Order ready`)
 - `send reply <message>` (e.g. `send reply Confirmed`)
 - `answer <message>` (e.g. `answer Thank you`)
 
@@ -64,12 +71,11 @@ Vision eliminates unnecessary prompt fatigue while maintaining security: low-ris
 - Zero persistence: notifications and replies are held strictly in transient process memory
 - Zero accessibility, zero root, zero hidden APIs, and zero silent actions
 
-## Build
-
-Open the project in Android Studio or run it with a compatible Android Gradle Plugin toolchain:
+## Build & Test
 
 ```bash
-./gradlew :app:assembleDebug
+# Run real JUnit 4 unit tests and build debug APK offline
+/data/data/com.termux/files/home/gradle/gradle-8.7/bin/gradle --no-daemon --offline :app:testDebugUnitTest :app:assembleDebug
 ```
 
 The phone-local Termux toolchain uses Gradle 8.7, Android API 34, and an ARM64-native `aapt2` override.

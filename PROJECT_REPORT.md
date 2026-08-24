@@ -1,9 +1,9 @@
-# Vision Project Report — Phase 5.1 Hardened Audit Fixes & Risk-Tiered Confirmation Policy
+# Vision Project Report — Phase 5.2 Nemotron Audit Hardening & Real JUnit Test Conversion
 
 **Date:** 2026-08-24  
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)  
-**Current Version:** 0.5.0 (versionCode: 7, compileSdk: 34, targetSdk: 34, minSdk: 26)  
-**Prior Commits:** `ee7796a` (Phase 4 Hardening), `8bc9a78` (Phase 5 MVP), `e20f9d0` (Phase 5 TOCTOU Fix)  
+**Current Version:** 0.5.1 (versionCode: 8, compileSdk: 34, targetSdk: 34, minSdk: 26)  
+**Prior Commits:** `bebd52d` (v0.5.0 Release & Risk Policy), `a47bd6a` (F1-F11 Audit Fixes)  
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
 
 ---
@@ -12,92 +12,100 @@
 
 Vision is an offline-first Android assistant designed around zero silent actions, zero unapproved execution, and strict safety guardrails.
 
-In v0.5.0, two major enhancements were implemented:
-1. **Verified Audit Findings Fixed (F1–F11):** All verified defects from deep codebase audits were addressed, covering summary notification flag filtering, strict canonical target validation, reply colon delimiters, binder-thread synchronization, distinct WhatsApp Business routing, parser gerund handling, group chat metadata tracking, scrolling activity logs, component parsing for notification listener access, and clean destination display formatting.
-2. **New Risk-Tiered Confirmation Policy:** Replaced blanket confirmation prompting with an explicit, risk-tiered policy (`VisionRiskPolicy`). The typed command itself directly authorizes Tier SAFE operations (`OPEN_APP`, `READ_NOTIFICATION`) to auto-execute cleanly without modal dialog friction. Tier CONFIRMED operations (`REPLY_NOTIFICATION` and future destructive/external actions) strictly enforce proposal-time capability binding and modal confirmation dialogs immediately before dispatch.
+In v0.5.1, two major milestones and critical audit remediations were accomplished:
+1. **Real JUnit 4 Test Suite Execution (Task 1):** Converted the deterministic test suite to real JUnit 4 `@Test` methods with `testImplementation "junit:junit:4.13.2"`. Gradle `:app:testDebugUnitTest` now executes the full test suite and outputs valid XML test results (`TEST-com.vision.app.VisionAppTest.xml`) proving 15/15 test groups executed with 0 failures and 0 errors.
+2. **Second-Audit (Nemotron) Verified Fixes & Triage:**
+   - **N2 (MED):** Moved notification flag check inside the `synchronized (VisionNotificationListener.class)` block to make flag evaluation and snapshot/capability writes atomic against concurrent removals.
+   - **N9 (MED):** Modified group-summary handling so that `FLAG_GROUP_SUMMARY` notifications carrying a direct `RemoteInput` reply action are accepted rather than unconditionally dropped.
+   - **N13 (MED):** Hardened reply regex token boundaries with `\b`, ensuring targets beginning with "to" (`reply to tokyo: hi`, `reply to Tom: hi`) and message bodies containing colons (`reply to Alice: hello: world`) route without target swallowing or truncation.
+   - **N19 (MED):** Resolved activity recreation / configuration-change lifecycle vulnerability by tracking `activeDialog`, dismissing active dialogs in `onDestroy()`, and guarding all dialog callbacks with `isFinishing() || isDestroyed()` checks.
+   - **N33 (MED):** Inverted `VisionRiskPolicy` from fail-open to **Fail-Closed**: only an explicit `SAFE_TYPES` EnumSet (`OPEN_APP`, `READ_NOTIFICATION`) auto-executes; all other types (including `UNKNOWN`, `null`, and unlisted future types) strictly require modal confirmation (`RiskTier.CONFIRMED`).
+   - **N28 (LOW/NOISE):** Evaluated and rejected as false-positive / speculative over-engineering noise.
 
 ---
 
-## 2. Risk-Tiered Confirmation Policy Specification
+## 2. Nemotron Second-Audit Triage & Resolution Table
 
-The central risk policy is defined in `VisionRiskPolicy` and checked via `VisionAction.requiresConfirmation()`:
-
-| Risk Tier | Policy | Action Types | Behavior & Safety Mechanism |
+| ID | Severity | Finding Summary | Disposition & Resolution in v0.5.1 |
 |---|---|---|---|
-| **Tier SAFE** | Auto-execute immediately (NO dialog) | `OPEN_APP`, `READ_NOTIFICATION` | The user's explicit typed command authorizes the read-only or local app launch action. Executed immediately with status (`SUCCEEDED` / `FAILED`) displayed in `activityText`. |
-| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`<br>*(Documented future: `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`)* | High-risk external actions mutate device state or send communications. Strictly binds in-memory capability identity at proposal time, validates targets conservatively, requires explicit modal confirmation dialog showing exact source/recipient/payload, and re-verifies active capability atomically at dispatch. |
+| **N2** | MEDIUM | Check-then-act gap in `onNotificationPosted` between flag checking and synchronized state write | **FIXED:** Moved `shouldIgnoreNotification` check inside the `synchronized (VisionNotificationListener.class)` block, ensuring flag filtering and snapshot/reply-capability assignments occur atomically on the class monitor lock. |
+| **N9** | MEDIUM | Unconditional drop of `FLAG_GROUP_SUMMARY` drops actionable group reply capabilities | **FIXED:** Updated `shouldIgnoreNotification(flags, hasReplyAction)` to drop `FLAG_GROUP_SUMMARY` ONLY when `hasReplyAction == false`. Group summaries with direct `RemoteInput` actions are accepted and made available for reply. |
+| **N13** | MEDIUM | Potential target swallowing or body truncation for reply targets beginning with "to" or bodies with colons | **FIXED & TESTED:** Added `\b` word boundary to `REPLY_TO_PATTERN` (`reply\s+to\b...`). Verified empirically that `"reply to tokyo: hi"`, `"reply to Tom: hi"`, and `"reply to Alice: hello: world"` parse cleanly with correct target and body isolation, while `"reply to: text"` preserves default latest-notification routing. |
+| **N19** | MEDIUM (was HIGH) | `AlertDialog` callbacks firing against destroyed Activity after configuration / theme change | **FIXED:** `MainActivity` tracks `activeDialog`, cleanly dismisses it in `onDestroy()`, and guards all positive and negative dialog callbacks with `if (isFinishing() || isDestroyed()) return;`. Prevents leaked windows and ensures dead activities perform no actions. |
+| **N28** | LOW / NOISE | Speculative abstraction / architectural boilerplate suggestion | **REJECTED (NOISE):** Evaluated as speculative over-engineering that introduces unnecessary dependencies and layer indirection without addressing any concrete runtime defect. Rejected in accordance with the minimal, robust architectural design. |
+| **N33** | MEDIUM | `VisionRiskPolicy` defaulted to SAFE for unlisted action types (fail-open) | **FIXED:** Inverted risk policy to **FAIL-CLOSED**. Replaced `CONFIRMED_TYPES` with an explicit `SAFE_TYPES` EnumSet containing only `OPEN_APP` and `READ_NOTIFICATION`. All other types (including `UNKNOWN`, `null`, and future actions) return `RiskTier.CONFIRMED` and `requiresConfirmation() == true`. |
 
 ---
 
-## 3. Verified Audit Findings & Fix Mapping (F1–F11, F13)
+## 3. Inverted Fail-Closed Risk Policy Specification
 
-| ID | Severity | Finding Summary | Resolution in v0.5.0 |
+Defined in `VisionRiskPolicy` and enforced via `VisionAction.requiresConfirmation()`:
+
+| Risk Tier | Policy | Action Types | Safety Behavior |
 |---|---|---|---|
-| **F1** | HIGH | `VisionNotificationListener.onNotificationPosted` snapshot overwrite by summaries or background noise | Implemented `shouldIgnoreNotification(flags, hasReplyAction)` pure helper: drops notifications where `(flags & FLAG_GROUP_SUMMARY) != 0`, and drops `FLAG_ONGOING_EVENT` / `FLAG_FOREGROUND_SERVICE` noise lacking direct `RemoteInput` reply actions before modifying process snapshots. |
-| **F2** | HIGH | Loose `normPkg.contains(normTarget)` substring matching and bidirectional loose sender substring matching | Removed all package substring matching. Replaced with strict equality against canonical app aliases (`whatsapp`/`wa`, `telegram`/`tg`, `gmail`/`google mail`, `messages`/`sms`, `calendar`). Hardened sender matching to exact full-name or whole-token matching. Cross-app composite targets fail closed. |
-| **F3** | MED | `REPLY_PATTERN` silently split multi-word recipient names when missing delimiter | When `to <target>` is present, strictly requires a colon (`:`) delimiter before reply text (`reply to <target>: <text>`). Space-separated commands without colon (e.g. `reply to Bob Smith thanks`) fail safely as `UNKNOWN`. Space-separated `reply <text>` without `to` remains supported. |
-| **F4** | MED | Missing synchronization between listener binder callbacks and reply dispatch | Synchronized `onNotificationPosted`, `onNotificationRemoved`, and `sendBoundReply` on `VisionNotificationListener.class` monitor lock to eliminate binder-thread dispatch races. |
-| **F5** | MED | WhatsApp Business package priority and parser target distinction | Parser produces distinct `"WhatsApp Business"` target when command contains `business` or `w4b`. Candidate package resolution tries `com.whatsapp.w4b` first then `com.whatsapp` for `"WhatsApp Business"`, while `"WhatsApp"` prioritizes `com.whatsapp`. Target validation accepts either package for plain `"whatsapp"`. |
-| **F6** | MED | Parser verb order caused gerund commands to route to `OPEN_APP` | Reordered parser to evaluate `READ_NOTIFICATION` intent before `OPEN_APP`. Expanded read verb set to include `reading` and `checking`, correctly routing `start reading my messages` to notification reading while preserving `open messages` and `open sms`. |
-| **F7** | LOW | Group chat `MessagingStyle` collapsed sender and conversation title | Extended `NotificationReplyCapability` to store distinct `conversationTitle` and `senderPerson` metadata; `validateTarget` and dialog display accept and format either identifier. |
-| **F8** | LOW | Long notification content clipped in `MainActivity` | Attached `ScrollingMovementMethod` to `activityText` to enable smooth scrolling of long notification bodies. |
-| **F9** | LOW | Commands formatted as `reply to: <text>` failed | Added parser regex support for `reply to: <text>` (empty target resolving to latest notification). |
-| **F10** | LOW | `isNotificationAccessEnabled()` used raw substring matching | Replaced raw substring check with proper parsing of colon-delimited `ComponentName.unflattenFromString()` entries matching `getPackageName()`. |
-| **F11** | LOW | Redundant `from WhatsApp (WhatsApp)` formatting when sender name equaled source app | Updated `formatDestinationDisplay` to show single app name when sender is empty or equals the source name. |
-| **F13** | DOCS | Stale `auditreport.md` header | Added one-line note at the top of `auditreport.md` noting that v0.3.0 audit findings are superseded by `PROJECT_REPORT.md`. |
+| **Tier SAFE** | Auto-execute immediately (NO modal dialog) | `OPEN_APP`, `READ_NOTIFICATION` *(Explicitly enumerated in `SAFE_TYPES`)* | User's typed command authorizes the read-only or local app launch action directly. Executes immediately and updates `activityText` with `SUCCEEDED` / `FAILED`. |
+| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`<br>*Default fallback:* `UNKNOWN`, `null`, unlisted types<br>*(Documented future: `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`)* | High-risk external actions mutate device state or send communications. Strictly binds in-memory capability identity at proposal time, validates targets conservatively, requires explicit modal confirmation dialog showing exact source/recipient/payload, and re-verifies active capability atomically at dispatch. |
 
 ---
 
-## 4. Verification Evidence & Test Results
+## 4. Deterministic JUnit 4 Test Suite Conversion & Evidence
 
-### Deterministic JVM Unit Tests (`com.vision.app.VisionAppTest`)
-Executed all 15 deterministic test suites:
-- **Test 1:** Null, empty, and whitespace parser inputs -> PASSED
-- **Test 2:** Notification reading commands & gerund routing (`start reading my messages`) -> PASSED
-- **Test 3:** App launch commands (WhatsApp, WhatsApp Business, Telegram, Gmail, Messages, Calendar) -> PASSED
-- **Test 4:** Notification reply commands (colon requirement, `reply to:`, empty text safety, space-separated target rejection) -> PASSED
-- **Test 5:** Unknown/unsupported command safety -> PASSED
-- **Test 6:** `VisionAction` state transitions, labels, and Risk Policy tiering -> PASSED
-- **Test 7:** Notification package allowlist filtering -> PASSED
-- **Test 8:** Notification snapshot creation and key matching -> PASSED
-- **Test 9:** `NotificationReplyCapability` structure, group metadata (`conversationTitle`, `senderPerson`), & null safety -> PASSED
-- **Test 10:** Hardened target validation (strict canonical aliases, whole-token sender match, loose substring rejection, group chat validation) -> PASSED
-- **Test 11:** Notification replacement between proposal and approval (TOCTOU prevention) -> PASSED
-- **Test 12:** Notification removal / stale key dispatch prevention -> PASSED
-- **Test 13:** Capability active match verification and bound lifecycle flow -> PASSED
-- **Test 14:** F1 Flag filtering logic (`shouldIgnoreNotification` pure helper: summaries, ongoing/foreground noise) -> PASSED
-- **Test 15:** Risk policy tier verification (`VisionRiskPolicy` SAFE vs CONFIRMED, documented future types) -> PASSED
+The entire test suite (`com.vision.app.VisionAppTest`) has been converted to JUnit 4 `@Test` methods using `testImplementation "junit:junit:4.13.2"`:
 
-*Result: 15/15 test suites passed with 0 failures.*
+### Execution Summary from Gradle XML (`TEST-com.vision.app.VisionAppTest.xml`)
+- **Total Test Groups Executed:** 15
+- **Failures:** 0
+- **Errors:** 0
+- **Skipped:** 0
+- **Execution Mode:** Offline deterministic JVM unit tests (`:app:testDebugUnitTest --offline`)
 
-### Build & Package Validation
-1. **Compilation:** Built offline with Gradle 8.7 (`:app:testDebugUnitTest :app:assembleDebug --offline`).
-2. **ZIP Integrity:** `unzip -t app-debug.apk` -> No errors detected in compressed data (META-INF, classes.dex, classes2.dex, AndroidManifest.xml, resources.arsc).
+### Test Case Breakdown
+1. `test01_nullAndEmptyParserInputs`: Null, empty string, and whitespace input safety.
+2. `test02_notificationReadingRequests`: 15 natural variations of read requests including gerund routing (`start reading my messages`).
+3. `test03_appLaunchingRequests`: Launch commands for WhatsApp, WhatsApp Business (`w4b`), Telegram, Gmail, Messages, Calendar.
+4. `test04_notificationReplyRequests`: Reply colon syntax (`reply to <target>: <text>`), N13 word boundaries (`tokyo`, `Tom`, `tony`), colon-in-body handling, and rejection of space-separated missing-colon commands.
+5. `test05_unrecognizedRequests`: Unknown command routing safety.
+6. `test06_actionStateMachineAndRiskPolicy`: State transitions (`PROPOSED` -> `APPROVED` -> `RUNNING` -> `SUCCEEDED`), action labels, and N33 fail-closed confirmation requirements.
+7. `test07_notificationPackageAllowlist`: Allowlisted messaging apps vs rejected untrusted packages.
+8. `test08_notificationSnapshotCreationAndKeyMatching`: In-memory notification snapshot fields and null safety.
+9. `test09_replyCapabilityStructureAndSafety`: `NotificationReplyCapability` group chat metadata (`conversationTitle`, `senderPerson`) and null intent protection.
+10. `test10_targetValidationHardening`: Strict canonical app alias matching, whole-token sender matching, loose substring rejection, and group member validation.
+11. `test11_notificationReplacementToctouRace`: Replaced notification capability rejected as `STALE_OR_REMOVED` upon approval.
+12. `test12_notificationRemovalStaleKeyDispatch`: Dismissed notification capability rejected as `STALE_OR_REMOVED`, invalid arguments guarded.
+13. `test13_capabilityActiveMatchAndLifecycle`: Capability active matching and package source name resolution.
+14. `test14_flagFilteringLogic`: Pure helper flag filtering verifying N9 group summary acceptance with reply actions, ongoing/foreground service filtering, and standard notification acceptance.
+15. `test15_riskPolicyTierVerification`: Comprehensive N33 fail-closed verification (`SAFE_TYPES` for `OPEN_APP`/`READ_NOTIFICATION`, `CONFIRMED` for `REPLY_NOTIFICATION`, `UNKNOWN`, and `null`).
+
+---
+
+## 5. Build, Packaging & Verification
+
+1. **Compilation:** Built completely offline with Gradle 8.7 (`:app:testDebugUnitTest :app:assembleDebug --offline`).
+2. **ZIP Integrity:** `unzip -t app-debug.apk` -> Clean (no CRC errors, valid DEX archives and resources).
 3. **Signature Verification:** `apksigner verify --verbose` -> Verified using APK Signature Scheme v2 (1 signer).
-4. **Metadata & Manifest Tree:**
-   - Package: `com.vision.app`
-   - Version Code: `7`
-   - Version Name: `0.5.0`
+4. **Package Metadata:**
+   - Application ID: `com.vision.app`
+   - Version Code: `8`
+   - Version Name: `0.5.1`
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
-   - Declared Queries: `com.whatsapp`, `com.whatsapp.w4b`, `org.telegram.messenger`, `com.google.android.gm`, `com.google.android.apps.messaging`, `com.android.messaging`, `com.google.android.calendar`
-5. **Deployment:** APK copied to `/storage/emulated/0/Download/Vision-debug.apk` (SHA-256: `44e92dccfac18e4b4441482ce3f7f73a93303c9ef5650d6484f91b39956fe7cd`).
+5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk` (SHA-256: `21882edd2851f3575723e8fffdfe5de6b8cf34052509592adf1c2f16a49c0267`).
 
 ---
 
-## 5. Residual Risks & Live Device Verification Checklist
+## 6. Live Device Verification Checklist
 
-The following hardware-dependent paths must be tested on the physical device:
-1. **Tier SAFE Auto-Execution:**
-   - Verify typing `open whatsapp` immediately launches WhatsApp without showing any confirmation dialog.
-   - Verify typing `read notification` immediately renders the latest notification content into Recent Activity without showing any confirmation dialog.
-   - Verify clicking the UI button `Read latest notification` immediately renders the latest notification without showing a confirmation dialog.
-2. **Tier CONFIRMED Reply Modal Flow:**
-   - Verify typing `reply to Alice: On my way` displays the modal dialog showing `Action: Reply to WhatsApp (Alice)` and payload `"On my way"`.
-   - Verify tapping `Deny` cancels the action with `DENIED` status.
-   - Verify tapping `Allow` dispatches the reply and shows `SUCCEEDED`.
-3. **F1 Summary Flag Filtering on Live WhatsApp Notifications:**
-   - Receive multiple messages in a chat to trigger Android's summary notification; verify that the individual message content is preserved and readable rather than replaced by "2 new messages".
-4. **F5 WhatsApp Business:**
-   - On a device with WhatsApp Business installed, verify typing `open whatsapp business` or `start w4b` prioritizes opening WhatsApp Business.
-5. **F7 Group Chat Reply:**
-   - Receive a message in a WhatsApp/Telegram group chat; verify typing `reply to <Group Name>: text` or `reply to <Sender Name>: text` validates successfully and formats the dialog as `WhatsApp (<Group Name> - <Sender Name>)`.
+The following hardware-dependent paths should be verified on the physical device:
+1. **Tier SAFE Immediate Execution:**
+   - Type `open telegram` -> Launches Telegram without showing confirmation dialog.
+   - Type `read notification` -> Immediately displays latest notification text in Recent Activity.
+2. **Tier CONFIRMED Modal Confirmation & Lifecycle (N19):**
+   - Type `reply to Alice: I'll be there soon` -> Displays modal confirmation dialog.
+   - Rotate screen / trigger configuration change -> Verify dialog dismisses or re-creates safely without crashing or executing stale callbacks.
+   - Tap `Allow` -> Dispatches reply via RemoteInput and displays `SUCCEEDED`.
+   - Tap `Deny` -> Halts execution with `DENIED` status.
+3. **N9 Group Summary Replies:**
+   - In a WhatsApp/Telegram group with multiple messages, verify direct reply works from the summary capability without dropping.
+4. **N13 Target Parsing:**
+   - Type `reply to tokyo: hi` -> Verifies dialog targets `tokyo` with message `"hi"`.
+   - Type `reply to: hello` -> Verifies dialog targets `latest notification` with message `"hello"`.
+
