@@ -8,7 +8,7 @@ import java.util.regex.Pattern;
 public final class VisionActionParser {
     // Requires a colon delimiter when 'to <target>' is specified (e.g. 'reply to Alice: text' or 'reply to: text')
     private static final Pattern REPLY_TO_PATTERN = Pattern.compile(
-            "^(?:please\\s+)?(?:send\\s+)?(?:reply|answer)\\s+to(?:\\s*:\\s*|\\s+([^:]+?)\\s*:\\s*)(.+)$",
+            "^(?:please\\s+)?(?:send\\s+)?(?:reply|answer)\\s+to\\b(?:\\s*:\\s*|\\s+([^:]+?)\\s*:\\s*)(.+)$",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL
     );
 

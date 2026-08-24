@@ -35,13 +35,10 @@ public class VisionNotificationListener extends NotificationListenerService {
 
     /**
      * Determines whether an incoming notification should be ignored based on flags and reply capability.
-     * F1: Skip group summaries completely. Skip ongoing/foreground noise ONLY when no direct reply action exists.
+     * N9: Skip group summaries ONLY when no direct reply action exists. Skip ongoing/foreground noise ONLY when no direct reply action exists.
      */
     public static boolean shouldIgnoreNotification(int flags, boolean hasReplyAction) {
-        if ((flags & Notification.FLAG_GROUP_SUMMARY) != 0) {
-            return true;
-        }
-        if ((flags & (Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE)) != 0 && !hasReplyAction) {
+        if ((flags & (Notification.FLAG_GROUP_SUMMARY | Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE)) != 0 && !hasReplyAction) {
             return true;
         }
         return false;
@@ -172,13 +169,11 @@ public class VisionNotificationListener extends NotificationListenerService {
             }
         }
 
-        // F1: Check flag filtering before destroying valid in-memory snapshot or capability
-        if (shouldIgnoreNotification(notification.flags, replyCap != null)) {
-            return;
-        }
-
-        // F4: Synchronize binder-thread write to prevent race conditions with dispatch checks
+        // F4/N2: Synchronize binder-thread check and write to prevent race conditions with removals and dispatch checks
         synchronized (VisionNotificationListener.class) {
+            if (shouldIgnoreNotification(notification.flags, replyCap != null)) {
+                return;
+            }
             latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, sbn.getPostTime());
             latestReplyCapability = replyCap;
         }

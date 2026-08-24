@@ -27,6 +27,7 @@ public class MainActivity extends Activity {
     private static final int MINT = Color.rgb(158, 230, 194);
     private TextView activityText;
     private TextView statusText;
+    private AlertDialog activeDialog;
 
     @Override
     public void onCreate(Bundle state) {
@@ -34,6 +35,25 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         buildScreen();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (activeDialog != null) {
+            if (activeDialog.isShowing()) {
+                activeDialog.dismiss();
+            }
+            activeDialog = null;
+        }
+    }
+
+    private void showManagedDialog(AlertDialog dialog) {
+        if (activeDialog != null && activeDialog.isShowing()) {
+            activeDialog.dismiss();
+        }
+        activeDialog = dialog;
+        activeDialog.show();
     }
 
     private void buildScreen() {
@@ -166,12 +186,17 @@ public class MainActivity extends Activity {
     private void handleReplyAction(VisionAction action, String command, EditText input) {
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
-            new AlertDialog.Builder(this)
+            AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Notification access needed")
                     .setMessage("Vision needs notification access to reply to notifications. Android will show exactly what access is being requested.")
                     .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Open settings", (dialog, which) -> openNotificationSettings())
-                    .show();
+                    .setPositiveButton("Open settings", (d, which) -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            openNotificationSettings();
+                        }
+                    })
+                    .create();
+            showManagedDialog(dialog);
             activityText.setText("FAILED\n\nNotification access is not enabled.");
             return;
         }
@@ -205,19 +230,23 @@ public class MainActivity extends Activity {
         String dialogTitle = "Vision wants to send a reply";
         String dialogMessage = "Action: Reply to " + destDisplay + "\n\nReply text:\n\"" + action.replyText + "\"\n\nAllow Vision to send this reply?";
 
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(dialogTitle)
                 .setMessage(dialogMessage)
-                .setNegativeButton("Deny", (dialog, which) -> {
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nReply to " + destDisplay + "\n\nVision stopped this action.");
                 })
-                .setPositiveButton("Allow", (dialog, which) -> {
+                .setPositiveButton("Allow", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.APPROVED;
                     executeBoundNotificationReply(action, boundCap, destDisplay);
                     input.setText("");
                     hideKeyboard(input);
-                }).show();
+                })
+                .create();
+        showManagedDialog(dialog);
     }
 
     private void executeBoundNotificationReply(VisionAction action, VisionNotificationListener.NotificationReplyCapability boundCap, String destDisplay) {
@@ -239,12 +268,17 @@ public class MainActivity extends Activity {
     private void handleReadAction(VisionAction action, String command, EditText input) {
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
-            new AlertDialog.Builder(this)
+            AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Notification access needed")
                     .setMessage("Vision needs notification access to read supported-app notifications. Android will show exactly what access is being requested.")
                     .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Open settings", (dialog, which) -> openNotificationSettings())
-                    .show();
+                    .setPositiveButton("Open settings", (d, which) -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            openNotificationSettings();
+                        }
+                    })
+                    .create();
+            showManagedDialog(dialog);
             activityText.setText("FAILED\n\nNotification access is not enabled.");
             return;
         }
@@ -297,12 +331,17 @@ public class MainActivity extends Activity {
 
     private void onReadNotificationButtonClicked() {
         if (!isNotificationAccessEnabled()) {
-            new AlertDialog.Builder(this)
+            AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Notification access needed")
                     .setMessage("Vision needs notification access to read supported-app notifications. Android will show exactly what access is being requested.")
                     .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Open settings", (dialog, which) -> openNotificationSettings())
-                    .show();
+                    .setPositiveButton("Open settings", (d, which) -> {
+                        if (!isFinishing() && !isDestroyed()) {
+                            openNotificationSettings();
+                        }
+                    })
+                    .create();
+            showManagedDialog(dialog);
             return;
         }
         VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
