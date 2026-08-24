@@ -46,4 +46,8 @@ public final class VisionAction {
         if (type == Type.OPEN_APP) return "Open " + target;
         return "Process this request locally";
     }
+
+    public boolean requiresConfirmation() {
+        return VisionRiskPolicy.requiresConfirmation(type);
+    }
 }

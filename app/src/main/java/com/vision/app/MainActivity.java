@@ -1,18 +1,19 @@
 package com.vision.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
-import android.view.Gravity;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.inputmethod.InputMethodManager;
-import android.content.Context;
-import android.content.Intent;
 import android.provider.Settings;
 import android.text.TextUtils;
-import android.app.AlertDialog;
+import android.text.method.ScrollingMovementMethod;
+import android.view.Gravity;
+import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -91,6 +92,7 @@ public class MainActivity extends Activity {
 
         root.addView(label("RECENT ACTIVITY", 11, MUTED));
         activityText = label("No activity yet\n\nYour actions will appear here after you start a conversation.", 14, MUTED);
+        activityText.setMovementMethod(new ScrollingMovementMethod());
         activityText.setGravity(Gravity.CENTER);
         activityText.setPadding(dp(20), dp(26), dp(20), dp(26));
         LinearLayout.LayoutParams activityParams = new LinearLayout.LayoutParams(-1, 0, 1);
@@ -142,11 +144,7 @@ public class MainActivity extends Activity {
     }
 
     private void updateAccessStatus() {
-        boolean enabled = false;
-        String listeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        if (!TextUtils.isEmpty(listeners)) {
-            enabled = listeners.contains(getPackageName());
-        }
+        boolean enabled = isNotificationAccessEnabled();
         statusText.setText(enabled
                 ? "  Offline mode     •     Notifications connected"
                 : "  Offline mode     •     Tap to connect notifications");
@@ -164,6 +162,7 @@ public class MainActivity extends Activity {
         }
     }
 
+    // Tier CONFIRMED: modal Allow/Deny confirmation required before sending replies
     private void handleReplyAction(VisionAction action, String command, EditText input) {
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
@@ -191,18 +190,17 @@ public class MainActivity extends Activity {
         }
 
         String source = sourceName(replyCap.packageName);
-        String recipient = replyCap.senderOrTitle.isEmpty() ? source : replyCap.senderOrTitle;
 
-        if (!VisionNotificationListener.validateTarget(action.target, replyCap.packageName, source, replyCap.senderOrTitle)) {
+        if (!VisionNotificationListener.validateTarget(action.target, replyCap.packageName, source,
+                replyCap.senderOrTitle, replyCap.conversationTitle, replyCap.senderPerson)) {
             action.state = VisionAction.State.FAILED;
-            activityText.setText("TARGET MISMATCH\n\nThe active notification is from " + source + " (" + recipient + "), not \"" + action.target + "\". No reply was sent.");
+            String mismatchDesc = formatDestinationDisplay(source, replyCap);
+            activityText.setText("TARGET MISMATCH\n\nThe active notification is from " + mismatchDesc + ", not \"" + action.target + "\". No reply was sent.");
             return;
         }
 
         final VisionNotificationListener.NotificationReplyCapability boundCap = replyCap;
-        String destDisplay = (replyCap.senderOrTitle.isEmpty() || replyCap.senderOrTitle.equalsIgnoreCase(source))
-                ? source
-                : source + " (" + replyCap.senderOrTitle + ")";
+        String destDisplay = formatDestinationDisplay(source, replyCap);
 
         String dialogTitle = "Vision wants to send a reply";
         String dialogMessage = "Action: Reply to " + destDisplay + "\n\nReply text:\n\"" + action.replyText + "\"\n\nAllow Vision to send this reply?";
@@ -237,6 +235,7 @@ public class MainActivity extends Activity {
         }
     }
 
+    // Tier SAFE: auto-executes immediately without modal confirmation dialog
     private void handleReadAction(VisionAction action, String command, EditText input) {
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
@@ -255,22 +254,10 @@ public class MainActivity extends Activity {
             activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
             return;
         }
-        final VisionNotificationListener.NotificationSnapshot boundSnapshot = snapshot;
-        String source = sourceName(boundSnapshot.packageName);
-        String preview = boundSnapshot.title.isEmpty() ? "the latest notification from " + source : "the notification from " + source + " (" + boundSnapshot.title + ")";
-        new AlertDialog.Builder(this)
-                .setTitle("Vision wants to read a notification")
-                .setMessage("Action: Read " + preview + "\n\nAllow Vision to read this notification?")
-                .setNegativeButton("Deny", (dialog, which) -> {
-                    action.state = VisionAction.State.DENIED;
-                    activityText.setText("DENIED\n\nRead notification\n\nVision stopped this action.");
-                })
-                .setPositiveButton("Allow", (dialog, which) -> {
-                    action.state = VisionAction.State.APPROVED;
-                    executeBoundNotificationRead(action, boundSnapshot);
-                    input.setText("");
-                    hideKeyboard(input);
-                }).show();
+
+        executeBoundNotificationRead(action, snapshot);
+        input.setText("");
+        hideKeyboard(input);
     }
 
     private void executeBoundNotificationRead(VisionAction action, VisionNotificationListener.NotificationSnapshot boundSnapshot) {
@@ -287,6 +274,7 @@ public class MainActivity extends Activity {
         activityText.setText("SUCCEEDED\n\n" + source + "\n" + title + "\n\n" + text);
     }
 
+    // Tier SAFE: auto-executes immediately without modal confirmation dialog
     private void handleOpenAppAction(VisionAction action, String command, EditText input) {
         Intent launch = resolveAppLaunchIntent(action.target);
         if (launch == null) {
@@ -294,27 +282,17 @@ public class MainActivity extends Activity {
             activityText.setText("FAILED\n\nCould not open " + action.target + ".\nThe app is not installed or has no launch screen.");
             return;
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Vision wants to proceed")
-                .setMessage("Action: " + action.label() + "\n\nRequest: " + command + "\n\nAllow Vision to continue?")
-                .setNegativeButton("Deny", (dialog, which) -> {
-                    action.state = VisionAction.State.DENIED;
-                    activityText.setText("DENIED\n\n" + action.label() + "\n\nVision stopped this action.");
-                })
-                .setPositiveButton("Allow", (dialog, which) -> {
-                    action.state = VisionAction.State.APPROVED;
-                    try {
-                        action.state = VisionAction.State.RUNNING;
-                        startActivity(launch);
-                        action.state = VisionAction.State.SUCCEEDED;
-                        activityText.setText("SUCCEEDED\n\nOpened " + action.target + ".");
-                    } catch (Exception e) {
-                        action.state = VisionAction.State.FAILED;
-                        activityText.setText("FAILED\n\nCould not start " + action.target + ".");
-                    }
-                    input.setText("");
-                    hideKeyboard(input);
-                }).show();
+        action.state = VisionAction.State.RUNNING;
+        try {
+            startActivity(launch);
+            action.state = VisionAction.State.SUCCEEDED;
+            activityText.setText("SUCCEEDED\n\nOpened " + action.target + ".");
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not start " + action.target + ".");
+        }
+        input.setText("");
+        hideKeyboard(input);
     }
 
     private void onReadNotificationButtonClicked() {
@@ -332,21 +310,15 @@ public class MainActivity extends Activity {
             activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
             return;
         }
-        final VisionNotificationListener.NotificationSnapshot boundSnapshot = snapshot;
-        String source = sourceName(boundSnapshot.packageName);
-        String preview = boundSnapshot.title.isEmpty() ? "the latest notification from " + source : "the notification from " + source + " (" + boundSnapshot.title + ")";
-        new AlertDialog.Builder(this)
-                .setTitle("Vision wants to read a notification")
-                .setMessage("I am going to read " + preview + ". Continue?")
-                .setNegativeButton("Deny", (dialog, which) -> activityText.setText("REQUEST DENIED\n\nVision did not read the notification."))
-                .setPositiveButton("Allow", (dialog, which) -> {
-                    executeBoundNotificationRead(null, boundSnapshot);
-                }).show();
+        executeBoundNotificationRead(null, snapshot);
     }
 
     private java.util.List<String> getCandidatePackages(String target) {
         java.util.List<String> list = new java.util.ArrayList<>();
-        if ("WhatsApp".equalsIgnoreCase(target)) {
+        if ("WhatsApp Business".equalsIgnoreCase(target)) {
+            list.add("com.whatsapp.w4b");
+            list.add("com.whatsapp");
+        } else if ("WhatsApp".equalsIgnoreCase(target)) {
             list.add("com.whatsapp");
             list.add("com.whatsapp.w4b");
         } else if ("Telegram".equalsIgnoreCase(target)) {
@@ -382,7 +354,7 @@ public class MainActivity extends Activity {
                     if (ai != null) {
                         Intent explicit = new Intent(Intent.ACTION_MAIN);
                         explicit.addCategory(Intent.CATEGORY_LAUNCHER);
-                        explicit.setComponent(new android.content.ComponentName(ai.packageName, ai.name));
+                        explicit.setComponent(new ComponentName(ai.packageName, ai.name));
                         explicit.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         return explicit;
                     }
@@ -404,7 +376,29 @@ public class MainActivity extends Activity {
 
     private boolean isNotificationAccessEnabled() {
         String listeners = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        return !TextUtils.isEmpty(listeners) && listeners.contains(getPackageName());
+        if (TextUtils.isEmpty(listeners)) return false;
+        String myPkg = getPackageName();
+        String[] components = listeners.split(":");
+        for (String compStr : components) {
+            if (compStr == null || compStr.trim().isEmpty()) continue;
+            ComponentName cn = ComponentName.unflattenFromString(compStr.trim());
+            if (cn != null && myPkg.equals(cn.getPackageName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String formatDestinationDisplay(String source, VisionNotificationListener.NotificationReplyCapability cap) {
+        if (cap == null) return source;
+        if (!cap.conversationTitle.isEmpty() && !cap.senderPerson.isEmpty() && !cap.conversationTitle.equalsIgnoreCase(cap.senderPerson)) {
+            return source + " (" + cap.conversationTitle + " - " + cap.senderPerson + ")";
+        }
+        String recipient = !cap.senderOrTitle.isEmpty() ? cap.senderOrTitle : (!cap.senderPerson.isEmpty() ? cap.senderPerson : cap.conversationTitle);
+        if (recipient.isEmpty() || recipient.equalsIgnoreCase(source)) {
+            return source;
+        }
+        return source + " (" + recipient + ")";
     }
 
     private String sourceName(String packageName) {
