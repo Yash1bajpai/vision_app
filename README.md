@@ -1,12 +1,60 @@
 # Vision
 
-Vision is an offline-first Android assistant for the iQOO Z9x. The first release is a normal APK, designed around explicit user authorization and risk-tiered execution safety.
+Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero background persistence, and risk-tiered execution safety.
 
-## Risk-Tiered Confirmation Policy (v0.5.2 — Inverted Fail-Closed)
+> **Note on Assistant Intelligence Runtime:**  
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 6 hardens deterministic notification reliability and action observability within a bounded, zero-persistence Android integration model.
 
-Vision eliminates unnecessary prompt fatigue while maintaining security: low-risk actions are authorized directly by the typed command itself, whereas high-risk external mutations strictly require explicit modal user confirmation immediately prior to dispatch.
+---
 
-Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYPES` auto-execute without confirmation. Any unlisted, future, or unparsed action type defaults to requiring explicit user confirmation (`RiskTier.CONFIRMED`).
+## Phase 6 Architecture: Deterministic Notification Reliability & Action Observability (v0.6.0)
+
+### 1. In-Memory Transient State Model
+Notification state transitions are modeled deterministically in `VisionNotificationListener.ListenerState` with zero disk or database persistence:
+- **`NotificationStatus.NO_NOTIFICATION_YET`**: Initial boot or explicitly cleared state.
+- **`NotificationStatus.ACTIVE_NOTIFICATION`**: A supported messaging notification is active and cached in process memory.
+- **`NotificationStatus.NOTIFICATION_REMOVED`**: Active notification was dismissed by the user or cancelled by Android.
+
+State metadata is restricted to safe operational identifiers: `key`, `packageName`, `postTime`, `hasReplyCapability`, and a monotonic `sequenceNumber`. **Never** stored or exposed in state logs: notification body, sender name, message text, PendingIntent, or RemoteInput.
+
+### 2. Deterministic Notification Ordering & Tie-Breaking Policy
+When multiple notifications or out-of-order binder callbacks arrive:
+- **`newPostTime > currentPostTime`**: Accepted. The newer notification atomically replaces the active snapshot.
+- **`newPostTime < currentPostTime`**: Rejected. Out-of-order stale binder callbacks cannot overwrite newer active state.
+- **`newPostTime == currentPostTime`**:
+  - *Same Key*: Accepted as an in-place content update for the identical conversation.
+  - *Different Key*: Deterministic lexicographical tie-break (`newKey.compareTo(currentKey) >= 0`) ensures identical behavior across all CPU architectures and execution runs.
+- **Removal Isolation**: Notification removals match strictly on active `key`. Removing an unrelated background or dismissed notification never erases active state.
+- **Filter Invariant**: Unsupported packages and filtered ongoing/summary noise never overwrite or invalidate valid active notifications.
+
+### 3. Reply Action Selection & RemoteInput Eligibility
+When notifications expose multiple action buttons or RemoteInput fields:
+- **Semantic Action Priority**: Prefers `Notification.Action.SEMANTIC_ACTION_REPLY` on supported platforms (API 28+ / Android 9 Pie through API 34+).
+- **Deterministic Fallback**: Selects the first text-capable RemoteInput action if no semantic reply action is designated.
+- **Data-Only Exclusion**: Excludes non-text RemoteInputs (where `allowFreeFormInput` is `false` and `choices` are empty).
+
+### 4. Multiline Reply Integrity
+Multiline composer text is preserved byte-for-byte:
+- Outer leading/trailing whitespace is trimmed on submission.
+- Internal line breaks (`\n`, `\r\n`), indents, and paragraph breaks are preserved identically across command parsing, the conversational Jarvis confirmation dialog, and the dispatched `RemoteInput` intent bundle.
+
+### 5. Bounded Action Observability
+`MainActivity` maintains bounded, single-slot observability on the `Recent Activity` surface:
+- Shows only the immediate result (`SUCCEEDED`, `FAILED`, `DENIED`) and user-visible metadata of the most recent action.
+- Distinguishes exact failure reasons without revealing hidden or private notification content:
+  - *Notification access disabled*
+  - *No supported notification yet*
+  - *Notification removed / dismissed*
+  - *Latest notification not replyable*
+  - *Target mismatch*
+  - *Action cancelled or expired by Android*
+- Zero long-term action logs or notification history are stored on disk.
+
+---
+
+## Risk-Tiered Confirmation Policy (Inverted Fail-Closed)
+
+Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYPES` auto-execute without modal confirmation. All external mutations strictly require explicit modal user confirmation (`RiskTier.CONFIRMED`).
 
 | Risk Tier | Policy | Action Types | Execution Flow |
 |---|---|---|---|
@@ -15,22 +63,13 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 
 ---
 
-## Pre-Phase-6 UX Refinement & Release Hardening (0.5.2)
+## Jarvis-Style Conversational Permission Request
 
-- **Jarvis-Style Conversational Permission Request:** Reply confirmation dialog redesigned to be conversational, clear, and respectful:
-  - **Title:** `"Tony, may I send this message?"`
-  - **Body:** `"I am ready to send this message to [Destination]:\n\n\"[Exact Outgoing Text]\"\n\nMay I proceed?"`
-  - **Controls:** Explicit `Allow` and `Deny` buttons.
-  - **Safety:** Preserves all lifecycle guards (`isFinishing() || isDestroyed()`) and bound-capability TOCTOU validation. Never auto-executes and never implies permission for read-only or app launch actions.
-- **Multiline Message Composer & Enter Key:**
-  - `EditText` supports true multiline input (`TYPE_TEXT_FLAG_MULTI_LINE`, `TYPE_TEXT_FLAG_CAP_SENTENCES`, `IME_ACTION_NONE | IME_FLAG_NO_ENTER_ACTION`).
-  - Pressing `Enter` inserts a newline while typing rather than submitting prematurely.
-  - Arrow button (`↑`) remains the explicit send control, trimming outer whitespace while preserving internal formatting and newlines.
-  - Supports vertical scrolling and dynamic height expansion (1 to 5 lines).
-  - Discoverable hint: `"Ask Vision anything... (Enter for newline)"`.
-  - All input clearing paths (`input.setText("")`) work seamlessly with multiline messages.
-- **Multiline Parser Preservation:** `VisionActionParser` preserves embedded newlines in reply bodies (e.g. `reply to Alice:\nLine 1\nLine 2`) while properly normalizing whitespace for command intents (`OPEN_APP`, `READ_NOTIFICATION`).
-- **Comprehensive JUnit 4 Suite (17 Tests):** Added pure formatting tests (`test17_jarvisStyleReplyConfirmationFormatting`) and multiline parser tests (`test16_multilineReplyAndCommandParsing`), bringing verified test count to 17 groups with 0 failures and 0 errors.
+For `REPLY_NOTIFICATION` (Tier CONFIRMED):
+- **Dialog Title:** `"Tony, may I send this message?"`
+- **Dialog Body:** `"I am ready to send this message to [Resolved Destination]:\n\n\"[Exact Outgoing Text]\"\n\nMay I proceed?"`
+- **Controls:** `Allow` and `Deny` buttons.
+- **Safety:** Guards against TOCTOU races, stale capabilities, and destroyed Activity lifecycles.
 
 ---
 
@@ -62,25 +101,15 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 
 ---
 
-## Earlier phases
-
-- Native Android project shell (Portrait-first, `#10151D` / `#9EE6C2` palette)
-- Offline readiness status
-- Local command composer and activity log
-- In-memory notification extraction (`MessagingStyle`, `BigTextStyle`, `InboxStyle`)
-- Zero persistence: notifications and replies are held strictly in transient process memory
-- Zero accessibility, zero root, zero hidden APIs, and zero silent actions
-- Fail-closed risk policy (N33) and TOCTOU capability binding (F1-F11)
-
 ## Build & Test
 
 ```bash
-# Run real JUnit 4 unit tests and build debug APK offline
+# Run deterministic JUnit 4 unit tests and build debug APK offline
 /data/data/com.termux/files/home/gradle/gradle-8.7/bin/gradle --no-daemon --offline :app:testDebugUnitTest :app:assembleDebug
 ```
 
 The phone-local Termux toolchain uses Gradle 8.7, Android API 34, and an ARM64-native `aapt2` override.
 
-## Resource guardrails
+## Resource Guardrails
 
-The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the GUI phase.
+The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the deterministic integration phase.
