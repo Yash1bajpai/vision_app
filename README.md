@@ -3,11 +3,11 @@
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero background persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**  
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 6 hardens deterministic notification reliability and action observability within a bounded, zero-persistence Android integration model.
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 6.1 hardens deterministic notification reliability, production listener boundaries, and atomic dispatch within a bounded, zero-persistence Android integration model.
 
 ---
 
-## Phase 6 Architecture: Deterministic Notification Reliability & Action Observability (v0.6.0)
+## Phase 6.1 Architecture: Deterministic Reliability & Production Boundaries (v0.6.1)
 
 ### 1. In-Memory Transient State Model
 Notification state transitions are modeled deterministically in `VisionNotificationListener.ListenerState` with zero disk or database persistence:
@@ -17,28 +17,34 @@ Notification state transitions are modeled deterministically in `VisionNotificat
 
 State metadata is restricted to safe operational identifiers: `key`, `packageName`, `postTime`, `hasReplyCapability`, and a monotonic `sequenceNumber`. **Never** stored or exposed in state logs: notification body, sender name, message text, PendingIntent, or RemoteInput.
 
-### 2. Deterministic Notification Ordering & Tie-Breaking Policy
-When multiple notifications or out-of-order binder callbacks arrive:
-- **`newPostTime > currentPostTime`**: Accepted. The newer notification atomically replaces the active snapshot.
-- **`newPostTime < currentPostTime`**: Rejected. Out-of-order stale binder callbacks cannot overwrite newer active state.
-- **`newPostTime == currentPostTime`**:
-  - *Same Key*: Accepted as an in-place content update for the identical conversation.
-  - *Different Key*: Deterministic lexicographical tie-break (`newKey.compareTo(currentKey) >= 0`) ensures identical behavior across all CPU architectures and execution runs.
-- **Removal Isolation**: Notification removals match strictly on active `key`. Removing an unrelated background or dismissed notification never erases active state.
-- **Filter Invariant**: Unsupported packages and filtered ongoing/summary noise never overwrite or invalidate valid active notifications.
+### 2. Deterministic Notification Ordering, Tie-Breaking & Processing Boundaries
+`VisionNotificationListener` routes Android notification callbacks through deterministic production processing methods:
+- **`processPostedNotification(...)`**:
+  - Rejects unsupported packages immediately without modifying state.
+  - Filters ongoing/summary noise without reply action while preserving existing active state.
+  - Enforces `postTime` ordering (`newPostTime > currentPostTime` accepted; older rejected).
+  - Handles equal timestamps via same-key update or lexicographical tie-break (`newKey.compareTo(currentKey) >= 0`).
+  - Atomically increments monotonic sequence counters and updates `ListenerState`.
+- **`processRemovedNotification(removeKey)`**:
+  - Matches strictly on the active notification's key, preserving active state on non-matching keys.
+  - Clears active snapshot/capability and transitions to `NotificationStatus.NOTIFICATION_REMOVED`.
 
-### 3. Reply Action Selection & RemoteInput Eligibility
+### 3. F2 Atomic Validation-to-Dispatch in `sendBoundReply`
+- Validates bound capability identity and dispatches `PendingIntent.send()` inside the single synchronized monitor (`synchronized(VisionNotificationListener.class)`).
+- External IPC dispatch is intentionally retained inside the lock to guarantee atomic validation-to-dispatch, preventing stale-dispatch windows if `onNotificationRemoved` concurrently dismisses or replaces capabilities.
+
+### 4. Reply Action Selection & RemoteInput Eligibility
 When notifications expose multiple action buttons or RemoteInput fields:
 - **Semantic Action Priority**: Prefers `Notification.Action.SEMANTIC_ACTION_REPLY` on supported platforms (API 28+ / Android 9 Pie through API 34+).
 - **Deterministic Fallback**: Selects the first text-capable RemoteInput action if no semantic reply action is designated.
 - **Data-Only Exclusion**: Excludes non-text RemoteInputs (where `allowFreeFormInput` is `false` and `choices` are empty).
 
-### 4. Multiline Reply Integrity
+### 5. Multiline Reply Integrity
 Multiline composer text is preserved byte-for-byte:
 - Outer leading/trailing whitespace is trimmed on submission.
 - Internal line breaks (`\n`, `\r\n`), indents, and paragraph breaks are preserved identically across command parsing, the conversational Jarvis confirmation dialog, and the dispatched `RemoteInput` intent bundle.
 
-### 5. Bounded Action Observability
+### 6. Bounded Action Observability
 `MainActivity` maintains bounded, single-slot observability on the `Recent Activity` surface:
 - Shows only the immediate result (`SUCCEEDED`, `FAILED`, `DENIED`) and user-visible metadata of the most recent action.
 - Distinguishes exact failure reasons without revealing hidden or private notification content:
@@ -59,7 +65,7 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 | Risk Tier | Policy | Action Types | Execution Flow |
 |---|---|---|---|
 | **Tier SAFE** | Auto-execute immediately (NO modal dialog) | `OPEN_APP`, `READ_NOTIFICATION` | Typed command is direct intent. Executes immediately upon validation and outputs concise `SUCCEEDED` / `FAILED` status to the Recent Activity surface. |
-| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION` *(Active MVP)*<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Proposal binds in-memory capability identity; conversational Jarvis-style modal dialog shows exact source, recipient, and payload; re-verifies active capability atomically before dispatch. Never auto-executed. |
+| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION` *(Active MVP)*<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Proposal binds in-memory capability identity; conversational Jarvis-style modal dialog shows exact source, recipient, and payload; re-verifies active capability atomically within lock at dispatch. Never auto-executed. |
 
 ---
 
