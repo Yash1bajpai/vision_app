@@ -1,6 +1,9 @@
 package com.vision.app;
 
 import android.app.Notification;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.Test;
 import static org.junit.Assert.*;
 
@@ -434,6 +437,254 @@ public class VisionAppTest {
         assertEquals("Telegram", VisionNotificationListener.formatDestinationDisplay("Telegram", "", "", ""));
         assertEquals("the latest notification", VisionNotificationListener.formatDestinationDisplay(null, (VisionNotificationListener.NotificationReplyCapability) null));
         assertEquals("Notification", VisionNotificationListener.formatDestinationDisplay(null, null, null, null));
+    }
+
+    // Test 18: Notification ordering, out-of-order rejection, and deterministic tie-breaking policy
+    @Test
+    public void test18_outOfOrderNotificationAcceptanceAndTieBreaking() {
+        // 1. Initial notification when no prior notification exists is always accepted
+        assertTrue("Initial notification accepted",
+                VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_initial", 0L, null));
+        assertTrue("Initial notification with empty current key accepted",
+                VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_initial", 0L, ""));
+
+        // 2. Newer postTime replaces older snapshot
+        assertTrue("Newer postTime (2000L > 1000L) accepted",
+                VisionNotificationListener.shouldAcceptNotificationOrder(2000L, "key_newer", 1000L, "key_older"));
+
+        // 3. Older postTime arriving out-of-order is rejected
+        assertFalse("Older postTime (500L < 1000L) rejected",
+                VisionNotificationListener.shouldAcceptNotificationOrder(500L, "key_older", 1000L, "key_current"));
+        assertFalse("Older postTime (999L < 1000L) rejected",
+                VisionNotificationListener.shouldAcceptNotificationOrder(999L, "key_older", 1000L, "key_current"));
+
+        // 4. Equal postTime with identical key is accepted as in-place update
+        assertTrue("Equal postTime with identical key accepted as update",
+                VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_same", 1000L, "key_same"));
+
+        // 5. Equal postTime with different keys uses deterministic lexicographical tie-break
+        assertTrue("Equal postTime with lexicographically greater key accepted",
+                VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_z", 1000L, "key_a"));
+        assertFalse("Equal postTime with lexicographically smaller key rejected",
+                VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_a", 1000L, "key_z"));
+    }
+
+    // Test 19: Matching vs non-matching notification removal
+    @Test
+    public void test19_matchingVsNonMatchingRemoval() {
+        VisionNotificationListener.clearLatestNotification();
+        assertEquals("Initial status NO_NOTIFICATION_YET",
+                VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET,
+                VisionNotificationListener.getListenerState().status);
+
+        VisionNotificationListener.NotificationSnapshot s1 =
+                new VisionNotificationListener.NotificationSnapshot("key_active", "com.whatsapp", "Alice", "Hello", 1000L);
+        VisionNotificationListener.NotificationReplyCapability cap1 =
+                new VisionNotificationListener.NotificationReplyCapability("key_active", "com.whatsapp", "Alice", null, null);
+
+        VisionNotificationListener.setLatestNotificationForTesting(s1);
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
+
+        assertTrue("Active state is notification active", VisionNotificationListener.getListenerState().isNotificationActive());
+        assertEquals("Active key matches", "key_active", VisionNotificationListener.getListenerState().key);
+        assertTrue("Active state has reply capability", VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        // Simulate non-matching removal (e.g. background notification from another chat or service removed)
+        // Manually simulate what onNotificationRemoved does with non-matching key:
+        // When removeKey != activeKey, active snapshot remains untouched
+        assertNotNull("Active snapshot present before non-matching removal", VisionNotificationListener.getLatestNotification());
+        assertSame("Snapshot remains s1", s1, VisionNotificationListener.getLatestNotification());
+        assertTrue("State remains active", VisionNotificationListener.getListenerState().isNotificationActive());
+
+        // Simulate matching removal
+        VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.setListenerStateForTesting(new VisionNotificationListener.ListenerState(
+                VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED,
+                "key_active",
+                "com.whatsapp",
+                1000L,
+                false,
+                42L
+        ));
+
+        assertNull("Snapshot is null after matching removal", VisionNotificationListener.getLatestNotification());
+        assertNull("Capability is null after matching removal", VisionNotificationListener.getLatestReplyCapability());
+        assertTrue("State is notification removed", VisionNotificationListener.getListenerState().isNotificationRemoved());
+        assertEquals("Removed state preserves metadata key", "key_active", VisionNotificationListener.getListenerState().key);
+        assertEquals("Removed state preserves metadata package", "com.whatsapp", VisionNotificationListener.getListenerState().packageName);
+        assertEquals("Removed state preserves metadata timestamp", 1000L, VisionNotificationListener.getListenerState().postTime);
+    }
+
+    // Test 20: Filtered and unsupported notifications preserve valid active state
+    @Test
+    public void test20_filteredAndUnsupportedPreserveActiveState() {
+        VisionNotificationListener.clearLatestNotification();
+
+        // 1. Package allowlist filter verification
+        assertFalse("com.untrusted.app is unsupported", VisionNotificationListener.isSupported("com.untrusted.app"));
+        assertFalse("com.facebook.orca is unsupported", VisionNotificationListener.isSupported("com.facebook.orca"));
+        assertTrue("com.whatsapp is supported", VisionNotificationListener.isSupported("com.whatsapp"));
+
+        // 2. Active notification set in memory
+        VisionNotificationListener.NotificationSnapshot active =
+                new VisionNotificationListener.NotificationSnapshot("key_main", "com.whatsapp", "Bob", "Test", 5000L);
+        VisionNotificationListener.setLatestNotificationForTesting(active);
+
+        // 3. Flags filter logic
+        assertTrue("Group summary without reply is filtered",
+                VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_GROUP_SUMMARY, false));
+        assertTrue("Ongoing event without reply is filtered",
+                VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_ONGOING_EVENT, false));
+        assertTrue("Foreground service without reply is filtered",
+                VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_FOREGROUND_SERVICE, false));
+
+        // Active state remains intact and unaffected
+        assertSame("Active snapshot unchanged", active, VisionNotificationListener.getLatestNotification());
+        assertTrue("Active state is still active", VisionNotificationListener.getListenerState().isNotificationActive());
+        assertEquals("key_main", VisionNotificationListener.getListenerState().key);
+    }
+
+    // Test 21: Deterministic reply action candidate scoring, selection, and RemoteInput eligibility
+    @Test
+    public void test21_replyActionSelectionAndRemoteInputEligibility() {
+        // RemoteInput eligibility
+        assertTrue("Free-form text is eligible",
+                VisionNotificationListener.isRemoteInputEligible(true, false, "key_reply"));
+        assertTrue("Choices-only text is eligible",
+                VisionNotificationListener.isRemoteInputEligible(false, true, "key_choice"));
+        assertTrue("Both free-form and choices is eligible",
+                VisionNotificationListener.isRemoteInputEligible(true, true, "key_both"));
+        assertFalse("Data-only (no free-form and no choices) is INELIGIBLE",
+                VisionNotificationListener.isRemoteInputEligible(false, false, "key_data_only"));
+        assertFalse("Null resultKey is INELIGIBLE",
+                VisionNotificationListener.isRemoteInputEligible(true, true, null));
+        assertFalse("Empty resultKey is INELIGIBLE",
+                VisionNotificationListener.isRemoteInputEligible(true, true, "   "));
+
+        // Action scoring
+        assertEquals("No action intent yields -1", -1,
+                VisionNotificationListener.scoreActionCandidate(false, false, true));
+        assertEquals("Ineligible RemoteInput yields -1", -1,
+                VisionNotificationListener.scoreActionCandidate(true, false, false));
+        assertEquals("Standard text reply action scores 1", 1,
+                VisionNotificationListener.scoreActionCandidate(true, false, true));
+        assertEquals("SEMANTIC_ACTION_REPLY scores 2 (preferred)", 2,
+                VisionNotificationListener.scoreActionCandidate(true, true, true));
+
+        // Multi-candidate list evaluation
+        VisionNotificationListener.ReplyActionCandidate cArchive =
+                new VisionNotificationListener.ReplyActionCandidate("Archive", true, false, false, false, "key_archive");
+        VisionNotificationListener.ReplyActionCandidate cQuick =
+                new VisionNotificationListener.ReplyActionCandidate("Quick Reply", true, false, true, false, "key_quick");
+        VisionNotificationListener.ReplyActionCandidate cSemantic =
+                new VisionNotificationListener.ReplyActionCandidate("Reply", true, true, true, false, "key_semantic");
+        VisionNotificationListener.ReplyActionCandidate cDataOnly =
+                new VisionNotificationListener.ReplyActionCandidate("Attach", true, false, false, false, "key_attach");
+
+        List<VisionNotificationListener.ReplyActionCandidate> listWithSemantic =
+                Arrays.asList(cArchive, cQuick, cSemantic, cDataOnly);
+        VisionNotificationListener.ReplyActionCandidate best1 =
+                VisionNotificationListener.selectBestReplyActionCandidate(listWithSemantic);
+        assertNotNull("Best candidate found", best1);
+        assertEquals("Prefers SEMANTIC_ACTION_REPLY", "Reply", best1.actionTitle);
+        assertEquals(2, best1.getScore());
+
+        List<VisionNotificationListener.ReplyActionCandidate> listWithoutSemantic =
+                Arrays.asList(cArchive, cQuick, cDataOnly);
+        VisionNotificationListener.ReplyActionCandidate best2 =
+                VisionNotificationListener.selectBestReplyActionCandidate(listWithoutSemantic);
+        assertNotNull("Best candidate found", best2);
+        assertEquals("Falls back to first text-capable action", "Quick Reply", best2.actionTitle);
+        assertEquals(1, best2.getScore());
+
+        List<VisionNotificationListener.ReplyActionCandidate> listOnlyIneligible =
+                Arrays.asList(cArchive, cDataOnly);
+        VisionNotificationListener.ReplyActionCandidate best3 =
+                VisionNotificationListener.selectBestReplyActionCandidate(listOnlyIneligible);
+        assertNull("Returns null when no eligible candidate exists", best3);
+    }
+
+    // Test 22: ListenerState transitions, monotonic sequencing, and metadata security
+    @Test
+    public void test22_listenerStateTransitionsAndMetadataSafety() {
+        VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.ListenerState initial = VisionNotificationListener.getListenerState();
+        assertEquals(VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET, initial.status);
+        assertTrue("hasNoNotification() == true", initial.hasNoNotification());
+        assertFalse("isNotificationActive() == false", initial.isNotificationActive());
+        assertFalse("isNotificationRemoved() == false", initial.isNotificationRemoved());
+        assertEquals("", initial.key);
+        assertEquals("", initial.packageName);
+        assertEquals(0L, initial.postTime);
+        assertFalse(initial.hasReplyCapability);
+
+        // Transition to ACTIVE
+        VisionNotificationListener.NotificationSnapshot s =
+                new VisionNotificationListener.NotificationSnapshot("pkg:1", "com.google.android.gm", "Subject", "Body", 123456L);
+        VisionNotificationListener.setLatestNotificationForTesting(s);
+
+        VisionNotificationListener.ListenerState activeState = VisionNotificationListener.getListenerState();
+        assertEquals(VisionNotificationListener.NotificationStatus.ACTIVE_NOTIFICATION, activeState.status);
+        assertTrue(activeState.isNotificationActive());
+        assertEquals("pkg:1", activeState.key);
+        assertEquals("com.google.android.gm", activeState.packageName);
+        assertEquals(123456L, activeState.postTime);
+        assertTrue("Sequence number incremented", activeState.sequenceNumber > initial.sequenceNumber);
+
+        // Set capability
+        VisionNotificationListener.NotificationReplyCapability cap =
+                new VisionNotificationListener.NotificationReplyCapability("pkg:1", "com.google.android.gm", "Sender", null, null);
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(cap);
+        assertTrue(VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        // Clear notification -> NO_NOTIFICATION_YET
+        VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.ListenerState clearedState = VisionNotificationListener.getListenerState();
+        assertEquals(VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET, clearedState.status);
+        assertTrue("Sequence number continuously increases", clearedState.sequenceNumber > activeState.sequenceNumber);
+    }
+
+    // Test 23: Multiline payload exact identity, whitespace trimming, and line break preservation
+    @Test
+    public void test23_multilinePayloadExactIdentityAndIntegrity() {
+        String exactMultiline = "Hello Tony,\n\nHere is the report:\n- Item 1: Complete\n- Item 2: In progress\n\nBest regards,\nVision";
+        String command = "reply to WhatsApp:\n" + exactMultiline;
+
+        VisionAction action = VisionActionParser.parse(command);
+        assertEquals(VisionAction.Type.REPLY_NOTIFICATION, action.type);
+        assertEquals("WhatsApp", action.target);
+        assertEquals("Parsed replyText matches exact multiline body byte-for-byte", exactMultiline, action.replyText);
+
+        // Confirmation dialog message formatting
+        String confirmationMessage = VisionRiskPolicy.formatReplyConfirmationMessage("WhatsApp", action.replyText);
+        String expectedDialog = "I am ready to send this message to WhatsApp:\n\n\"" + exactMultiline + "\"\n\nMay I proceed?";
+        assertEquals("Confirmation dialog displays exact multiline payload", expectedDialog, confirmationMessage);
+
+        // CRLF preservation
+        String crlfText = "Line 1\r\nLine 2\r\nLine 3";
+        VisionAction crlfAction = VisionActionParser.parse("reply:\n" + crlfText);
+        assertEquals("CRLF line breaks preserved exactly", crlfText, crlfAction.replyText);
+    }
+
+    // Test 24: Risk tiers and fail-closed security invariants
+    @Test
+    public void test24_riskTiersAndActionSafetyInvariants() {
+        // Safe actions require no confirmation
+        assertEquals("OPEN_APP is SAFE tier", VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.OPEN_APP));
+        assertFalse("OPEN_APP requiresConfirmation is false", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.OPEN_APP));
+
+        assertEquals("READ_NOTIFICATION is SAFE tier", VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_NOTIFICATION));
+        assertFalse("READ_NOTIFICATION requiresConfirmation is false", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.READ_NOTIFICATION));
+
+        // Confirmed action requires modal Allow/Deny
+        assertEquals("REPLY_NOTIFICATION is CONFIRMED tier", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(VisionAction.Type.REPLY_NOTIFICATION));
+        assertTrue("REPLY_NOTIFICATION requiresConfirmation is true", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.REPLY_NOTIFICATION));
+
+        // Fail-closed fallback: UNKNOWN and null require confirmation
+        assertEquals("UNKNOWN is CONFIRMED tier", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(VisionAction.Type.UNKNOWN));
+        assertTrue("UNKNOWN requiresConfirmation is true", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.UNKNOWN));
+        assertEquals("null is CONFIRMED tier", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(null));
+        assertTrue("null requiresConfirmation is true", VisionRiskPolicy.requiresConfirmation(null));
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {

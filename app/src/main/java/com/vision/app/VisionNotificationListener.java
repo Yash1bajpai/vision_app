@@ -23,8 +23,48 @@ public class VisionNotificationListener extends NotificationListenerService {
             "com.android.messaging",
             "com.google.android.calendar"
     };
+    public enum NotificationStatus {
+        NO_NOTIFICATION_YET,
+        ACTIVE_NOTIFICATION,
+        NOTIFICATION_REMOVED
+    }
+
+    public static final class ListenerState {
+        public final NotificationStatus status;
+        public final String key;
+        public final String packageName;
+        public final long postTime;
+        public final boolean hasReplyCapability;
+        public final long sequenceNumber;
+
+        public ListenerState(NotificationStatus status, String key, String packageName,
+                             long postTime, boolean hasReplyCapability, long sequenceNumber) {
+            this.status = status != null ? status : NotificationStatus.NO_NOTIFICATION_YET;
+            this.key = key != null ? key : "";
+            this.packageName = packageName != null ? packageName : "";
+            this.postTime = postTime;
+            this.hasReplyCapability = hasReplyCapability;
+            this.sequenceNumber = sequenceNumber;
+        }
+
+        public boolean isNotificationActive() {
+            return status == NotificationStatus.ACTIVE_NOTIFICATION;
+        }
+
+        public boolean isNotificationRemoved() {
+            return status == NotificationStatus.NOTIFICATION_REMOVED;
+        }
+
+        public boolean hasNoNotification() {
+            return status == NotificationStatus.NO_NOTIFICATION_YET;
+        }
+    }
+
     private static volatile NotificationSnapshot latestNotification;
     private static volatile NotificationReplyCapability latestReplyCapability;
+    private static volatile ListenerState currentListenerState =
+            new ListenerState(NotificationStatus.NO_NOTIFICATION_YET, "", "", 0L, false, 0L);
+    private static long sequenceCounter = 0L;
 
     public enum ReplyResult {
         SUCCESS,
@@ -42,6 +82,101 @@ public class VisionNotificationListener extends NotificationListenerService {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Deterministic ordering policy for incoming notifications:
+     * - Newer postTime (> currentPostTime) replaces current.
+     * - Older postTime (< currentPostTime) is rejected as out-of-order.
+     * - Equal postTime (== currentPostTime):
+     *     - Same key: accepted as in-place notification update.
+     *     - Different key: deterministic lexicographical tie-break (newKey.compareTo(currentKey) >= 0).
+     */
+    public static boolean shouldAcceptNotificationOrder(long newPostTime, String newKey, long currentPostTime, String currentKey) {
+        if (currentKey == null || currentKey.isEmpty()) {
+            return true;
+        }
+        if (newPostTime > currentPostTime) {
+            return true;
+        }
+        if (newPostTime < currentPostTime) {
+            return false;
+        }
+        if (newKey != null && newKey.equals(currentKey)) {
+            return true;
+        }
+        if (newKey != null) {
+            return newKey.compareTo(currentKey) >= 0;
+        }
+        return true;
+    }
+
+    /**
+     * Evaluates RemoteInput eligibility.
+     * Excludes data-only RemoteInputs where allowFreeForm is false and choices are empty.
+     */
+    public static boolean isRemoteInputEligible(boolean allowFreeForm, boolean hasChoices, String resultKey) {
+        if (resultKey == null || resultKey.trim().isEmpty()) {
+            return false;
+        }
+        return allowFreeForm || hasChoices;
+    }
+
+    /**
+     * Scores an action candidate for reply suitability:
+     * - Ineligible / no intent: -1
+     * - Standard text-capable RemoteInput action: 1
+     * - SEMANTIC_ACTION_REPLY with text-capable RemoteInput: 2 (preferred)
+     */
+    public static int scoreActionCandidate(boolean hasActionIntent, boolean isSemanticReply, boolean hasEligibleRemoteInput) {
+        if (!hasActionIntent || !hasEligibleRemoteInput) {
+            return -1;
+        }
+        return isSemanticReply ? 2 : 1;
+    }
+
+    public static final class ReplyActionCandidate {
+        public final String actionTitle;
+        public final boolean hasActionIntent;
+        public final boolean isSemanticReply;
+        public final boolean allowFreeFormInput;
+        public final boolean hasChoices;
+        public final String resultKey;
+
+        public ReplyActionCandidate(String actionTitle, boolean hasActionIntent, boolean isSemanticReply,
+                                    boolean allowFreeFormInput, boolean hasChoices, String resultKey) {
+            this.actionTitle = actionTitle != null ? actionTitle : "";
+            this.hasActionIntent = hasActionIntent;
+            this.isSemanticReply = isSemanticReply;
+            this.allowFreeFormInput = allowFreeFormInput;
+            this.hasChoices = hasChoices;
+            this.resultKey = resultKey != null ? resultKey : "";
+        }
+
+        public boolean isEligible() {
+            return hasActionIntent && isRemoteInputEligible(allowFreeFormInput, hasChoices, resultKey);
+        }
+
+        public int getScore() {
+            return scoreActionCandidate(hasActionIntent, isSemanticReply, isRemoteInputEligible(allowFreeFormInput, hasChoices, resultKey));
+        }
+    }
+
+    public static ReplyActionCandidate selectBestReplyActionCandidate(List<ReplyActionCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        ReplyActionCandidate best = null;
+        int bestScore = -1;
+        for (ReplyActionCandidate candidate : candidates) {
+            if (candidate == null) continue;
+            int score = candidate.getScore();
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
     }
 
     @Override
@@ -141,31 +276,60 @@ public class VisionNotificationListener extends NotificationListenerService {
 
         String key = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
 
-        // Extract RemoteInput reply action if present
+        // Extract best RemoteInput reply action if present
         NotificationReplyCapability replyCap = null;
-        if (notification.actions != null) {
+        if (notification.actions != null && notification.actions.length > 0) {
+            Notification.Action selectedAction = null;
+            RemoteInput selectedRemoteInput = null;
+            int highestScore = -1;
+
             for (Notification.Action act : notification.actions) {
-                if (act != null && act.actionIntent != null) {
-                    RemoteInput[] remoteInputs = act.getRemoteInputs();
-                    if (remoteInputs != null && remoteInputs.length > 0) {
-                        for (RemoteInput ri : remoteInputs) {
-                            if (ri != null && ri.getResultKey() != null) {
-                                String senderOrTitle = !title.isEmpty() ? title : (!senderPerson.isEmpty() ? senderPerson : conversationTitle);
-                                replyCap = new NotificationReplyCapability(
-                                        key,
-                                        sbn.getPackageName(),
-                                        senderOrTitle,
-                                        act.actionIntent,
-                                        ri,
-                                        conversationTitle,
-                                        senderPerson
-                                );
-                                break;
-                            }
+                if (act == null || act.actionIntent == null) continue;
+                RemoteInput[] remoteInputs = act.getRemoteInputs();
+                if (remoteInputs == null || remoteInputs.length == 0) continue;
+
+                boolean isSemanticReply = false;
+                if (android.os.Build.VERSION.SDK_INT >= 28) {
+                    try {
+                        isSemanticReply = (act.getSemanticAction() == Notification.Action.SEMANTIC_ACTION_REPLY);
+                    } catch (Throwable ignored) { }
+                }
+
+                for (RemoteInput ri : remoteInputs) {
+                    if (ri == null) continue;
+                    String resultKey = ri.getResultKey();
+                    if (resultKey == null || resultKey.trim().isEmpty()) continue;
+
+                    CharSequence[] choices = ri.getChoices();
+                    boolean hasChoices = (choices != null && choices.length > 0);
+                    boolean allowFreeForm = ri.getAllowFreeFormInput();
+
+                    if (isRemoteInputEligible(allowFreeForm, hasChoices, resultKey)) {
+                        int score = scoreActionCandidate(true, isSemanticReply, true);
+                        if (score > highestScore) {
+                            highestScore = score;
+                            selectedAction = act;
+                            selectedRemoteInput = ri;
                         }
+                        break;
                     }
                 }
-                if (replyCap != null) break;
+                if (highestScore == 2) {
+                    break;
+                }
+            }
+
+            if (selectedAction != null && selectedRemoteInput != null) {
+                String senderOrTitle = !title.isEmpty() ? title : (!senderPerson.isEmpty() ? senderPerson : conversationTitle);
+                replyCap = new NotificationReplyCapability(
+                        key,
+                        sbn.getPackageName(),
+                        senderOrTitle,
+                        selectedAction.actionIntent,
+                        selectedRemoteInput,
+                        conversationTitle,
+                        senderPerson
+                );
             }
         }
 
@@ -174,8 +338,23 @@ public class VisionNotificationListener extends NotificationListenerService {
             if (shouldIgnoreNotification(notification.flags, replyCap != null)) {
                 return;
             }
-            latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, sbn.getPostTime());
+            long postTime = sbn.getPostTime();
+            if (latestNotification != null) {
+                if (!shouldAcceptNotificationOrder(postTime, key, latestNotification.postTime, latestNotification.key)) {
+                    return;
+                }
+            }
+            sequenceCounter++;
+            latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, postTime);
             latestReplyCapability = replyCap;
+            currentListenerState = new ListenerState(
+                    NotificationStatus.ACTIVE_NOTIFICATION,
+                    key,
+                    sbn.getPackageName(),
+                    postTime,
+                    replyCap != null,
+                    sequenceCounter
+            );
         }
     }
 
@@ -184,12 +363,19 @@ public class VisionNotificationListener extends NotificationListenerService {
         if (sbn == null) return;
         String removeKey = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
         synchronized (VisionNotificationListener.class) {
-            NotificationSnapshot current = latestNotification;
-            if (current != null && current.key.equals(removeKey)) {
+            if (latestNotification != null && latestNotification.key.equals(removeKey)) {
+                sequenceCounter++;
+                currentListenerState = new ListenerState(
+                        NotificationStatus.NOTIFICATION_REMOVED,
+                        latestNotification.key,
+                        latestNotification.packageName,
+                        latestNotification.postTime,
+                        false,
+                        sequenceCounter
+                );
                 latestNotification = null;
-            }
-            NotificationReplyCapability currentReply = latestReplyCapability;
-            if (currentReply != null && currentReply.key.equals(removeKey)) {
+                latestReplyCapability = null;
+            } else if (latestReplyCapability != null && latestReplyCapability.key.equals(removeKey)) {
                 latestReplyCapability = null;
             }
         }
@@ -203,17 +389,51 @@ public class VisionNotificationListener extends NotificationListenerService {
         return latestReplyCapability;
     }
 
+    public static synchronized ListenerState getListenerState() {
+        return currentListenerState;
+    }
+
+    public static synchronized void setListenerStateForTesting(ListenerState state) {
+        currentListenerState = state != null ? state : new ListenerState(NotificationStatus.NO_NOTIFICATION_YET, "", "", 0L, false, 0L);
+    }
+
     public static synchronized void clearLatestNotification() {
         latestNotification = null;
         latestReplyCapability = null;
+        sequenceCounter++;
+        currentListenerState = new ListenerState(NotificationStatus.NO_NOTIFICATION_YET, "", "", 0L, false, sequenceCounter);
     }
 
     public static synchronized void setLatestNotificationForTesting(NotificationSnapshot snapshot) {
         latestNotification = snapshot;
+        sequenceCounter++;
+        if (snapshot == null) {
+            currentListenerState = new ListenerState(NotificationStatus.NO_NOTIFICATION_YET, "", "", 0L, false, sequenceCounter);
+        } else {
+            currentListenerState = new ListenerState(
+                    NotificationStatus.ACTIVE_NOTIFICATION,
+                    snapshot.key,
+                    snapshot.packageName,
+                    snapshot.postTime,
+                    latestReplyCapability != null,
+                    sequenceCounter
+            );
+        }
     }
 
     public static synchronized void setLatestReplyCapabilityForTesting(NotificationReplyCapability capability) {
         latestReplyCapability = capability;
+        sequenceCounter++;
+        if (latestNotification != null) {
+            currentListenerState = new ListenerState(
+                    NotificationStatus.ACTIVE_NOTIFICATION,
+                    latestNotification.key,
+                    latestNotification.packageName,
+                    latestNotification.postTime,
+                    capability != null,
+                    sequenceCounter
+            );
+        }
     }
 
     public static synchronized boolean isCapabilityActive(NotificationReplyCapability capability) {
@@ -224,13 +444,15 @@ public class VisionNotificationListener extends NotificationListenerService {
         return current == capability && current.key.equals(capability.key);
     }
 
-    public static synchronized ReplyResult sendBoundReply(Context context, NotificationReplyCapability boundCapability, String replyText) {
+    public static ReplyResult sendBoundReply(Context context, NotificationReplyCapability boundCapability, String replyText) {
         if (boundCapability == null || boundCapability.key.isEmpty()) {
             return ReplyResult.INVALID_ARGUMENTS;
         }
-        NotificationReplyCapability current = latestReplyCapability;
-        if (current == null || current != boundCapability || !current.key.equals(boundCapability.key)) {
-            return ReplyResult.STALE_OR_REMOVED;
+        synchronized (VisionNotificationListener.class) {
+            NotificationReplyCapability current = latestReplyCapability;
+            if (current == null || current != boundCapability || !current.key.equals(boundCapability.key)) {
+                return ReplyResult.STALE_OR_REMOVED;
+            }
         }
         if (boundCapability.pendingIntent == null || boundCapability.remoteInput == null) {
             return ReplyResult.FAILED_INTENT;

@@ -223,9 +223,12 @@ public class MainActivity extends Activity {
         if (replyCap == null) {
             action.state = VisionAction.State.FAILED;
             VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
+            VisionNotificationListener.ListenerState state = VisionNotificationListener.getListenerState();
             if (snapshot != null) {
                 String source = sourceName(snapshot.packageName);
                 activityText.setText("NO REPLYABLE NOTIFICATION\n\nThe latest notification from " + source + " does not support direct reply.");
+            } else if (state != null && state.status == VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED) {
+                activityText.setText("NOTIFICATION REMOVED\n\nThe notification was dismissed or removed before you could reply.");
             } else {
                 activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a notification to reply to yet.");
             }
@@ -303,7 +306,12 @@ public class MainActivity extends Activity {
         VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
         if (snapshot == null) {
             action.state = VisionAction.State.FAILED;
-            activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
+            VisionNotificationListener.ListenerState state = VisionNotificationListener.getListenerState();
+            if (state != null && state.status == VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED) {
+                activityText.setText("NOTIFICATION REMOVED\n\nThe latest notification was dismissed or removed. Please wait for a new notification.");
+            } else {
+                activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
+            }
             return;
         }
 
@@ -364,7 +372,12 @@ public class MainActivity extends Activity {
         }
         VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
         if (snapshot == null) {
-            activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
+            VisionNotificationListener.ListenerState state = VisionNotificationListener.getListenerState();
+            if (state != null && state.status == VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED) {
+                activityText.setText("NOTIFICATION REMOVED\n\nThe latest notification was dismissed or removed. Please wait for a new notification.");
+            } else {
+                activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
+            }
             return;
         }
         executeBoundNotificationRead(null, snapshot);
