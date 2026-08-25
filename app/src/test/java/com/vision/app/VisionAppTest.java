@@ -467,6 +467,34 @@ public class VisionAppTest {
                 VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_z", 1000L, "key_a"));
         assertFalse("Equal postTime with lexicographically smaller key rejected",
                 VisionNotificationListener.shouldAcceptNotificationOrder(1000L, "key_a", 1000L, "key_z"));
+
+        // 6. Verify via production processing boundary (processPostedNotification)
+        VisionNotificationListener.clearLatestNotification();
+        assertTrue("Initial post accepted",
+                VisionNotificationListener.processPostedNotification("key_a", "com.whatsapp", "Alice", "Msg 1", 1000L, 0, null));
+        assertEquals("key_a", VisionNotificationListener.getLatestNotification().key);
+
+        assertFalse("Out-of-order older postTime rejected",
+                VisionNotificationListener.processPostedNotification("key_older", "com.whatsapp", "Alice", "Stale", 500L, 0, null));
+        assertEquals("key_a", VisionNotificationListener.getLatestNotification().key);
+        assertEquals("Msg 1", VisionNotificationListener.getLatestNotification().text);
+
+        assertTrue("Equal timestamp same-key update accepted",
+                VisionNotificationListener.processPostedNotification("key_a", "com.whatsapp", "Alice", "Msg 1 Updated", 1000L, 0, null));
+        assertEquals("Msg 1 Updated", VisionNotificationListener.getLatestNotification().text);
+
+        assertTrue("Equal timestamp lexicographically greater key accepted",
+                VisionNotificationListener.processPostedNotification("key_z", "com.whatsapp", "Zoe", "Msg Z", 1000L, 0, null));
+        assertEquals("key_z", VisionNotificationListener.getLatestNotification().key);
+
+        assertFalse("Equal timestamp lexicographically smaller key rejected",
+                VisionNotificationListener.processPostedNotification("key_b", "com.whatsapp", "Bob", "Msg B", 1000L, 0, null));
+        assertEquals("key_z", VisionNotificationListener.getLatestNotification().key);
+
+        assertTrue("Newer postTime accepted",
+                VisionNotificationListener.processPostedNotification("key_newer", "com.whatsapp", "Charlie", "Msg New", 2000L, 0, null));
+        assertEquals("key_newer", VisionNotificationListener.getLatestNotification().key);
+        assertEquals(2000L, VisionNotificationListener.getLatestNotification().postTime);
     }
 
     // Test 19: Matching vs non-matching notification removal
@@ -477,35 +505,30 @@ public class VisionAppTest {
                 VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET,
                 VisionNotificationListener.getListenerState().status);
 
-        VisionNotificationListener.NotificationSnapshot s1 =
-                new VisionNotificationListener.NotificationSnapshot("key_active", "com.whatsapp", "Alice", "Hello", 1000L);
         VisionNotificationListener.NotificationReplyCapability cap1 =
                 new VisionNotificationListener.NotificationReplyCapability("key_active", "com.whatsapp", "Alice", null, null);
 
-        VisionNotificationListener.setLatestNotificationForTesting(s1);
-        VisionNotificationListener.setLatestReplyCapabilityForTesting(cap1);
+        // Post active notification via production processing boundary
+        assertTrue("Active notification posted",
+                VisionNotificationListener.processPostedNotification("key_active", "com.whatsapp", "Alice", "Hello", 1000L, 0, cap1));
 
         assertTrue("Active state is notification active", VisionNotificationListener.getListenerState().isNotificationActive());
         assertEquals("Active key matches", "key_active", VisionNotificationListener.getListenerState().key);
         assertTrue("Active state has reply capability", VisionNotificationListener.getListenerState().hasReplyCapability);
+        assertNotNull("Active snapshot present", VisionNotificationListener.getLatestNotification());
+        assertNotNull("Active capability present", VisionNotificationListener.getLatestReplyCapability());
 
-        // Simulate non-matching removal (e.g. background notification from another chat or service removed)
-        // Manually simulate what onNotificationRemoved does with non-matching key:
-        // When removeKey != activeKey, active snapshot remains untouched
-        assertNotNull("Active snapshot present before non-matching removal", VisionNotificationListener.getLatestNotification());
-        assertSame("Snapshot remains s1", s1, VisionNotificationListener.getLatestNotification());
-        assertTrue("State remains active", VisionNotificationListener.getListenerState().isNotificationActive());
+        // Production non-matching removal (e.g. background notification from another chat or service removed)
+        boolean removedNonMatching = VisionNotificationListener.processRemovedNotification("key_unrelated");
+        assertFalse("Non-matching removal returns false", removedNonMatching);
+        assertNotNull("Active snapshot remains present after non-matching removal", VisionNotificationListener.getLatestNotification());
+        assertEquals("key_active", VisionNotificationListener.getLatestNotification().key);
+        assertTrue("State remains active after non-matching removal", VisionNotificationListener.getListenerState().isNotificationActive());
 
-        // Simulate matching removal
-        VisionNotificationListener.clearLatestNotification();
-        VisionNotificationListener.setListenerStateForTesting(new VisionNotificationListener.ListenerState(
-                VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED,
-                "key_active",
-                "com.whatsapp",
-                1000L,
-                false,
-                42L
-        ));
+        // Production matching removal
+        long seqBefore = VisionNotificationListener.getListenerState().sequenceNumber;
+        boolean removedMatching = VisionNotificationListener.processRemovedNotification("key_active");
+        assertTrue("Matching removal returns true", removedMatching);
 
         assertNull("Snapshot is null after matching removal", VisionNotificationListener.getLatestNotification());
         assertNull("Capability is null after matching removal", VisionNotificationListener.getLatestReplyCapability());
@@ -513,6 +536,11 @@ public class VisionAppTest {
         assertEquals("Removed state preserves metadata key", "key_active", VisionNotificationListener.getListenerState().key);
         assertEquals("Removed state preserves metadata package", "com.whatsapp", VisionNotificationListener.getListenerState().packageName);
         assertEquals("Removed state preserves metadata timestamp", 1000L, VisionNotificationListener.getListenerState().postTime);
+        assertFalse("Removed state hasReplyCapability is false", VisionNotificationListener.getListenerState().hasReplyCapability);
+        assertTrue("Sequence number incremented on removal", VisionNotificationListener.getListenerState().sequenceNumber > seqBefore);
+
+        // Second removal on already removed key returns false
+        assertFalse("Second removal on same key returns false", VisionNotificationListener.processRemovedNotification("key_active"));
     }
 
     // Test 20: Filtered and unsupported notifications preserve valid active state
@@ -525,12 +553,13 @@ public class VisionAppTest {
         assertFalse("com.facebook.orca is unsupported", VisionNotificationListener.isSupported("com.facebook.orca"));
         assertTrue("com.whatsapp is supported", VisionNotificationListener.isSupported("com.whatsapp"));
 
-        // 2. Active notification set in memory
-        VisionNotificationListener.NotificationSnapshot active =
-                new VisionNotificationListener.NotificationSnapshot("key_main", "com.whatsapp", "Bob", "Test", 5000L);
-        VisionNotificationListener.setLatestNotificationForTesting(active);
+        // 2. Active notification set via production processing boundary
+        assertTrue("Active notification accepted",
+                VisionNotificationListener.processPostedNotification("key_main", "com.whatsapp", "Bob", "Test", 5000L, 0, null));
+        VisionNotificationListener.NotificationSnapshot active = VisionNotificationListener.getLatestNotification();
+        assertNotNull("Active snapshot exists", active);
 
-        // 3. Flags filter logic
+        // 3. Flags filter logic verification
         assertTrue("Group summary without reply is filtered",
                 VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_GROUP_SUMMARY, false));
         assertTrue("Ongoing event without reply is filtered",
@@ -538,8 +567,25 @@ public class VisionAppTest {
         assertTrue("Foreground service without reply is filtered",
                 VisionNotificationListener.shouldIgnoreNotification(Notification.FLAG_FOREGROUND_SERVICE, false));
 
-        // Active state remains intact and unaffected
-        assertSame("Active snapshot unchanged", active, VisionNotificationListener.getLatestNotification());
+        // 4. Production processing with unsupported package is rejected and preserves active state
+        assertFalse("Unsupported package rejected by production processor",
+                VisionNotificationListener.processPostedNotification("key_unsupported", "com.facebook.katana", "FB", "Ad", 6000L, 0, null));
+        assertEquals("Active key unchanged after unsupported package", "key_main", VisionNotificationListener.getLatestNotification().key);
+        assertEquals("Test", VisionNotificationListener.getLatestNotification().text);
+        assertTrue("State is still active", VisionNotificationListener.getListenerState().isNotificationActive());
+
+        // 5. Production processing with filtered flags (no reply action) is rejected and preserves active state
+        assertFalse("Group summary without reply rejected by production processor",
+                VisionNotificationListener.processPostedNotification("key_summary", "com.whatsapp", "Group", "3 messages", 7000L, Notification.FLAG_GROUP_SUMMARY, null));
+        assertEquals("Active key unchanged after group summary", "key_main", VisionNotificationListener.getLatestNotification().key);
+
+        assertFalse("Ongoing event without reply rejected by production processor",
+                VisionNotificationListener.processPostedNotification("key_ongoing", "com.whatsapp", "Call", "Call ongoing", 8000L, Notification.FLAG_ONGOING_EVENT, null));
+        assertEquals("Active key unchanged after ongoing event", "key_main", VisionNotificationListener.getLatestNotification().key);
+
+        assertFalse("Foreground service without reply rejected by production processor",
+                VisionNotificationListener.processPostedNotification("key_fg", "com.whatsapp", "Sync", "Syncing", 9000L, Notification.FLAG_FOREGROUND_SERVICE, null));
+        assertEquals("Active key unchanged after foreground service", "key_main", VisionNotificationListener.getLatestNotification().key);
         assertTrue("Active state is still active", VisionNotificationListener.getListenerState().isNotificationActive());
         assertEquals("key_main", VisionNotificationListener.getListenerState().key);
     }
@@ -618,10 +664,12 @@ public class VisionAppTest {
         assertEquals(0L, initial.postTime);
         assertFalse(initial.hasReplyCapability);
 
-        // Transition to ACTIVE
-        VisionNotificationListener.NotificationSnapshot s =
-                new VisionNotificationListener.NotificationSnapshot("pkg:1", "com.google.android.gm", "Subject", "Body", 123456L);
-        VisionNotificationListener.setLatestNotificationForTesting(s);
+        // Transition to ACTIVE via production processing boundary
+        VisionNotificationListener.NotificationReplyCapability cap =
+                new VisionNotificationListener.NotificationReplyCapability("pkg:1", "com.google.android.gm", "Sender", null, null);
+        boolean posted = VisionNotificationListener.processPostedNotification(
+                "pkg:1", "com.google.android.gm", "Subject", "Body", 123456L, 0, cap);
+        assertTrue("Posted successfully", posted);
 
         VisionNotificationListener.ListenerState activeState = VisionNotificationListener.getListenerState();
         assertEquals(VisionNotificationListener.NotificationStatus.ACTIVE_NOTIFICATION, activeState.status);
@@ -629,19 +677,28 @@ public class VisionAppTest {
         assertEquals("pkg:1", activeState.key);
         assertEquals("com.google.android.gm", activeState.packageName);
         assertEquals(123456L, activeState.postTime);
+        assertTrue("Active state has reply capability", activeState.hasReplyCapability);
         assertTrue("Sequence number incremented", activeState.sequenceNumber > initial.sequenceNumber);
 
-        // Set capability
-        VisionNotificationListener.NotificationReplyCapability cap =
-                new VisionNotificationListener.NotificationReplyCapability("pkg:1", "com.google.android.gm", "Sender", null, null);
-        VisionNotificationListener.setLatestReplyCapabilityForTesting(cap);
-        assertTrue(VisionNotificationListener.getListenerState().hasReplyCapability);
+        // Transition to NOTIFICATION_REMOVED via production removal boundary
+        boolean removed = VisionNotificationListener.processRemovedNotification("pkg:1");
+        assertTrue("Removed successfully", removed);
+
+        VisionNotificationListener.ListenerState removedState = VisionNotificationListener.getListenerState();
+        assertEquals(VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED, removedState.status);
+        assertTrue(removedState.isNotificationRemoved());
+        assertFalse(removedState.isNotificationActive());
+        assertEquals("pkg:1", removedState.key);
+        assertEquals("com.google.android.gm", removedState.packageName);
+        assertEquals(123456L, removedState.postTime);
+        assertFalse("Removed state hasReplyCapability is false", removedState.hasReplyCapability);
+        assertTrue("Sequence number continuously increases", removedState.sequenceNumber > activeState.sequenceNumber);
 
         // Clear notification -> NO_NOTIFICATION_YET
         VisionNotificationListener.clearLatestNotification();
         VisionNotificationListener.ListenerState clearedState = VisionNotificationListener.getListenerState();
         assertEquals(VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET, clearedState.status);
-        assertTrue("Sequence number continuously increases", clearedState.sequenceNumber > activeState.sequenceNumber);
+        assertTrue("Sequence number continuously increases on clear", clearedState.sequenceNumber > removedState.sequenceNumber);
     }
 
     // Test 23: Multiline payload exact identity, whitespace trimming, and line break preservation
@@ -685,6 +742,48 @@ public class VisionAppTest {
         assertTrue("UNKNOWN requiresConfirmation is true", VisionRiskPolicy.requiresConfirmation(VisionAction.Type.UNKNOWN));
         assertEquals("null is CONFIRMED tier", VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(null));
         assertTrue("null requiresConfirmation is true", VisionRiskPolicy.requiresConfirmation(null));
+    }
+
+    // Test 25: Production listener processing boundary coverage and atomic dispatch invariants
+    @Test
+    public void test25_productionProcessingBoundaryComprehensive() {
+        VisionNotificationListener.clearLatestNotification();
+
+        // 1. Unsupported package returns false and does not mutate sequence or state
+        long seq0 = VisionNotificationListener.getListenerState().sequenceNumber;
+        assertFalse("Unsupported package rejected",
+                VisionNotificationListener.processPostedNotification("bad_key", "com.malicious.app", "Evil", "Payload", 1000L, 0, null));
+        assertEquals("Sequence unchanged after rejected unsupported package", seq0, VisionNotificationListener.getListenerState().sequenceNumber);
+        assertEquals(VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET, VisionNotificationListener.getListenerState().status);
+
+        // 2. Filtered ongoing noise without reply returns false and does not mutate state
+        assertFalse("Filtered ongoing event rejected",
+                VisionNotificationListener.processPostedNotification("noise_key", "com.google.android.gm", "Syncing", "In progress", 1000L, Notification.FLAG_ONGOING_EVENT, null));
+        assertEquals(VisionNotificationListener.NotificationStatus.NO_NOTIFICATION_YET, VisionNotificationListener.getListenerState().status);
+
+        // 3. Filtered ongoing event WITH reply capability is accepted
+        VisionNotificationListener.NotificationReplyCapability capReply =
+                new VisionNotificationListener.NotificationReplyCapability("valid_ongoing", "com.google.android.gm", "Email Alert", null, null);
+        assertTrue("Filtered flag with reply capability accepted",
+                VisionNotificationListener.processPostedNotification("valid_ongoing", "com.google.android.gm", "Email Alert", "New message", 1000L, Notification.FLAG_ONGOING_EVENT, capReply));
+        assertEquals(VisionNotificationListener.NotificationStatus.ACTIVE_NOTIFICATION, VisionNotificationListener.getListenerState().status);
+        assertEquals("valid_ongoing", VisionNotificationListener.getListenerState().key);
+        assertTrue(VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        // 4. Removal clears active state and updates sequence atomically
+        long seqActive = VisionNotificationListener.getListenerState().sequenceNumber;
+        assertTrue("Matching removal succeeds", VisionNotificationListener.processRemovedNotification("valid_ongoing"));
+        assertEquals(VisionNotificationListener.NotificationStatus.NOTIFICATION_REMOVED, VisionNotificationListener.getListenerState().status);
+        assertNull("Latest snapshot cleared", VisionNotificationListener.getLatestNotification());
+        assertNull("Latest capability cleared", VisionNotificationListener.getLatestReplyCapability());
+        assertTrue("Sequence incremented on removal", VisionNotificationListener.getListenerState().sequenceNumber > seqActive);
+
+        // 5. Posting new notification after removal restores ACTIVE status
+        assertTrue("Post after removal succeeds",
+                VisionNotificationListener.processPostedNotification("new_key", "org.telegram.messenger", "Alice", "Hey", 2000L, 0, null));
+        assertEquals(VisionNotificationListener.NotificationStatus.ACTIVE_NOTIFICATION, VisionNotificationListener.getListenerState().status);
+        assertEquals("new_key", VisionNotificationListener.getListenerState().key);
+        assertFalse(VisionNotificationListener.getListenerState().hasReplyCapability);
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {

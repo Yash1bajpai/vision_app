@@ -333,35 +333,69 @@ public class VisionNotificationListener extends NotificationListenerService {
             }
         }
 
-        // F4/N2: Synchronize binder-thread check and write to prevent race conditions with removals and dispatch checks
-        synchronized (VisionNotificationListener.class) {
-            if (shouldIgnoreNotification(notification.flags, replyCap != null)) {
-                return;
-            }
-            long postTime = sbn.getPostTime();
-            if (latestNotification != null) {
-                if (!shouldAcceptNotificationOrder(postTime, key, latestNotification.postTime, latestNotification.key)) {
-                    return;
-                }
-            }
-            sequenceCounter++;
-            latestNotification = new NotificationSnapshot(key, sbn.getPackageName(), title, text, postTime);
-            latestReplyCapability = replyCap;
-            currentListenerState = new ListenerState(
-                    NotificationStatus.ACTIVE_NOTIFICATION,
-                    key,
-                    sbn.getPackageName(),
-                    postTime,
-                    replyCap != null,
-                    sequenceCounter
-            );
-        }
+        processPostedNotification(key, sbn.getPackageName(), title, text, sbn.getPostTime(), notification.flags, replyCap);
     }
 
     @Override
     public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
         String removeKey = sbn.getKey() != null ? sbn.getKey() : (sbn.getPackageName() + ":" + sbn.getId());
+        processRemovedNotification(removeKey);
+    }
+
+    /**
+     * Deterministic production processing boundary for posted notifications.
+     * Takes immutable extracted notification metadata and performs synchronized filtering,
+     * ordering validation, and in-memory state mutation.
+     *
+     * Unsupported packages return false before processing without mutating state.
+     * Filtered notifications (e.g. group summaries/ongoing without reply) return false without erasing active state.
+     * Older postTime notifications are rejected.
+     * Equal timestamps are accepted for the same key, or resolved lexicographically.
+     *
+     * @return true if the notification was accepted and updated active state; false otherwise.
+     */
+    public static boolean processPostedNotification(String key, String packageName, String title, String text,
+                                                    long postTime, int flags, NotificationReplyCapability replyCap) {
+        if (packageName == null || !isSupported(packageName)) {
+            return false;
+        }
+        String safeKey = (key != null && !key.isEmpty()) ? key : (packageName + ":0");
+        synchronized (VisionNotificationListener.class) {
+            if (shouldIgnoreNotification(flags, replyCap != null)) {
+                return false;
+            }
+            if (latestNotification != null) {
+                if (!shouldAcceptNotificationOrder(postTime, safeKey, latestNotification.postTime, latestNotification.key)) {
+                    return false;
+                }
+            }
+            sequenceCounter++;
+            latestNotification = new NotificationSnapshot(safeKey, packageName, title, text, postTime);
+            latestReplyCapability = replyCap;
+            currentListenerState = new ListenerState(
+                    NotificationStatus.ACTIVE_NOTIFICATION,
+                    safeKey,
+                    packageName,
+                    postTime,
+                    replyCap != null,
+                    sequenceCounter
+            );
+            return true;
+        }
+    }
+
+    /**
+     * Deterministic production processing boundary for removed notifications.
+     * Clears active state only when removeKey matches the currently active notification key.
+     * Non-matching keys return false and preserve the existing active notification.
+     *
+     * @return true if the active notification or capability was cleared; false if non-matching.
+     */
+    public static boolean processRemovedNotification(String removeKey) {
+        if (removeKey == null || removeKey.isEmpty()) {
+            return false;
+        }
         synchronized (VisionNotificationListener.class) {
             if (latestNotification != null && latestNotification.key.equals(removeKey)) {
                 sequenceCounter++;
@@ -375,9 +409,12 @@ public class VisionNotificationListener extends NotificationListenerService {
                 );
                 latestNotification = null;
                 latestReplyCapability = null;
+                return true;
             } else if (latestReplyCapability != null && latestReplyCapability.key.equals(removeKey)) {
                 latestReplyCapability = null;
+                return true;
             }
+            return false;
         }
     }
 
@@ -453,27 +490,30 @@ public class VisionNotificationListener extends NotificationListenerService {
             if (current == null || current != boundCapability || !current.key.equals(boundCapability.key)) {
                 return ReplyResult.STALE_OR_REMOVED;
             }
-        }
-        if (boundCapability.pendingIntent == null || boundCapability.remoteInput == null) {
-            return ReplyResult.FAILED_INTENT;
-        }
-        if (context == null) {
-            return ReplyResult.INVALID_ARGUMENTS;
-        }
-        if (replyText == null) {
-            replyText = "";
-        }
-        try {
-            Intent fillInIntent = new Intent();
-            Bundle bundle = new Bundle();
-            bundle.putCharSequence(boundCapability.remoteInput.getResultKey(), replyText);
-            RemoteInput.addResultsToIntent(new RemoteInput[] { boundCapability.remoteInput }, fillInIntent, bundle);
-            boundCapability.pendingIntent.send(context, 0, fillInIntent);
-            return ReplyResult.SUCCESS;
-        } catch (PendingIntent.CanceledException e) {
-            return ReplyResult.FAILED_INTENT;
-        } catch (Throwable e) {
-            return ReplyResult.FAILED_INTENT;
+            if (boundCapability.pendingIntent == null || boundCapability.remoteInput == null) {
+                return ReplyResult.FAILED_INTENT;
+            }
+            if (context == null) {
+                return ReplyResult.INVALID_ARGUMENTS;
+            }
+            if (replyText == null) {
+                replyText = "";
+            }
+            try {
+                Intent fillInIntent = new Intent();
+                Bundle bundle = new Bundle();
+                bundle.putCharSequence(boundCapability.remoteInput.getResultKey(), replyText);
+                RemoteInput.addResultsToIntent(new RemoteInput[] { boundCapability.remoteInput }, fillInIntent, bundle);
+                // Note: External IPC dispatch is intentionally performed within the synchronized lock.
+                // Atomic validation-to-dispatch is required for this in-memory capability model to prevent
+                // a stale-dispatch window if onNotificationRemoved concurrently clears or replaces the capability.
+                boundCapability.pendingIntent.send(context, 0, fillInIntent);
+                return ReplyResult.SUCCESS;
+            } catch (PendingIntent.CanceledException e) {
+                return ReplyResult.FAILED_INTENT;
+            } catch (Throwable e) {
+                return ReplyResult.FAILED_INTENT;
+            }
         }
     }
 
