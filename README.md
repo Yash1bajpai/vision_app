@@ -1,13 +1,13 @@
 # Vision
 
-Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero background persistence, and risk-tiered execution safety.
+Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**  
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 6.1 hardens deterministic notification reliability, production listener boundaries, and atomic dispatch within a bounded, zero-persistence Android integration model.
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 6.2 polishes dialog dismissal handling, lifecycle safety, and production boundary regression semantics within a bounded, zero-disk-persistence Android integration model.
 
 ---
 
-## Phase 6.1 Architecture: Deterministic Reliability & Production Boundaries (v0.6.1)
+## Phase 6.2 Architecture: Deterministic Reliability & Production Boundaries (v0.6.2)
 
 ### 1. In-Memory Transient State Model
 Notification state transitions are modeled deterministically in `VisionNotificationListener.ListenerState` with zero disk or database persistence:
@@ -75,7 +75,7 @@ For `REPLY_NOTIFICATION` (Tier CONFIRMED):
 - **Dialog Title:** `"Tony, may I send this message?"`
 - **Dialog Body:** `"I am ready to send this message to [Resolved Destination]:\n\n\"[Exact Outgoing Text]\"\n\nMay I proceed?"`
 - **Controls:** `Allow` and `Deny` buttons.
-- **Safety:** Guards against TOCTOU races, stale capabilities, and destroyed Activity lifecycles.
+- **Safety:** Handles Back button / outside-tap dismissal gracefully without executing replies, preserves `activeDialog` tracking, and guards against TOCTOU races, stale capabilities, and destroyed Activity lifecycles.
 
 ---
 

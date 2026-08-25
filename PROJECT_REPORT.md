@@ -1,28 +1,29 @@
-# Vision Project Report — Phase 6.1: Deterministic Reliability Patch & Production Listener Boundary
+# Vision Project Report — Phase 6.2: Dialog Dismissal Handling & Production Boundary Regression Hardening
 
 **Date:** 2026-08-25  
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)  
-**Current Version:** 0.6.1 (versionCode: 11, compileSdk: 34, targetSdk: 34, minSdk: 26)  
-**Prior Commits:** `205414a` (v0.6.0 Docs), `e96c6a2` (Phase 6 Deterministic Notification Reliability), `3c0a589` (v0.5.2 Docs), `3197478` (Jarvis reply confirmation & multiline composer)  
+**Current Version:** 0.6.2 (versionCode: 12, compileSdk: 34, targetSdk: 34, minSdk: 26)  
+**Prior Commits:** `2943125` (Phase 6.2 fix & regression tests), `72a6d52` (v0.6.1 Docs), `b4f34bd` (Phase 6.1 atomic reply dispatch & production boundaries), `205414a` (v0.6.0 Docs)  
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`  
-**APK SHA-256:** `f402f346f2b894da6ff5acf184f5b2ea71299fe0313c09ba767f02ed3366961b`
+**APK SHA-256:** `227c2aea8f8873beba38a1f1c7630afd067d25c6351a38b4704c04d6eca21e27`
 
 ---
 
 ## 1. Executive Summary
 
-Vision is an offline-first Android integration layer built on deterministic execution, memory-only state safety, explicit modal confirmation for external mutations, and zero background persistence.
+Vision is an offline-first Android integration layer built on deterministic execution, memory-only state safety, explicit modal confirmation for external mutations, and zero disk persistence.
 
 > **Assistant Intelligence Runtime Status:**  
-> Local language models, LLM runtimes, on-device intelligence engines, network AI, embeddings, and free-form action generators are explicitly **excluded and deferred** from Phase 6.1. The scope of this release is strictly bounded deterministic Android integration hardening and action observability.
+> Local language models, LLM runtimes, on-device intelligence engines, network AI, embeddings, and free-form action generators are explicitly **excluded and deferred** from Phase 6.2. The scope of this release is strictly bounded deterministic Android integration hardening, dialog dismissal safety, and production boundary regression verification.
 
-### Phase 6.1 Reliability Patch Deliverables:
-1. **F2 Atomic Validation-to-Dispatch:** `sendBoundReply` performs bound capability identity verification, intent validation, and `PendingIntent.send()` execution within the single `synchronized(VisionNotificationListener.class)` monitor. External IPC is intentionally retained inside the lock to ensure atomic validation-to-dispatch for the in-memory capability model, eliminating the stale-dispatch race window where `onNotificationRemoved` could clear or replace capabilities between validation and dispatch.
-2. **Production Listener Processing Boundary:** Refactored notification state mutation into deterministic production processing methods:
-   - `processPostedNotification(key, packageName, title, text, postTime, flags, replyCap)`: Performs allowlist filtering, flag filtering, monotonic ordering, sequence increments, and atomic state mutation.
-   - `processRemovedNotification(removeKey)`: Atomically validates key matching, clears active notification and reply capabilities, increments sequence counters, and transitions state to `NOTIFICATION_REMOVED`.
-   - The Android framework callbacks `onNotificationPosted` and `onNotificationRemoved` delegate immediately to these production boundaries after framework object extraction.
-3. **Deterministic JUnit 4 Test Suite (25 Tests):** Expanded unit test suite with direct calls to production processing boundaries without mocking Android framework classes or adding Robolectric dependencies. All 25 tests pass offline with 0 failures and 0 errors.
+### Phase 6.2 Polish Deliverables:
+1. **Dialog Dismissal & Cancellation Safety:** In `MainActivity`'s reply confirmation dialog, dismissal by Back button or outside touch is handled gracefully via `setOnDismissListener`. If dismissed while the action remains `PROPOSED`, the action is transitioned to `DENIED` and the `Recent Activity` surface updates with a concise cancellation result (`CANCELLED\n\nReply to ...\n\nConfirmation was dismissed.`). No reply is executed. Button Allow/Deny callbacks are preserved without risk of being overwritten or double-reported, and `isFinishing()`/`isDestroyed()` lifecycle guards and `activeDialog` tracking are maintained.
+2. **Precision Persistence Invariant Documentation:** Standardized documentation wording across `README.md` and `PROJECT_REPORT.md` to specify "zero disk persistence" / "zero persistent storage", clarifying the in-memory transient state model.
+3. **Production Boundary Regression Test Suite (26 Tests):** Added `test26_productionBoundaryRegressionSemantics` to rigorously verify production boundary invariants without fake Android tests or added dependencies:
+   - Same-key replacement notification without capability clears `latestReplyCapability` to `null`.
+   - Posting `cap1` then `cap2` verifies `isCapabilityActive(cap1)` is `false` and `cap2` is active.
+   - Non-matching notification removal preserves active notification and capability state.
+   All 26 tests pass offline with 0 failures and 0 errors.
 
 ---
 
@@ -39,10 +40,10 @@ Defined in `VisionRiskPolicy` and enforced via `VisionAction.requiresConfirmatio
 
 ## 3. Deterministic JUnit 4 Test Suite Evidence
 
-The deterministic test suite (`com.vision.app.VisionAppTest`) executes 25 test groups offline via Gradle `:app:testDebugUnitTest`:
+The deterministic test suite (`com.vision.app.VisionAppTest`) executes 26 test groups offline via Gradle `:app:testDebugUnitTest`:
 
 ### Execution Summary from Gradle XML (`TEST-com.vision.app.VisionAppTest.xml`)
-- **Total Test Groups Executed:** 25
+- **Total Test Groups Executed:** 26
 - **Failures:** 0
 - **Errors:** 0
 - **Skipped:** 0
@@ -74,6 +75,7 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 25 test g
 23. `test23_multilinePayloadExactIdentityAndIntegrity`: Verifies byte-for-byte preservation of multiline payloads across parser, Jarvis confirmation dialog formatting, and CRLF line breaks.
 24. `test24_riskTiersAndActionSafetyInvariants`: Enforces risk tier invariants across all action types under fail-closed security.
 25. `test25_productionProcessingBoundaryComprehensive`: End-to-end verification of `processPostedNotification` and `processRemovedNotification` covering unsupported package rejection, filtered flag preservation, matching removal, sequence updates, and active status re-entry.
+26. `test26_productionBoundaryRegressionSemantics`: Direct verification of capability clearing on same-key replacement with null capability, successive capability deactivation (`cap1` inactive when `cap2` posted), and preservation of active state on non-matching removal.
 
 ---
 
@@ -84,17 +86,17 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 25 test g
 3. **Signature Verification:** `apksigner verify --verbose` -> Verified using APK Signature Scheme v2 (1 signer).
 4. **Package Metadata (`aapt dump badging`):**
    - Application ID: `com.vision.app`
-   - Version Code: `11`
-   - Version Name: `0.6.1`
+   - Version Code: `12`
+   - Version Name: `0.6.2`
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
 5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk`  
-   **SHA-256:** `f402f346f2b894da6ff5acf184f5b2ea71299fe0313c09ba767f02ed3366961b`
+   **SHA-256:** `227c2aea8f8873beba38a1f1c7630afd067d25c6351a38b4704c04d6eca21e27`
 
 ---
 
-## 5. Live Device Verification Checklist (Pending Physical Execution for v0.6.1)
+## 5. Live Device Verification Checklist (Pending Physical Execution for v0.6.2)
 
-The following hardware-dependent paths require verification on the physical iQOO Z9x device:
+*Note: No live physical device tests have been executed yet. The following hardware-dependent verification checklist remains scheduled for execution on the physical iQOO Z9x device:*
 1. **Notification Status Lifecycle:**
    - On clean start without notifications, tap `Read latest notification` -> Verify displays `NO SUPPORTED NOTIFICATION`.
    - Post incoming notification -> Tap `Read latest notification` -> Verify displays notification sender, title, and body.
@@ -106,9 +108,8 @@ The following hardware-dependent paths require verification on the physical iQOO
    - Verify `SEMANTIC_ACTION_REPLY` is selected and dispatched correctly upon user approval.
 4. **Multiline Reply Dispatch:**
    - Send multiline reply with paragraphs and newlines -> Verify receiving device displays identical multiline message formatting.
-5. **Lifecycle & Dialog Dismissal:**
+5. **Dialog Dismissal & Lifecycle Cancellation:**
+   - Trigger Jarvis dialog, press Android Back button or tap outside -> Verify dialog dismisses gracefully, action is marked `DENIED`, UI displays `CANCELLED`, and no reply intent is sent.
    - Trigger Jarvis dialog, rotate device or trigger configuration change -> Verify dialog dismisses gracefully without crashing or invoking callbacks on destroyed Activity.
 6. **Tier SAFE Auto-Execution:**
    - Execute `read notification` and `open whatsapp` -> Verify immediate execution without prompt.
-
-
