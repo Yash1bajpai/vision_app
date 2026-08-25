@@ -786,6 +786,72 @@ public class VisionAppTest {
         assertFalse(VisionNotificationListener.getListenerState().hasReplyCapability);
     }
 
+    // Test 26: Production boundary regression semantics for capability lifecycle, replacement, and non-matching removal
+    @Test
+    public void test26_productionBoundaryRegressionSemantics() {
+        VisionNotificationListener.clearLatestNotification();
+
+        // 1. Post same key with capability then same key without capability -> getLatestReplyCapability is null
+        VisionNotificationListener.NotificationReplyCapability cap1 =
+                new VisionNotificationListener.NotificationReplyCapability("same_key", "com.whatsapp", "Alice", null, null);
+        assertTrue("Initial post with capability succeeds",
+                VisionNotificationListener.processPostedNotification("same_key", "com.whatsapp", "Alice", "Hello", 1000L, 0, cap1));
+        assertNotNull("Latest notification snapshot present", VisionNotificationListener.getLatestNotification());
+        assertEquals("same_key", VisionNotificationListener.getLatestNotification().key);
+        assertEquals("Latest capability is cap1", cap1, VisionNotificationListener.getLatestReplyCapability());
+        assertTrue("cap1 is capability active", VisionNotificationListener.isCapabilityActive(cap1));
+        assertTrue("ListenerState has reply capability", VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        // Update same key without capability (e.g. read receipt / update notification without RemoteInput)
+        assertTrue("Same key update without capability succeeds",
+                VisionNotificationListener.processPostedNotification("same_key", "com.whatsapp", "Alice", "Hello (read)", 1000L, 0, null));
+        assertNotNull("Notification snapshot retained with updated text", VisionNotificationListener.getLatestNotification());
+        assertEquals("Hello (read)", VisionNotificationListener.getLatestNotification().text);
+        assertNull("getLatestReplyCapability is null after same-key replacement without capability",
+                VisionNotificationListener.getLatestReplyCapability());
+        assertFalse("cap1 is no longer active", VisionNotificationListener.isCapabilityActive(cap1));
+        assertFalse("ListenerState hasReplyCapability is false", VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        // 2. Post cap1 then post cap2 and verify isCapabilityActive(cap1) false and cap2 active
+        VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.NotificationReplyCapability capA =
+                new VisionNotificationListener.NotificationReplyCapability("key_a", "com.whatsapp", "Alice", null, null);
+        VisionNotificationListener.NotificationReplyCapability capB =
+                new VisionNotificationListener.NotificationReplyCapability("key_b", "org.telegram.messenger", "Bob", null, null);
+
+        assertTrue("Post capA succeeds",
+                VisionNotificationListener.processPostedNotification("key_a", "com.whatsapp", "Alice", "Msg A", 2000L, 0, capA));
+        assertTrue("capA is active", VisionNotificationListener.isCapabilityActive(capA));
+        assertFalse("capB is inactive", VisionNotificationListener.isCapabilityActive(capB));
+        assertEquals("Latest capability is capA", capA, VisionNotificationListener.getLatestReplyCapability());
+
+        assertTrue("Post capB succeeds",
+                VisionNotificationListener.processPostedNotification("key_b", "org.telegram.messenger", "Bob", "Msg B", 3000L, 0, capB));
+        assertFalse("capA is inactive after capB posted", VisionNotificationListener.isCapabilityActive(capA));
+        assertTrue("capB is active after posted", VisionNotificationListener.isCapabilityActive(capB));
+        assertEquals("Latest capability is capB", capB, VisionNotificationListener.getLatestReplyCapability());
+        assertEquals("key_b", VisionNotificationListener.getLatestNotification().key);
+
+        // 3. Nonmatching removal preserves active state
+        boolean nonMatchingRemoved = VisionNotificationListener.processRemovedNotification("key_unrelated");
+        assertFalse("Nonmatching removal returns false", nonMatchingRemoved);
+        assertNotNull("Latest notification intact after nonmatching removal", VisionNotificationListener.getLatestNotification());
+        assertEquals("key_b", VisionNotificationListener.getLatestNotification().key);
+        assertEquals("Latest capability intact after nonmatching removal", capB, VisionNotificationListener.getLatestReplyCapability());
+        assertTrue("capB remains active after nonmatching removal", VisionNotificationListener.isCapabilityActive(capB));
+        assertFalse("capA remains inactive", VisionNotificationListener.isCapabilityActive(capA));
+        assertTrue("ListenerState remains ACTIVE_NOTIFICATION", VisionNotificationListener.getListenerState().isNotificationActive());
+        assertTrue("ListenerState still has reply capability", VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        // Matching removal clears state
+        boolean matchingRemoved = VisionNotificationListener.processRemovedNotification("key_b");
+        assertTrue("Matching removal returns true", matchingRemoved);
+        assertNull("Latest notification null after matching removal", VisionNotificationListener.getLatestNotification());
+        assertNull("Latest capability null after matching removal", VisionNotificationListener.getLatestReplyCapability());
+        assertFalse("capB inactive after removal", VisionNotificationListener.isCapabilityActive(capB));
+        assertTrue("ListenerState is NOTIFICATION_REMOVED", VisionNotificationListener.getListenerState().isNotificationRemoved());
+    }
+
     private static void assertReply(String command, String expectedTarget, String expectedText) {
         VisionAction action = VisionActionParser.parse(command);
         assertEquals("Expected REPLY_NOTIFICATION for: " + command, VisionAction.Type.REPLY_NOTIFICATION, action.type);

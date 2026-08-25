@@ -213,6 +213,11 @@ public class MainActivity extends Activity {
                             openNotificationSettings();
                         }
                     })
+                    .setOnDismissListener(d -> {
+                        if (activeDialog == d) {
+                            activeDialog = null;
+                        }
+                    })
                     .create();
             showManagedDialog(dialog);
             activityText.setText("FAILED\n\nNotification access is not enabled.");
@@ -266,6 +271,16 @@ public class MainActivity extends Activity {
                     input.setText("");
                     hideKeyboard(input);
                 })
+                .setOnDismissListener(d -> {
+                    if (activeDialog == d) {
+                        activeDialog = null;
+                    }
+                    if (isFinishing() || isDestroyed()) return;
+                    if (action.state == VisionAction.State.PROPOSED) {
+                        action.state = VisionAction.State.DENIED;
+                        activityText.setText("CANCELLED\n\nReply to " + destDisplay + "\n\nConfirmation was dismissed.");
+                    }
+                })
                 .create();
         showManagedDialog(dialog);
     }
@@ -296,6 +311,11 @@ public class MainActivity extends Activity {
                     .setPositiveButton("Open settings", (d, which) -> {
                         if (!isFinishing() && !isDestroyed()) {
                             openNotificationSettings();
+                        }
+                    })
+                    .setOnDismissListener(d -> {
+                        if (activeDialog == d) {
+                            activeDialog = null;
                         }
                     })
                     .create();
@@ -364,6 +384,11 @@ public class MainActivity extends Activity {
                     .setPositiveButton("Open settings", (d, which) -> {
                         if (!isFinishing() && !isDestroyed()) {
                             openNotificationSettings();
+                        }
+                    })
+                    .setOnDismissListener(d -> {
+                        if (activeDialog == d) {
+                            activeDialog = null;
                         }
                     })
                     .create();
