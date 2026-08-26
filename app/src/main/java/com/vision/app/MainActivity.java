@@ -160,6 +160,8 @@ public class MainActivity extends Activity {
                 }
                 if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
                     handleReplyAction(action, command, input);
+                } else if (action.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
+                    handleDirectMessageAction(action, input);
                 } else if (action.type == VisionAction.Type.READ_NOTIFICATION) {
                     handleReadAction(action, command, input);
                 } else if (action.type == VisionAction.Type.OPEN_APP) {
@@ -173,6 +175,56 @@ public class MainActivity extends Activity {
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    // Tier CONFIRMED: opening an external composer is not proof that a message was sent.
+    private void handleDirectMessageAction(VisionAction action, EditText input) {
+        Intent compose = DirectMessageIntentFactory.create(action);
+        if (compose == null || compose.resolveActivity(getPackageManager()) == null) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nNo supported composer is available for " + action.channel + ".");
+            return;
+        }
+
+        String destination = action.target;
+        String channel = action.channel.toUpperCase(java.util.Locale.US).replace('_', ' ');
+        String confirmation = "I am ready to open the " + channel + " composer for "
+                + destination + ":\n\n\"" + action.replyText + "\"\n\n"
+                + "The message will not be reported as sent until you send it in that app.\n\nMay I proceed?";
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Tony, may I prepare this message?")
+                .setMessage(confirmation)
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    action.state = VisionAction.State.DENIED;
+                    activityText.setText("DENIED\n\nMessage to " + destination + "\n\nVision stopped this action.");
+                })
+                .setPositiveButton("Open composer", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    action.state = VisionAction.State.APPROVED;
+                    action.state = VisionAction.State.RUNNING;
+                    try {
+                        startActivity(compose);
+                        action.state = VisionAction.State.COMPOSER_OPENED;
+                        activityText.setText("COMPOSER OPENED\n\n" + channel + " composer opened for "
+                                + destination + ".\n\nThe message has not been reported as sent.");
+                        input.setText("");
+                        hideKeyboard(input);
+                    } catch (Exception e) {
+                        action.state = VisionAction.State.FAILED;
+                        activityText.setText("FAILED\n\nCould not open the " + channel + " composer.");
+                    }
+                })
+                .setOnDismissListener(d -> {
+                    if (activeDialog == d) activeDialog = null;
+                    if (action.state == VisionAction.State.PROPOSED) {
+                        action.state = VisionAction.State.DENIED;
+                        if (isFinishing() || isDestroyed()) return;
+                        activityText.setText("CANCELLED\n\nMessage to " + destination + "\n\nConfirmation was dismissed.");
+                    }
+                })
+                .create();
+        showManagedDialog(dialog);
     }
 
     @Override

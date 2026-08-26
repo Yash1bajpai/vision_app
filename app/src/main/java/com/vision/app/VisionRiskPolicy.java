@@ -17,6 +17,7 @@ import java.util.Set;
  *
  * Tier CONFIRMED (modal Allow/Deny REQUIRED before execution):
  * - REPLY_NOTIFICATION (active MVP)
+ * - SEND_MESSAGE_DIRECT (compose handoff; final send remains external)
  * - UNKNOWN / null / any unlisted future action types (fail-closed default)
  *
  * Future high-risk types documented for upcoming phases:

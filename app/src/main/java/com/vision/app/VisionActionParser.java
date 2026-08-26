@@ -18,6 +18,11 @@ public final class VisionActionParser {
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL
     );
 
+    private static final Pattern DIRECT_MESSAGE_PATTERN = Pattern.compile(
+            "^(?:please\\s+)?send(?:\\s+new)?\\s+(?:(sms|text|email|whatsapp(?:\\s+business)?|telegram)\\s+)?(?:message\\s+)?to\\s+([^:]+?)\\s*:\\s*(.+)$",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+    );
+
     private VisionActionParser() { }
 
     public static VisionAction parse(String request) {
@@ -27,6 +32,22 @@ public final class VisionActionParser {
         String trimmed = request.trim();
         if (trimmed.isEmpty()) {
             return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
+        }
+
+        Matcher directMatcher = DIRECT_MESSAGE_PATTERN.matcher(trimmed);
+        if (directMatcher.matches()) {
+            String requestedChannel = directMatcher.group(1);
+            String destination = directMatcher.group(2) != null ? directMatcher.group(2).trim() : "";
+            String body = directMatcher.group(3) != null ? directMatcher.group(3).trim() : "";
+            if (!destination.isEmpty() && !body.isEmpty()) {
+                String channel = requestedChannel != null ? requestedChannel.toLowerCase(Locale.US) : inferChannel(destination);
+                if ("text".equals(channel)) channel = "sms";
+                if ("whatsapp business".equals(channel)) channel = "whatsapp_business";
+                if (isValidDirectDestination(channel, destination)) {
+                    return new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, request,
+                            destination, body, channel);
+                }
+            }
         }
 
         // 1. Reply parsing with strict target colon requirement
@@ -79,5 +100,26 @@ public final class VisionActionParser {
         }
 
         return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
+    }
+
+    private static String inferChannel(String destination) {
+        return destination.matches("^\\+?[0-9][0-9 .()-]{5,}$") ? "sms"
+                : destination.contains("@") ? "email" : "";
+    }
+
+    private static boolean isValidDirectDestination(String channel, String destination) {
+        if ("sms".equals(channel) || "whatsapp".equals(channel) || "whatsapp_business".equals(channel)) {
+            String digits = destination.replaceAll("[^0-9]", "");
+            return destination.startsWith("+")
+                    && destination.matches("^\\+?[0-9][0-9 .()-]*$")
+                    && digits.length() >= 7 && digits.length() <= 15;
+        }
+        if ("email".equals(channel)) {
+            return destination.matches("^[A-Za-z0-9.!#$%&'*+^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$");
+        }
+        if ("telegram".equals(channel)) {
+            return destination.matches("^@?[A-Za-z][A-Za-z0-9_]{4,31}$");
+        }
+        return false;
     }
 }

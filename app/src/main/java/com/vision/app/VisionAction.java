@@ -5,6 +5,7 @@ public final class VisionAction {
     public enum Type {
         READ_NOTIFICATION,
         REPLY_NOTIFICATION,
+        SEND_MESSAGE_DIRECT,
         OPEN_APP,
         UNKNOWN
     }
@@ -15,6 +16,7 @@ public final class VisionAction {
         DENIED,
         RUNNING,
         SUCCEEDED,
+        COMPOSER_OPENED,
         FAILED
     }
 
@@ -22,6 +24,7 @@ public final class VisionAction {
     public final String request;
     public final String target;
     public final String replyText;
+    public final String channel;
     public State state = State.PROPOSED;
 
     public VisionAction(Type type, String request, String target) {
@@ -29,10 +32,15 @@ public final class VisionAction {
     }
 
     public VisionAction(Type type, String request, String target, String replyText) {
+        this(type, request, target, replyText, "");
+    }
+
+    public VisionAction(Type type, String request, String target, String replyText, String channel) {
         this.type = type != null ? type : Type.UNKNOWN;
         this.request = request != null ? request : "";
         this.target = target != null ? target : "";
         this.replyText = replyText != null ? replyText : "";
+        this.channel = channel != null ? channel : "";
     }
 
     public String label() {
@@ -43,6 +51,7 @@ public final class VisionAction {
                     : target;
             return "Reply to " + dest;
         }
+        if (type == Type.SEND_MESSAGE_DIRECT) return "Send a new message to " + target;
         if (type == Type.OPEN_APP) return "Open " + target;
         return "Process this request locally";
     }

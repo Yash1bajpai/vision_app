@@ -1,29 +1,40 @@
-# Vision Project Report — Phase 6.2: Dialog Dismissal Handling & Production Boundary Regression Hardening
+# Vision Project Report — Phase 7: New Message Composer Handoff
 
-**Date:** 2026-08-25  
+**Date:** 2026-08-26
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)  
-**Current Version:** 0.6.2 (versionCode: 12, compileSdk: 34, targetSdk: 34, minSdk: 26)  
-**Prior Commits:** `2943125` (Phase 6.2 fix & regression tests), `72a6d52` (v0.6.1 Docs), `b4f34bd` (Phase 6.1 atomic reply dispatch & production boundaries), `205414a` (v0.6.0 Docs)  
+**Current Version:** 0.7.0 (versionCode: 13, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Prior Commits:** `2943125` (Phase 6.2 fix & regression tests), `72a6d52` (v0.6.1 Docs), `b4f34bd` (Phase 6.1 atomic reply dispatch & production boundaries), `205414a` (v0.6.0 Docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`  
-**APK SHA-256:** `227c2aea8f8873beba38a1f1c7630afd067d25c6351a38b4704c04d6eca21e27`
+**APK SHA-256:** `228e5daed197eacb46368b8d1b2919cf5d67af36b3333177c1b0ca55ac77ac5a`
 
 ---
 
 ## 1. Executive Summary
 
+### Phase 7 Deliverables
+1. Added `SEND_MESSAGE_DIRECT` as a distinct confirmed action for requests that do not depend on a notification.
+2. Added strict explicit-destination parsing for SMS, email, WhatsApp, WhatsApp Business, and Telegram.
+3. Added `DirectMessageIntentFactory`, which only constructs supported external composer handoffs and performs no delivery.
+4. Added cancellation-safe confirmation handling and a distinct `COMPOSER_OPENED` terminal state so opening an external composer is not represented as a sent message.
+5. Added parser and policy regression coverage; framework intent behavior remains a required physical-device verification gate.
+
+Contact-name lookup, Accessibility automation, silent sending, arbitrary chooser fallback, root, and Device Owner are explicitly out of scope.
+
+---
+
 Vision is an offline-first Android integration layer built on deterministic execution, memory-only state safety, explicit modal confirmation for external mutations, and zero disk persistence.
 
 > **Assistant Intelligence Runtime Status:**  
-> Local language models, LLM runtimes, on-device intelligence engines, network AI, embeddings, and free-form action generators are explicitly **excluded and deferred** from Phase 6.2. The scope of this release is strictly bounded deterministic Android integration hardening, dialog dismissal safety, and production boundary regression verification.
+> Local language models, LLM runtimes, on-device intelligence engines, network AI, embeddings, and free-form action generators remain explicitly **excluded and deferred**. This release is bounded to deterministic Android composer handoffs and confirmation safety.
 
-### Phase 6.2 Polish Deliverables:
-1. **Dialog Dismissal & Cancellation Safety:** In `MainActivity`'s reply confirmation dialog, dismissal by Back button or outside touch is handled gracefully via `setOnDismissListener`. If dismissed while the action remains `PROPOSED`, the action is transitioned to `DENIED` and the `Recent Activity` surface updates with a concise cancellation result (`CANCELLED\n\nReply to ...\n\nConfirmation was dismissed.`). No reply is executed. Button Allow/Deny callbacks are preserved without risk of being overwritten or double-reported, and `isFinishing()`/`isDestroyed()` lifecycle guards and `activeDialog` tracking are maintained.
-2. **Precision Persistence Invariant Documentation:** Standardized documentation wording across `README.md` and `PROJECT_REPORT.md` to specify "zero disk persistence" / "zero persistent storage", clarifying the in-memory transient state model.
-3. **Production Boundary Regression Test Suite (26 Tests):** Added `test26_productionBoundaryRegressionSemantics` to rigorously verify production boundary invariants without fake Android tests or added dependencies:
+### Prior Phase 6.2 Record:
+1. **Dialog Dismissal & Cancellation Safety:** Reply confirmation dismissal by Back or outside touch transitions a proposed reply to `DENIED` without sending.
+2. **Precision Persistence Invariant Documentation:** Notification state remains in memory with zero disk persistence.
+3. **Production Boundary Regression Test Suite:** The prior release added `test26_productionBoundaryRegressionSemantics`:
    - Same-key replacement notification without capability clears `latestReplyCapability` to `null`.
    - Posting `cap1` then `cap2` verifies `isCapabilityActive(cap1)` is `false` and `cap2` is active.
    - Non-matching notification removal preserves active notification and capability state.
-   All 26 tests pass offline with 0 failures and 0 errors.
+    All prior 26 tests passed offline with 0 failures and 0 errors.
 
 ---
 
@@ -34,16 +45,16 @@ Defined in `VisionRiskPolicy` and enforced via `VisionAction.requiresConfirmatio
 | Risk Tier | Policy | Action Types | Safety Behavior |
 |---|---|---|---|
 | **Tier SAFE** | Auto-execute immediately (NO modal dialog) | `OPEN_APP`, `READ_NOTIFICATION` *(Explicitly enumerated in `SAFE_TYPES`)* | User's typed command authorizes the read-only or local app launch action directly. Executes immediately upon validation and outputs concise `SUCCEEDED` / `FAILED` status to the Recent Activity surface. Never prompts for permission. |
-| **Tier CONFIRMED** | Conversational Jarvis Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`<br>*Default fallback:* `UNKNOWN`, `null`, unlisted types<br>*(Documented future: `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`)* | High-risk external actions mutate device state or send communications. Strictly binds in-memory capability identity at proposal time, validates targets conservatively, requires conversational Jarvis confirmation modal showing exact destination and payload, and re-verifies active capability atomically inside the synchronization lock at dispatch. |
+| **Tier CONFIRMED** | Conversational Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`, `SEND_MESSAGE_DIRECT`<br>*Default fallback:* `UNKNOWN`, `null`, unlisted types<br>*(Documented future: `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `INSTALL`, `CHANGE_SETTING`)* | External communication actions require explicit approval. Notification replies bind capability identity; direct messages bind exact channel, destination, and payload, then open only a supported external composer. |
 
 ---
 
 ## 3. Deterministic JUnit 4 Test Suite Evidence
 
-The deterministic test suite (`com.vision.app.VisionAppTest`) executes 26 test groups offline via Gradle `:app:testDebugUnitTest`:
+The deterministic test suite (`com.vision.app.VisionAppTest`) executes 28 test groups offline via Gradle `:app:testDebugUnitTest`:
 
 ### Execution Summary from Gradle XML (`TEST-com.vision.app.VisionAppTest.xml`)
-- **Total Test Groups Executed:** 26
+- **Total Test Groups Executed:** 28
 - **Failures:** 0
 - **Errors:** 0
 - **Skipped:** 0
@@ -76,6 +87,8 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 26 test g
 24. `test24_riskTiersAndActionSafetyInvariants`: Enforces risk tier invariants across all action types under fail-closed security.
 25. `test25_productionProcessingBoundaryComprehensive`: End-to-end verification of `processPostedNotification` and `processRemovedNotification` covering unsupported package rejection, filtered flag preservation, matching removal, sequence updates, and active status re-entry.
 26. `test26_productionBoundaryRegressionSemantics`: Direct verification of capability clearing on same-key replacement with null capability, successive capability deactivation (`cap1` inactive when `cap2` posted), and preservation of active state on non-matching removal.
+27. `test27_directMessageParsingAndRiskPolicy`: Strict explicit destination grammar, channel classification, multiline preservation, invalid destination rejection, and confirmed risk tier.
+28. `test28_directMessageIntentFactory`: Null and unsupported-channel fail-closed behavior at the intent boundary. Positive framework intent assertions remain a device-test gate because Android framework methods are unavailable in local JVM tests.
 
 ---
 
@@ -86,15 +99,15 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 26 test g
 3. **Signature Verification:** `apksigner verify --verbose` -> Verified using APK Signature Scheme v2 (1 signer).
 4. **Package Metadata (`aapt dump badging`):**
    - Application ID: `com.vision.app`
-   - Version Code: `12`
-   - Version Name: `0.6.2`
+    - Version Code: `13`
+    - Version Name: `0.7.0`
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
 5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk`  
-   **SHA-256:** `227c2aea8f8873beba38a1f1c7630afd067d25c6351a38b4704c04d6eca21e27`
+    **SHA-256:** `228e5daed197eacb46368b8d1b2919cf5d67af36b3333177c1b0ca55ac77ac5a`
 
 ---
 
-## 5. Live Device Verification Checklist (Pending Physical Execution for v0.6.2)
+## 5. Live Device Verification Checklist (Pending Physical Execution for v0.7.0)
 
 *Note: No live physical device tests have been executed yet. The following hardware-dependent verification checklist remains scheduled for execution on the physical iQOO Z9x device:*
 1. **Notification Status Lifecycle:**
@@ -112,4 +125,10 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 26 test g
    - Trigger Jarvis dialog, press Android Back button or tap outside -> Verify dialog dismisses gracefully, action is marked `DENIED`, UI displays `CANCELLED`, and no reply intent is sent.
    - Trigger Jarvis dialog, rotate device or trigger configuration change -> Verify dialog dismisses gracefully without crashing or invoking callbacks on destroyed Activity.
 6. **Tier SAFE Auto-Execution:**
-   - Execute `read notification` and `open whatsapp` -> Verify immediate execution without prompt.
+    - Execute `read notification` and `open whatsapp` -> Verify immediate execution without prompt.
+7. **New Message Composer Handoff:**
+    - Test explicit international SMS number, email address, WhatsApp number, WhatsApp Business number, and Telegram username.
+    - Verify confirmation shows exact destination and multiline body.
+    - Verify `Deny`, Back, outside tap, and rotation do not open a composer.
+    - Verify approval opens the intended composer and reports `COMPOSER OPENED`, never `SENT`.
+    - Verify SMS/email package visibility works on Android 11+ and unavailable target apps fail cleanly.

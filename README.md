@@ -3,7 +3,7 @@
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**  
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 6.2 polishes dialog dismissal handling, lifecycle safety, and production boundary regression semantics within a bounded, zero-disk-persistence Android integration model.
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 7 adds bounded, zero-disk-persistence composer handoffs while retaining deterministic execution and confirmation safety.
 
 ---
 
@@ -56,6 +56,24 @@ Multiline composer text is preserved byte-for-byte:
   - *Action cancelled or expired by Android*
 - Zero long-term action logs or notification history are stored on disk.
 
+## Phase 7: New Message Composer Handoff (v0.7.0)
+
+Vision can prepare a new message even when no notification exists. This workflow is a
+confirmed handoff to an external app composer; it does not send silently and never
+reports delivery merely because the composer opened. The user must review and send
+the message in the destination app.
+
+Supported explicit destinations:
+- SMS phone numbers: `send SMS to +919876543210: I will be late`
+- Email addresses: `send email to alice@example.com: Meeting confirmed`
+- WhatsApp phone numbers: `send WhatsApp message to +919876543210: On my way`
+- WhatsApp Business phone numbers: `send WhatsApp Business message to +919876543210: On my way`
+- Telegram usernames: `send Telegram message to @alice123: Hello`
+
+The destination must be explicit and valid for its channel. Contact-name lookup,
+Accessibility automation, root, Device Owner, and arbitrary app chooser fallbacks are
+not used. Back, outside-tap, and lifecycle dismissal cancel the proposed handoff.
+
 ---
 
 ## Risk-Tiered Confirmation Policy (Inverted Fail-Closed)
@@ -65,7 +83,7 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 | Risk Tier | Policy | Action Types | Execution Flow |
 |---|---|---|---|
 | **Tier SAFE** | Auto-execute immediately (NO modal dialog) | `OPEN_APP`, `READ_NOTIFICATION` | Typed command is direct intent. Executes immediately upon validation and outputs concise `SUCCEEDED` / `FAILED` status to the Recent Activity surface. |
-| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION` *(Active MVP)*<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `SEND_MESSAGE_DIRECT`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Proposal binds in-memory capability identity; conversational Jarvis-style modal dialog shows exact source, recipient, and payload; re-verifies active capability atomically within lock at dispatch. Never auto-executed. |
+| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`, `SEND_MESSAGE_DIRECT`<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Dialog shows the exact destination and payload. Notification replies re-verify bound capability identity; direct messages open only an approved external composer and never claim delivery. Never auto-executed. |
 
 ---
 
@@ -104,6 +122,16 @@ For `REPLY_NOTIFICATION` (Tier CONFIRMED):
 - `reply to <target>:\n<multiline message>`
 - `send reply <message>` (e.g. `send reply Confirmed`)
 - `answer <message>` (e.g. `answer Thank you`)
+
+### New Message Composer Handoff (Tier CONFIRMED)
+- `send message to +919876543210: Hello`
+- `send SMS to +919876543210: Hello`
+- `send email to alice@example.com: Meeting confirmed`
+- `send WhatsApp message to +919876543210: On my way`
+- `send WhatsApp Business message to +919876543210: On my way`
+- `send Telegram message to @alice123: Hello`
+
+After approval, Vision reports `COMPOSER OPENED`, not `SENT`.
 
 ---
 

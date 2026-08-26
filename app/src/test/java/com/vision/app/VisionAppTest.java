@@ -852,6 +852,64 @@ public class VisionAppTest {
         assertTrue("ListenerState is NOTIFICATION_REMOVED", VisionNotificationListener.getListenerState().isNotificationRemoved());
     }
 
+    @Test
+    public void test27_directMessageParsingAndRiskPolicy() {
+        VisionAction sms = VisionActionParser.parse("send message to +91 98765-43210: Line 1\nLine 2");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, sms.type);
+        assertEquals("+91 98765-43210", sms.target);
+        assertEquals("sms", sms.channel);
+        assertEquals("Line 1\nLine 2", sms.replyText);
+        assertTrue("Direct message requires confirmation", sms.requiresConfirmation());
+        assertEquals(VisionRiskPolicy.RiskTier.CONFIRMED,
+                VisionRiskPolicy.getRiskTier(VisionAction.Type.SEND_MESSAGE_DIRECT));
+        assertEquals("Send a new message to +91 98765-43210", sms.label());
+
+        VisionAction email = VisionActionParser.parse("send email to alice@example.com: Subject: hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, email.type);
+        assertEquals("email", email.channel);
+        assertEquals("Subject: hello", email.replyText);
+        assertEquals(VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("send email to alice?x@example.com: Hello").type);
+
+        VisionAction whatsapp = VisionActionParser.parse("send WhatsApp message to +15551234567: Hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, whatsapp.type);
+        assertEquals("whatsapp", whatsapp.channel);
+        assertEquals(VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("send WhatsApp message to 15551234567: Hello").type);
+
+        VisionAction whatsappBusiness = VisionActionParser.parse("send WhatsApp Business message to +15551234567: Hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, whatsappBusiness.type);
+        assertEquals("whatsapp_business", whatsappBusiness.channel);
+
+        VisionAction telegram = VisionActionParser.parse("please send telegram message to @alice_1234: Hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, telegram.type);
+        assertEquals("telegram", telegram.channel);
+
+        assertEquals("reply remains notification reply", VisionAction.Type.REPLY_NOTIFICATION,
+                VisionActionParser.parse("send reply Hello").type);
+        String[] invalid = {
+                "send message Hello", "send message to Alice Hello", "send message to Alice:",
+                "send message to Alice: Hello", "send message", "send fax message to 12345678: Hi",
+                "send email message to alice@example.com: ", "send message to 1-----: Hi",
+                "send telegram message to @bob: Hi"
+        };
+        for (String command : invalid) {
+            assertEquals("Invalid direct message rejected: " + command,
+                    VisionAction.Type.UNKNOWN, VisionActionParser.parse(command).type);
+        }
+    }
+
+    @Test
+    public void test28_directMessageIntentFactory() {
+        // Android framework Uri/Intent methods are not available in this JVM test environment.
+        // Device validation covers the positive external-app handoff; invalid actions remain pure.
+        assertNull("Unknown direct channel has no intent", DirectMessageIntentFactory.create(
+                new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, "x", "target", "body", "fax")));
+        assertNull("Unsigned SMS rejected at factory boundary", DirectMessageIntentFactory.create(
+                new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, "x", "1234567890", "body", "sms")));
+        assertNull("Null action has no intent", DirectMessageIntentFactory.create(null));
+    }
+
     private static void assertReply(String command, String expectedTarget, String expectedText) {
         VisionAction action = VisionActionParser.parse(command);
         assertEquals("Expected REPLY_NOTIFICATION for: " + command, VisionAction.Type.REPLY_NOTIFICATION, action.type);
