@@ -7,6 +7,8 @@
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
 **APK SHA-256:** `15a43dba072e488f4021f7f916af361862c21d0f88d186d78194d366a4e16379`
 
+**Audit Status:** Approved by independent self-review and blind `opencode/mimo-v2.5-free` audit after remediation commit `9c6e7c9`.
+
 ---
 
 ## 1. Executive Summary
@@ -145,4 +147,23 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 34 test g
    - Tap `Open composer` -> Verify WhatsApp opens with pre-filled message for `+919876543210` and Vision UI displays `COMPOSER OPENED`.
 7. **Explicit Destination Regressions:**
    - Test `send SMS to +919876543210: Hello`, `send email to alice@example.com: Hello`, and `send Telegram message to @alice123: Hello`.
-   - Verify explicit destinations bypass contact resolution and runtime permission requests completely.
+    - Verify explicit destinations bypass contact resolution and runtime permission requests completely.
+
+---
+
+## 6. Audit Record
+
+### Implementation Checkpoint
+- Antigravity implementation checkpoint: commit `2c997bd`.
+- Independent verification confirmed 33 tests, successful offline build, APK metadata, signature, and artifact hash.
+
+### Audit Remediation Loop
+- MiMo audit found permission-flow recovery and notification capability-state issues, plus documentation accuracy concerns.
+- Antigravity remediation was applied without committing or pushing from that session.
+- MiMo re-audited the remediation and found the capability-only removal state fix correct; lifecycle and test-coverage wording were corrected.
+- Final blind MiMo verdict: `OVERALL: APPROVED`.
+- Remediation checkpoint: commit `9c6e7c9`.
+
+### Remaining Gates
+- No physical-device or Android instrumentation tests were claimed as complete.
+- Runtime Contacts permission, real Contacts Provider matching, Activity recreation while the permission dialog is open, and external composer routing remain required device validation.
