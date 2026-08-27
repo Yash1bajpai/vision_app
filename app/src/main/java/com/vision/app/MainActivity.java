@@ -29,11 +29,19 @@ public class MainActivity extends Activity {
     private static final int MINT = Color.rgb(158, 230, 194);
     private static final int REQUEST_CODE_READ_CONTACTS = 101;
 
+    private static final String STATE_PENDING_ACTION_TYPE = "pending_action_type";
+    private static final String STATE_PENDING_ACTION_REQUEST = "pending_action_request";
+    private static final String STATE_PENDING_ACTION_TARGET = "pending_action_target";
+    private static final String STATE_PENDING_ACTION_REPLY_TEXT = "pending_action_reply_text";
+    private static final String STATE_PENDING_ACTION_CHANNEL = "pending_action_channel";
+    private static final String STATE_PENDING_ACTION_STATE = "pending_action_state";
+    private static final String STATE_ACTIVITY_TEXT = "activity_text";
+
     private TextView activityText;
     private TextView statusText;
     private AlertDialog activeDialog;
     private VisionAction pendingContactAction;
-    private EditText pendingInputField;
+    private EditText inputField;
 
     @Override
     public void onCreate(Bundle state) {
@@ -41,6 +49,63 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         buildScreen();
+        if (state != null) {
+            restoreInstanceState(state);
+        }
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (outState != null) {
+            if (pendingContactAction != null) {
+                if (pendingContactAction.type != null) {
+                    outState.putString(STATE_PENDING_ACTION_TYPE, pendingContactAction.type.name());
+                }
+                outState.putString(STATE_PENDING_ACTION_REQUEST, pendingContactAction.request);
+                outState.putString(STATE_PENDING_ACTION_TARGET, pendingContactAction.target);
+                outState.putString(STATE_PENDING_ACTION_REPLY_TEXT, pendingContactAction.replyText);
+                outState.putString(STATE_PENDING_ACTION_CHANNEL, pendingContactAction.channel);
+                if (pendingContactAction.state != null) {
+                    outState.putString(STATE_PENDING_ACTION_STATE, pendingContactAction.state.name());
+                }
+            }
+            if (activityText != null && activityText.getText() != null) {
+                outState.putCharSequence(STATE_ACTIVITY_TEXT, activityText.getText());
+            }
+        }
+    }
+
+    private void restoreInstanceState(Bundle state) {
+        if (state == null) return;
+        CharSequence savedText = state.getCharSequence(STATE_ACTIVITY_TEXT);
+        if (savedText != null && activityText != null) {
+            activityText.setText(savedText);
+        }
+        String typeStr = state.getString(STATE_PENDING_ACTION_TYPE);
+        if (typeStr != null) {
+            try {
+                VisionAction.Type type = VisionAction.Type.valueOf(typeStr);
+                String request = state.getString(STATE_PENDING_ACTION_REQUEST, "");
+                String target = state.getString(STATE_PENDING_ACTION_TARGET, "");
+                String replyText = state.getString(STATE_PENDING_ACTION_REPLY_TEXT, "");
+                String channel = state.getString(STATE_PENDING_ACTION_CHANNEL, "");
+                if (type == VisionAction.Type.SEND_MESSAGE_DIRECT && target != null && !target.trim().isEmpty()) {
+                    VisionAction restored = new VisionAction(type, request, target, replyText, channel);
+                    String stateStr = state.getString(STATE_PENDING_ACTION_STATE);
+                    if (stateStr != null) {
+                        try {
+                            restored.state = VisionAction.State.valueOf(stateStr);
+                        } catch (Exception ignored) { }
+                    }
+                    pendingContactAction = restored;
+                } else {
+                    pendingContactAction = null;
+                }
+            } catch (Exception e) {
+                pendingContactAction = null;
+            }
+        }
     }
 
     @Override
@@ -53,7 +118,7 @@ public class MainActivity extends Activity {
             activeDialog = null;
         }
         pendingContactAction = null;
-        pendingInputField = null;
+        inputField = null;
     }
 
     private void showManagedDialog(AlertDialog dialog) {
@@ -132,6 +197,7 @@ public class MainActivity extends Activity {
         composer.setBackground(round(PANEL, 18));
         composer.setGravity(Gravity.BOTTOM);
         EditText input = new EditText(this);
+        inputField = input;
         input.setHint("Ask Vision anything... (Enter for newline)");
         input.setHintTextColor(MUTED);
         input.setTextColor(TEXT);
@@ -195,7 +261,6 @@ public class MainActivity extends Activity {
     private void handleContactDirectMessageAction(VisionAction action, EditText input) {
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             pendingContactAction = action;
-            pendingInputField = input;
             activityText.setText("CONTACTS PERMISSION NEEDED\n\nVision needs Contacts permission to resolve \"" + action.target + "\".");
             requestPermissions(new String[]{android.Manifest.permission.READ_CONTACTS}, REQUEST_CODE_READ_CONTACTS);
             return;
@@ -220,6 +285,11 @@ public class MainActivity extends Activity {
         if (res.status == VisionContactResolver.ResolutionStatus.PERMISSION_DENIED) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nContacts permission is needed to resolve contact names.");
+            return;
+        }
+        if (!res.isSuccess() || res.resolvedNumber.isEmpty()) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\n" + (res.errorMessage.isEmpty() ? "Could not resolve contact." : res.errorMessage));
             return;
         }
 
@@ -283,12 +353,13 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_READ_CONTACTS) {
             VisionAction pending = pendingContactAction;
-            EditText input = pendingInputField;
+            EditText input = inputField;
             pendingContactAction = null;
-            pendingInputField = null;
             if (grantResults != null && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 if (pending != null && !isFinishing() && !isDestroyed()) {
                     handleContactDirectMessageAction(pending, input);
+                } else if (!isFinishing() && !isDestroyed()) {
+                    activityText.setText("FAILED\n\nContacts permission was granted, but the pending request could not be recovered. Please make your request again.");
                 }
             } else {
                 if (pending != null) {

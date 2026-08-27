@@ -850,6 +850,47 @@ public class VisionAppTest {
         assertNull("Latest capability null after matching removal", VisionNotificationListener.getLatestReplyCapability());
         assertFalse("capB inactive after removal", VisionNotificationListener.isCapabilityActive(capB));
         assertTrue("ListenerState is NOTIFICATION_REMOVED", VisionNotificationListener.getListenerState().isNotificationRemoved());
+
+        // 4. Capability-only removal regression test: removeKey matches latestReplyCapability.key but not latestNotification.key
+        VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.NotificationSnapshot snap =
+                new VisionNotificationListener.NotificationSnapshot("key_snapshot_only", "com.whatsapp", "Alice", "Hello", 4000L);
+        VisionNotificationListener.NotificationReplyCapability capIsolated =
+                new VisionNotificationListener.NotificationReplyCapability("key_cap_isolated", "com.whatsapp", "Alice", null, null);
+        VisionNotificationListener.setLatestNotificationForTesting(snap);
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(capIsolated);
+
+        assertTrue("State is active before capability removal", VisionNotificationListener.getListenerState().isNotificationActive());
+        assertEquals("key_snapshot_only", VisionNotificationListener.getListenerState().key);
+        assertTrue("hasReplyCapability is true before removal", VisionNotificationListener.getListenerState().hasReplyCapability);
+        assertEquals(capIsolated, VisionNotificationListener.getLatestReplyCapability());
+        assertTrue("capIsolated is active", VisionNotificationListener.isCapabilityActive(capIsolated));
+
+        long seqCapBefore = VisionNotificationListener.getListenerState().sequenceNumber;
+        boolean capOnlyRemoved = VisionNotificationListener.processRemovedNotification("key_cap_isolated");
+        assertTrue("Capability-only removal returns true", capOnlyRemoved);
+        assertNotNull("Notification snapshot remains intact", VisionNotificationListener.getLatestNotification());
+        assertEquals("key_snapshot_only", VisionNotificationListener.getLatestNotification().key);
+        assertNull("Latest capability is cleared", VisionNotificationListener.getLatestReplyCapability());
+        assertFalse("capIsolated is no longer active", VisionNotificationListener.isCapabilityActive(capIsolated));
+        assertTrue("ListenerState remains active notification", VisionNotificationListener.getListenerState().isNotificationActive());
+        assertEquals("key_snapshot_only", VisionNotificationListener.getListenerState().key);
+        assertEquals("com.whatsapp", VisionNotificationListener.getListenerState().packageName);
+        assertEquals(4000L, VisionNotificationListener.getListenerState().postTime);
+        assertFalse("ListenerState hasReplyCapability updated to false consistently", VisionNotificationListener.getListenerState().hasReplyCapability);
+        assertTrue("Sequence number incremented on capability-only removal", VisionNotificationListener.getListenerState().sequenceNumber > seqCapBefore);
+
+        // 5. Capability-only removal when no notification snapshot exists
+        VisionNotificationListener.clearLatestNotification();
+        VisionNotificationListener.NotificationReplyCapability capStandalone =
+                new VisionNotificationListener.NotificationReplyCapability("key_cap_standalone", "com.whatsapp", "Bob", null, null);
+        VisionNotificationListener.setLatestReplyCapabilityForTesting(capStandalone);
+        assertTrue("hasReplyCapability true for standalone capability", VisionNotificationListener.getListenerState().hasReplyCapability);
+
+        boolean standaloneRemoved = VisionNotificationListener.processRemovedNotification("key_cap_standalone");
+        assertTrue("Standalone capability removal returns true", standaloneRemoved);
+        assertNull("Latest capability is cleared", VisionNotificationListener.getLatestReplyCapability());
+        assertFalse("ListenerState hasReplyCapability is false", VisionNotificationListener.getListenerState().hasReplyCapability);
     }
 
     @Test
@@ -1156,6 +1197,91 @@ public class VisionAppTest {
         assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send message to 1234567890: Hi").type);
         assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send message to 1-----: Hi").type);
         assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send WhatsApp message to 15551234567: Hi").type);
+    }
+
+    // Test 34: Permission flow data/recovery invariant coverage and fail-closed invariants
+    // Note: Local JVM tests cover state reconstruction and fail-closed data invariants; actual Android framework Activity lifecycle callbacks require instrumentation / physical-device validation
+    @Test
+    public void test34_permissionLifecycleStateRecoveryAndFailClosedInvariants() {
+        // 1. Pending contact action state preservation and recreation
+        VisionAction original = VisionActionParser.parse("send WhatsApp message to Rahul: I will be late");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, original.type);
+        assertEquals("Rahul", original.target);
+        assertEquals("I will be late", original.replyText);
+        assertEquals("whatsapp", original.channel);
+        assertTrue("isContactDestination true before resolution", original.isContactDestination());
+        assertTrue("requiresConfirmation true", original.requiresConfirmation());
+        assertEquals("Rahul", original.getEffectiveDestination());
+        assertEquals(VisionAction.State.PROPOSED, original.state);
+
+        // Reconstruct from state attributes (simulating Activity recreation restoreInstanceState)
+        VisionAction restored = new VisionAction(original.type, original.request, original.target,
+                original.replyText, original.channel);
+        restored.state = original.state;
+        assertEquals(original.type, restored.type);
+        assertEquals(original.request, restored.request);
+        assertEquals(original.target, restored.target);
+        assertEquals(original.replyText, restored.replyText);
+        assertEquals(original.channel, restored.channel);
+        assertEquals(original.state, restored.state);
+        assertTrue("Restored action retains contact destination", restored.isContactDestination());
+        assertTrue("Restored action retains confirmation requirement", restored.requiresConfirmation());
+        assertEquals("Rahul", restored.getEffectiveDestination());
+
+        // Binding resolved contact data to restored action
+        VisionAction boundRestored = restored.withResolvedContact("Rahul Sharma", "+919876543210");
+        assertEquals("Rahul Sharma", boundRestored.resolvedContactName);
+        assertEquals("+919876543210", boundRestored.resolvedNumber);
+        assertEquals("+919876543210", boundRestored.getEffectiveDestination());
+        assertTrue(boundRestored.isContactDestination());
+
+        // 2. Fail-closed behavior on corrupted / invalid restored state
+        VisionAction nullTargetAction = new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, "req", null, "text", "whatsapp");
+        assertEquals("", nullTargetAction.target);
+        assertFalse("Empty target is not contact destination", nullTargetAction.isContactDestination());
+
+        VisionAction explicitTargetAction = new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, "req", "+919876543210", "text", "whatsapp");
+        assertFalse("Explicit number is not contact destination", explicitTargetAction.isContactDestination());
+
+        VisionAction unsupportedChannelAction = new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, "req", "Rahul", "text", "telegram");
+        assertFalse("Telegram does not support contact resolution", unsupportedChannelAction.isContactDestination());
+
+        VisionAction readAction = new VisionAction(VisionAction.Type.READ_NOTIFICATION, "read", "latest");
+        assertFalse("Read notification is not contact destination", readAction.isContactDestination());
+
+        // 3. ResolutionResult status coverage and error message safety
+        VisionContactResolver.ResolutionResult permDenied = VisionContactResolver.ResolutionResult.permissionDenied("Rahul");
+        assertEquals(VisionContactResolver.ResolutionStatus.PERMISSION_DENIED, permDenied.status);
+        assertFalse(permDenied.isSuccess());
+        assertTrue(permDenied.errorMessage.contains("permission"));
+        assertEquals("Rahul", permDenied.query);
+
+        VisionContactResolver.ResolutionResult noMatch = VisionContactResolver.ResolutionResult.noMatch("Unknown Contact");
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, noMatch.status);
+        assertFalse(noMatch.isSuccess());
+        assertTrue(noMatch.errorMessage.contains("No contact found"));
+
+        VisionContactResolver.ResolutionResult multiMatch = VisionContactResolver.ResolutionResult.multipleMatches("Rahul", 3);
+        assertEquals(VisionContactResolver.ResolutionStatus.MULTIPLE_MATCHES, multiMatch.status);
+        assertFalse(multiMatch.isSuccess());
+        assertTrue(multiMatch.errorMessage.contains("Multiple contacts (3)"));
+
+        VisionContactResolver.ResolutionResult malformed = VisionContactResolver.ResolutionResult.malformedNumber("Rahul", "Rahul Sharma", "12345");
+        assertEquals(VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER, malformed.status);
+        assertFalse(malformed.isSuccess());
+        assertTrue(malformed.errorMessage.contains("valid international phone number"));
+
+        VisionContactResolver.ResolutionResult success = VisionContactResolver.ResolutionResult.success("Rahul", "Rahul Sharma", "+919876543210", "+91 •••• 3210");
+        assertEquals(VisionContactResolver.ResolutionStatus.MATCH_FOUND, success.status);
+        assertTrue(success.isSuccess());
+        assertEquals("Rahul Sharma", success.resolvedName);
+        assertEquals("+919876543210", success.resolvedNumber);
+        assertEquals("+91 •••• 3210", success.maskedNumber);
+
+        // 4. Query edge cases (null and empty queries / contacts)
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve(null, null).status);
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve("", null).status);
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve("   ", new ArrayList<>()).status);
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {

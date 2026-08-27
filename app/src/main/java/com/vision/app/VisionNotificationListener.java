@@ -411,6 +411,15 @@ public class VisionNotificationListener extends NotificationListenerService {
                 latestReplyCapability = null;
                 return true;
             } else if (latestReplyCapability != null && latestReplyCapability.key.equals(removeKey)) {
+                sequenceCounter++;
+                currentListenerState = new ListenerState(
+                        latestNotification != null ? NotificationStatus.ACTIVE_NOTIFICATION : currentListenerState.status,
+                        latestNotification != null ? latestNotification.key : currentListenerState.key,
+                        latestNotification != null ? latestNotification.packageName : currentListenerState.packageName,
+                        latestNotification != null ? latestNotification.postTime : currentListenerState.postTime,
+                        false,
+                        sequenceCounter
+                );
                 latestReplyCapability = null;
                 return true;
             }
@@ -467,6 +476,15 @@ public class VisionNotificationListener extends NotificationListenerService {
                     latestNotification.key,
                     latestNotification.packageName,
                     latestNotification.postTime,
+                    capability != null,
+                    sequenceCounter
+            );
+        } else {
+            currentListenerState = new ListenerState(
+                    currentListenerState.status,
+                    currentListenerState.key,
+                    currentListenerState.packageName,
+                    currentListenerState.postTime,
                     capability != null,
                     sequenceCounter
             );

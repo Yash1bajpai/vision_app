@@ -1,18 +1,18 @@
 # Vision Project Report — Phase 8: Safe Contact Name Resolution & Confirmed Composer Handoff
 
-**Date:** 2026-08-27  
-**Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)  
-**Current Version:** 0.8.0 (versionCode: 14, compileSdk: 34, targetSdk: 34, minSdk: 26)  
-**Prior Commits:** `fbe44d0` (Phase 7 new message composer handoff), `2943125` (Phase 6.2 fix & regression tests), `72a6d52` (v0.6.1 Docs), `b4f34bd` (Phase 6.1 atomic reply dispatch & production boundaries)  
-**APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`  
-**APK SHA-256:** `2b74e451398888f1dae3f4d51c0dacb466d04ea6084cab6ff2135b3aedf7b434`  
+**Date:** 2026-08-27
+**Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
+**Current Version:** 0.8.0 (versionCode: 14, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Prior Commits:** `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 new message composer handoff), `f405967` (Phase 6.2 release docs), `2943125` (Phase 6.2 fix & regression tests), `72a6d52` (v0.6.1 Docs), `b4f34bd` (Phase 6.1 atomic reply dispatch & production boundaries), `205414a` (Phase 6 docs), `e96c6a2` (Phase 6 deterministic notification reliability)
+**APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
+**APK SHA-256:** `15a43dba072e488f4021f7f916af361862c21d0f88d186d78194d366a4e16379`
 
 ---
 
 ## 1. Executive Summary
 
-### Phase 8 Deliverables
-1. **Selective Runtime Permission Handling:** Added `READ_CONTACTS` permission to `AndroidManifest.xml` and runtime permission requesting in `MainActivity` only when a command specifies a contact name destination. Explicit numbers, emails, telegram handles, app launches, and notification reads never check or request Contacts permission.
+### Phase 8 Deliverables (Safe Contact Resolution & Lifecycle Recovery)
+1. **Selective Runtime Permission Handling & Lifecycle State Recovery:** Added `READ_CONTACTS` permission to `AndroidManifest.xml` and runtime permission requesting in `MainActivity` only when a command specifies a contact name destination. Explicit numbers, emails, telegram handles, app launches, and notification reads never check or request Contacts permission. Preserved in-flight permission flow state across Activity recreation and configuration changes via Android's `savedInstanceState` lifecycle mechanism without disk persistence.
 2. **Deterministic Fail-Closed Contact Resolution (`VisionContactResolver`):**
    - Exact full-name matches take precedence over partial/token matches.
    - Unique safe token matching matches whole whitespace/punctuation-delimited name tokens without arbitrary substring searching.
@@ -21,15 +21,19 @@
 3. **Zero Disk Persistence & Minimal Projection:** In-memory resolution queries only `DISPLAY_NAME` and `NUMBER` columns from `ContactsContract.CommonDataKinds.Phone`. Cursors are immediately closed, and zero contact data is persisted to disk, databases, or preferences.
 4. **Masked Number Confirmation:** The confirmation modal displays the resolved contact name alongside a masked phone number (e.g. `Rahul Sharma (+91 •••• 3210)`).
 5. **Exact Action Binding & External Composer Handoff:** Approval binds the resolved contact name, normalized number, message payload, and channel. Opens only supported external app composers (`smsto:`, `https://wa.me/`) and transitions to `COMPOSER_OPENED`. Never silently sends, never uses Accessibility/root/ADB/Device Owner, and never claims `SENT`.
-6. **Cancellation & Lifecycle Safety:** Back button, outside tap, device rotation, and Activity destruction transition proposed actions to `DENIED` with zero intent dispatch.
+6. **Cancellation & Lifecycle Safety:** Back button, outside tap, Activity recreation, and Activity destruction transition proposed actions to `DENIED` with zero intent dispatch (note: `MainActivity` is portrait-locked; recreation occurs via theme/density/system lifecycle events rather than orientation changes).
 7. **Preserved Regressions:** Explicit international phone numbers (`+91...`), email addresses (`alice@example.com`), and Telegram usernames (`@alice123`) remain fully supported and unchanged.
-8. **Deterministic JUnit 4 Test Suite:** Expanded test suite to 33 test groups covering exact match, unique safe token match, no match, duplicate/ambiguous names, malformed contact numbers, phone masking, permission-denied behavior, multiline body preservation, and explicit number regressions (33/33 tests passing offline).
+8. **Deterministic JUnit 4 Test Suite:** Expanded test suite to 34 test groups covering exact match, unique safe token match, no match, duplicate/ambiguous names, malformed contact numbers, phone masking, permission-denied behavior, multiline body preservation, explicit number regressions, capability-only removal state consistency, and permission lifecycle state recovery invariants (34/34 tests passing offline).
+
+### Preserved Phase 6 & Phase 7 Architecture Foundations
+- **Phase 6.0–6.2 Reliability & Boundaries:** In-memory `ListenerState` lifecycle (`NO_NOTIFICATION_YET`, `ACTIVE_NOTIFICATION`, `NOTIFICATION_REMOVED`), deterministic `processPostedNotification` / `processRemovedNotification` ordering and tie-breaking boundaries, atomic validation-to-dispatch in `sendBoundReply`, semantic reply action priority (`SEMANTIC_ACTION_REPLY`), RemoteInput eligibility scoring, and multiline reply integrity.
+- **Phase 7 Confirmed Composer Handoff:** Strict explicit destination grammar, `DirectMessageIntentFactory` for external apps, package visibility guards, and confirmation safety.
 
 ---
 
 Vision is an offline-first Android integration layer built on deterministic execution, memory-only state safety, explicit modal confirmation for external mutations, and zero disk persistence.
 
-> **Assistant Intelligence Runtime Status:**  
+> **Assistant Intelligence Runtime Status:**
 > Local language models, LLM runtimes, on-device intelligence engines, network AI, embeddings, and free-form action generators remain explicitly **excluded and deferred**. This release is bounded to deterministic Android composer handoffs and confirmation safety.
 
 ---
@@ -47,10 +51,10 @@ Defined in `VisionRiskPolicy` and enforced via `VisionAction.requiresConfirmatio
 
 ## 3. Deterministic JUnit 4 Test Suite Evidence
 
-The deterministic test suite (`com.vision.app.VisionAppTest`) executes 33 test groups offline via Gradle `:app:testDebugUnitTest`:
+The deterministic test suite (`com.vision.app.VisionAppTest`) executes 34 test groups offline via Gradle `:app:testDebugUnitTest`:
 
 ### Execution Summary from Gradle XML (`TEST-com.vision.app.VisionAppTest.xml`)
-- **Total Test Groups Executed:** 33
+- **Total Test Groups Executed:** 34
 - **Failures:** 0
 - **Errors:** 0
 - **Skipped:** 0
@@ -82,7 +86,7 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 33 test g
 23. `test23_multilinePayloadExactIdentityAndIntegrity`: Verifies byte-for-byte preservation of multiline payloads across parser, Jarvis confirmation dialog formatting, and CRLF line breaks.
 24. `test24_riskTiersAndActionSafetyInvariants`: Enforces risk tier invariants across all action types under fail-closed security.
 25. `test25_productionProcessingBoundaryComprehensive`: End-to-end verification of `processPostedNotification` and `processRemovedNotification` covering unsupported package rejection, filtered flag preservation, matching removal, sequence updates, and active status re-entry.
-26. `test26_productionBoundaryRegressionSemantics`: Direct verification of capability clearing on same-key replacement with null capability, successive capability deactivation (`cap1` inactive when `cap2` posted), and preservation of active state on non-matching removal.
+26. `test26_productionBoundaryRegressionSemantics`: Direct verification of capability clearing on same-key replacement with null capability, successive capability deactivation (`cap1` inactive when `cap2` posted), preservation of active state on non-matching removal, and consistent state update on capability-only removal.
 27. `test27_directMessageParsingAndRiskPolicy`: Strict explicit destination grammar, channel classification, multiline preservation, invalid destination rejection, and confirmed risk tier.
 28. `test28_directMessageIntentFactory`: Null and unsupported-channel fail-closed behavior at the intent boundary. Positive framework intent assertions remain a device-test gate because Android framework methods are unavailable in local JVM tests.
 29. `test29_contactResolutionExactAndUniqueMatching`: Validates exact full-name matching, case-insensitive exact matching, unique first-name and surname token matches, multi-token subset matches, and duplicate sync entry deduplication.
@@ -90,13 +94,14 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 33 test g
 31. `test31_contactResolutionMalformedNumbersAndMasking`: Tests fail-closed rejection of unsigned phone numbers (no `+`), too short (<7 digits), non-digit strings, empty numbers, too long (>15 digits), and validates phone masking (`+91 •••• 3210`).
 32. `test32_contactResolutionPermissionAndRiskPolicy`: Tests permission-denied resolution result, action destination binding (`resolvedContactName`, `resolvedNumber`), and confirmed risk tier invariants.
 33. `test33_phase8DirectMessageContactCommandsAndRegressions`: End-to-end parsing coverage for WhatsApp, WhatsApp Business, and SMS contact commands, multiline contact payloads, explicit number regressions (+91 phone, email, Telegram), and rejection of invalid formats.
+34. `test34_permissionLifecycleStateRecoveryAndFailClosedInvariants`: Tests state attribute serialization and reconstruction for pending contact actions, verification of `isContactDestination` and confirmation invariants, fail-closed rejection of empty/unsupported/non-contact actions, complete resolution status enum coverage (`PERMISSION_DENIED`, `NO_MATCH`, `MULTIPLE_MATCHES`, `MALFORMED_NUMBER`, `MATCH_FOUND`), and null/empty query edge cases (data/recovery invariant coverage; local JVM tests do not execute actual Android framework Activity lifecycle callbacks, which remain pending for physical-device/instrumentation validation).
 
 ---
 
 ## 4. Build, Packaging & Verification
 
 1. **Compilation:** Built completely offline with Gradle 8.7 (`:app:testDebugUnitTest :app:assembleDebug --offline`).
-2. **ZIP Integrity:** Valid DEX archives and resource tables generated cleanly.
+2. **ZIP Integrity:** `unzip -t Vision-debug.apk` -> Clean (no CRC errors, valid DEX archives and resources).
 3. **Signature Verification:** `apksigner verify --verbose` -> Verified using APK Signature Scheme v2 (1 signer).
 4. **Package Metadata (`aapt2 dump badging`):**
    - Application ID: `com.vision.app`
@@ -104,14 +109,14 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 33 test g
    - Version Name: `0.8.0`
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
    - Uses Permission: `android.permission.READ_CONTACTS`
-5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk`  
-   **SHA-256:** `2b74e451398888f1dae3f4d51c0dacb466d04ea6084cab6ff2135b3aedf7b434`
+5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk`
+   **SHA-256:** `15a43dba072e488f4021f7f916af361862c21d0f88d186d78194d366a4e16379`
 
 ---
 
 ## 5. Live Device Verification Checklist (Pending Physical Execution for v0.8.0)
 
-*Note: No live physical device tests have been executed yet. The following hardware-dependent verification checklist remains scheduled for execution on the physical iQOO Z9x device:*
+*Note: No live physical device tests or on-device instrumentation tests have been executed yet. The following hardware-dependent verification checklist remains scheduled for execution on the physical iQOO Z9x device:*
 1. **Notification Status Lifecycle:**
    - On clean start without notifications, tap `Read latest notification` -> Verify displays `NO SUPPORTED NOTIFICATION`.
    - Post incoming notification -> Tap `Read latest notification` -> Verify displays notification sender, title, and body.
@@ -124,14 +129,20 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 33 test g
    - Verify runtime permission dialog appears requesting Contacts permission.
    - If denied: verify UI shows `FAILED: Contacts permission was denied` and no composer opens.
    - If granted: verify contact `Rahul` resolves to `Rahul Sharma (+91 •••• 3210)`.
-4. **Contact Disambiguation & Fail-Closed Safety:**
+4. **Permission Flow Lifecycle State Recovery Across Activity Recreation:**
+   - On clean install without Contacts permission, enter `send WhatsApp message to Rahul: I will be late`.
+   - With "Don't keep activities" enabled in Android Developer Options (or by triggering a valid configuration change such as system dark/light theme toggle or display density change while the permission dialog is displayed; note: `MainActivity` is portrait-locked):
+   - Tap "Allow" on permission dialog -> Verify Activity restores pending action, resolves `Rahul`, and displays Jarvis confirmation dialog `"Tony, may I prepare this message?"` with `Rahul Sharma (+91 •••• 3210)`. Verify composer does not open before user taps "Open composer".
+   - Repeat recreation test with "Don't keep activities" enabled while permission dialog is displayed, then tap "Don't allow" -> Verify Activity recreates, sets action state to `FAILED`, displays `FAILED: Contacts permission was denied`, and no composer opens.
+   - Test process death / unrecoverable state simulation upon permission grant -> Verify Activity fails closed with `FAILED: Contacts permission was granted, but the pending request could not be recovered` and no composer opens.
+5. **Contact Disambiguation & Fail-Closed Safety:**
    - With multiple contacts named "Rahul" in contacts provider, enter `send WhatsApp message to Rahul: I will be late`.
    - Verify UI displays `AMBIGUOUS CONTACT: Multiple contacts match "Rahul"` and no composer opens.
    - With contact having no `+` country code (e.g. `9876543210`), verify UI displays `INVALID CONTACT NUMBER` and no composer opens.
-5. **Masked Confirmation & Composer Handoff:**
+6. **Masked Confirmation & Composer Handoff:**
    - Verify confirmation modal displays `"Tony, may I prepare this message?"` with resolved contact name, masked phone number, and full message body.
    - Tap `Deny`, Back button, or outside tap -> Verify action is marked `DENIED` and no composer opens.
    - Tap `Open composer` -> Verify WhatsApp opens with pre-filled message for `+919876543210` and Vision UI displays `COMPOSER OPENED`.
-6. **Explicit Destination Regressions:**
+7. **Explicit Destination Regressions:**
    - Test `send SMS to +919876543210: Hello`, `send email to alice@example.com: Hello`, and `send Telegram message to @alice123: Hello`.
    - Verify explicit destinations bypass contact resolution and runtime permission requests completely.

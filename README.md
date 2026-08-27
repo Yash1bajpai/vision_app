@@ -2,12 +2,12 @@
 
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
-> **Note on Assistant Intelligence Runtime:**  
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 8 adds safe, deterministic in-memory contact name resolution for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
+> **Note on Assistant Intelligence Runtime:**
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
 
 ---
 
-## Phase 8 Architecture: Safe Contact Name Resolution & Confirmed Composer Handoff (v0.8.0)
+## Phase 8 Architecture: Safe Contact Name Resolution, Lifecycle State Recovery & Confirmed Composer Handoff (v0.8.0)
 
 ### 1. Zero-Disk-Persistence Transient Contact Resolution
 Contact resolution is performed entirely in volatile process memory during action evaluation:
@@ -26,12 +26,77 @@ Contact resolution is performed entirely in volatile process memory during actio
 - **Phone Number Masking:** The confirmation dialog and activity surface display the resolved contact name alongside a masked phone number (e.g., `Rahul Sharma (+91 •••• 3210)`), concealing middle digits while confirming identity.
 - **Bound Action Integrity:** User approval binds the exact resolved name, normalized international number, message body, and target channel.
 - **Composer Handoff Only:** Approval opens only the explicit external application composer (`smsto:`, `mailto:`, `https://wa.me/`, `https://t.me/`) with package visibility guards (`com.whatsapp`, `com.whatsapp.w4b`, `org.telegram.messenger`). Vision reports `COMPOSER OPENED`, **never** `SENT`.
-- **Cancellation Safety:** Modal Allow/Deny dialog handles Back button, outside tap, device rotation, and Activity destruction by transitioning the action to `DENIED` with zero intent dispatch.
+- **Cancellation Safety:** Modal Allow/Deny dialog handles Back button, outside tap, and Activity destruction by transitioning the action to `DENIED` with zero intent dispatch (note: `MainActivity` is portrait-locked).
 
-### 4. Selective Runtime Permission Handling
+### 4. Selective Runtime Permission Handling & Lifecycle State Recovery
 - `READ_CONTACTS` is declared in `AndroidManifest.xml` and requested at runtime **only** when a command specifies a contact-name destination (e.g. `send WhatsApp message to Rahul: ...`).
 - Commands with explicit phone numbers, email addresses, Telegram usernames, app launches, or notification reads **never** check or request Contacts permission.
-- If permission is denied or revoked, Vision fails closed cleanly without crashing or opening an external composer.
+- **Permission Flow Lifecycle Recovery:** When an Activity recreation or configuration change (e.g. system memory reclamation, 'Don't keep activities', system dark mode / font scale changes; note `MainActivity` is portrait-locked) occurs while the system permission dialog is displayed, the pending action metadata is safely preserved across instances using Android's transient `onSaveInstanceState` / `onCreate(savedInstanceState)` mechanism without writing message content or contacts to disk.
+- **Fail-Closed Guarantee:** If state recovery is corrupted or exact recovery is impossible upon permission grant, Vision fails closed cleanly without crashing or opening an external composer. Permission denial callbacks immediately transition the pending action to `FAILED` with an informative status message.
+
+---
+
+## Phase 7 Architecture: Confirmed Direct Message Composer Handoff (v0.7.0)
+
+### 1. Direct Message Intent Factory
+- `DirectMessageIntentFactory` deterministically constructs external composer intents for WhatsApp (`https://wa.me/`), WhatsApp Business, SMS (`smsto:`), Email (`mailto:`), and Telegram (`https://t.me/`).
+- Package visibility and component resolution are verified before prompting the user.
+
+### 2. Strict Explicit Destination Validation
+- Explicit international phone numbers require leading `+` and 7–15 digits.
+- Email destinations require standard RFC-compliant format.
+- Telegram destinations require `@username` format.
+
+---
+
+## Phase 6 Architecture: Deterministic Reliability & Production Boundaries (v0.6.0 – v0.6.2)
+
+### 1. In-Memory Transient State Model
+Notification state transitions are modeled deterministically in `VisionNotificationListener.ListenerState` with zero disk or database persistence:
+- **`NotificationStatus.NO_NOTIFICATION_YET`**: Initial boot or explicitly cleared state.
+- **`NotificationStatus.ACTIVE_NOTIFICATION`**: A supported messaging notification is active and cached in process memory.
+- **`NotificationStatus.NOTIFICATION_REMOVED`**: Active notification was dismissed by the user or cancelled by Android.
+
+State metadata is restricted to safe operational identifiers: `key`, `packageName`, `postTime`, `hasReplyCapability`, and a monotonic `sequenceNumber`. **Never** stored or exposed in state logs: notification body, sender name, message text, PendingIntent, or RemoteInput.
+
+### 2. Deterministic Notification Ordering, Tie-Breaking & Processing Boundaries
+`VisionNotificationListener` routes Android notification callbacks through deterministic production processing methods:
+- **`processPostedNotification(...)`**:
+  - Rejects unsupported packages immediately without modifying state.
+  - Filters ongoing/summary noise without reply action while preserving existing active state.
+  - Enforces `postTime` ordering (`newPostTime > currentPostTime` accepted; older rejected).
+  - Handles equal timestamps via same-key update or lexicographical tie-break (`newKey.compareTo(currentKey) >= 0`).
+  - Atomically increments monotonic sequence counters and updates `ListenerState`.
+- **`processRemovedNotification(removeKey)`**:
+  - Matches strictly on the active notification's key, preserving active state on non-matching keys.
+  - Clears active snapshot/capability and transitions to `NotificationStatus.NOTIFICATION_REMOVED`.
+
+### 3. F2 Atomic Validation-to-Dispatch in `sendBoundReply`
+- Validates bound capability identity and dispatches `PendingIntent.send()` inside the single synchronized monitor (`synchronized(VisionNotificationListener.class)`).
+- External IPC dispatch is intentionally retained inside the lock to guarantee atomic validation-to-dispatch, preventing stale-dispatch windows if `onNotificationRemoved` concurrently dismisses or replaces capabilities.
+
+### 4. Reply Action Selection & RemoteInput Eligibility
+When notifications expose multiple action buttons or RemoteInput fields:
+- **Semantic Action Priority**: Prefers `Notification.Action.SEMANTIC_ACTION_REPLY` on supported platforms (API 28+ / Android 9 Pie through API 34+).
+- **Deterministic Fallback**: Selects the first text-capable RemoteInput action if no semantic reply action is designated.
+- **Data-Only Exclusion**: Excludes non-text RemoteInputs (where `allowFreeFormInput` is `false` and `choices` are empty).
+
+### 5. Multiline Reply Integrity
+Multiline composer text is preserved byte-for-byte:
+- Outer leading/trailing whitespace is trimmed on submission.
+- Internal line breaks (`\n`, `\r\n`), indents, and paragraph breaks are preserved identically across command parsing, the conversational Jarvis confirmation dialog, and the dispatched `RemoteInput` intent bundle.
+
+### 6. Bounded Action Observability
+`MainActivity` maintains bounded, single-slot observability on the `Recent Activity` surface:
+- Shows only the immediate result (`SUCCEEDED`, `FAILED`, `DENIED`) and user-visible metadata of the most recent action.
+- Distinguishes exact failure reasons without revealing hidden or private notification content:
+  - *Notification access disabled*
+  - *No supported notification yet*
+  - *Notification removed / dismissed*
+  - *Latest notification not replyable*
+  - *Target mismatch*
+  - *Action cancelled or expired by Android*
+- Zero long-term action logs or notification history are stored on disk.
 
 ---
 
@@ -46,9 +111,15 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 
 ---
 
-## Jarvis-Style Conversational Permission Request
+## Jarvis-Style Conversational Permission Requests
 
-For `SEND_MESSAGE_DIRECT` (Tier CONFIRMED):
+### For `REPLY_NOTIFICATION` (Tier CONFIRMED)
+- **Dialog Title:** `"Tony, may I send this message?"`
+- **Dialog Body:** `"I am ready to send this message to [Resolved Destination]:\n\n\"[Exact Outgoing Text]\"\n\nMay I proceed?"`
+- **Controls:** `Allow` and `Deny` buttons.
+- **Safety:** Handles Back button / outside-tap dismissal gracefully without executing replies, preserves `activeDialog` tracking, and guards against TOCTOU races, stale capabilities, and destroyed Activity lifecycles.
+
+### For `SEND_MESSAGE_DIRECT` (Tier CONFIRMED)
 - **Dialog Title:** `"Tony, may I prepare this message?"`
 - **Dialog Body:** `"I am ready to open the [CHANNEL] composer for [Resolved Contact Name (Masked Number)]:\n\n\"[Exact Outgoing Text]\"\n\nThe message will not be reported as sent until you send it in that app.\n\nMay I proceed?"`
 - **Controls:** `Open composer` and `Deny` buttons.

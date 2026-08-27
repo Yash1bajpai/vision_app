@@ -64,7 +64,9 @@ public final class VisionAction {
         if (!"sms".equals(channel) && !"whatsapp".equals(channel) && !"whatsapp_business".equals(channel)) {
             return false;
         }
-        return !target.trim().startsWith("+");
+        String t = target != null ? target.trim() : "";
+        if (t.isEmpty()) return false;
+        return !t.startsWith("+");
     }
 
     public String getEffectiveDestination() {
