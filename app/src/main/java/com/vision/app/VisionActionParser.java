@@ -103,16 +103,24 @@ public final class VisionActionParser {
     }
 
     private static String inferChannel(String destination) {
-        return destination.matches("^\\+?[0-9][0-9 .()-]{5,}$") ? "sms"
-                : destination.contains("@") ? "email" : "";
+        if (destination.matches("^\\+?[0-9][0-9 .()-]{5,}$")) {
+            return "sms";
+        }
+        if (destination.contains("@")) {
+            return "email";
+        }
+        if (isValidContactName(destination)) {
+            return "sms";
+        }
+        return "";
     }
 
-    private static boolean isValidDirectDestination(String channel, String destination) {
+    public static boolean isValidDirectDestination(String channel, String destination) {
         if ("sms".equals(channel) || "whatsapp".equals(channel) || "whatsapp_business".equals(channel)) {
-            String digits = destination.replaceAll("[^0-9]", "");
-            return destination.startsWith("+")
-                    && destination.matches("^\\+?[0-9][0-9 .()-]*$")
-                    && digits.length() >= 7 && digits.length() <= 15;
+            if (isExplicitInternationalPhone(destination)) {
+                return true;
+            }
+            return isValidContactName(destination);
         }
         if ("email".equals(channel)) {
             return destination.matches("^[A-Za-z0-9.!#$%&'*+^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$");
@@ -121,5 +129,30 @@ public final class VisionActionParser {
             return destination.matches("^@?[A-Za-z][A-Za-z0-9_]{4,31}$");
         }
         return false;
+    }
+
+    public static boolean isExplicitInternationalPhone(String destination) {
+        if (destination == null) return false;
+        String trimmed = destination.trim();
+        String digits = trimmed.replaceAll("[^0-9]", "");
+        return trimmed.startsWith("+")
+                && trimmed.matches("^\\+?[0-9][0-9 .()-]*$")
+                && digits.length() >= 7 && digits.length() <= 15;
+    }
+
+    public static boolean isValidContactName(String destination) {
+        if (destination == null) return false;
+        String trimmed = destination.trim();
+        if (trimmed.isEmpty() || trimmed.length() > 70) return false;
+        boolean hasLetter = false;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char c = trimmed.charAt(i);
+            if (Character.isLetter(c)) {
+                hasLetter = true;
+            } else if (!Character.isDigit(c) && c != ' ' && c != '.' && c != '-' && c != '\'') {
+                return false;
+            }
+        }
+        return hasLetter;
     }
 }

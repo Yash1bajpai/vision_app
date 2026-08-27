@@ -27,9 +27,13 @@ public class MainActivity extends Activity {
     private static final int TEXT = Color.rgb(239, 244, 242);
     private static final int MUTED = Color.rgb(151, 165, 170);
     private static final int MINT = Color.rgb(158, 230, 194);
+    private static final int REQUEST_CODE_READ_CONTACTS = 101;
+
     private TextView activityText;
     private TextView statusText;
     private AlertDialog activeDialog;
+    private VisionAction pendingContactAction;
+    private EditText pendingInputField;
 
     @Override
     public void onCreate(Bundle state) {
@@ -48,6 +52,8 @@ public class MainActivity extends Activity {
             }
             activeDialog = null;
         }
+        pendingContactAction = null;
+        pendingInputField = null;
     }
 
     private void showManagedDialog(AlertDialog dialog) {
@@ -179,6 +185,50 @@ public class MainActivity extends Activity {
 
     // Tier CONFIRMED: opening an external composer is not proof that a message was sent.
     private void handleDirectMessageAction(VisionAction action, EditText input) {
+        if (action.isContactDestination()) {
+            handleContactDirectMessageAction(action, input);
+            return;
+        }
+        handleExplicitDirectMessageAction(action, input, action.target, action.target);
+    }
+
+    private void handleContactDirectMessageAction(VisionAction action, EditText input) {
+        if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingContactAction = action;
+            pendingInputField = input;
+            activityText.setText("CONTACTS PERMISSION NEEDED\n\nVision needs Contacts permission to resolve \"" + action.target + "\".");
+            requestPermissions(new String[]{android.Manifest.permission.READ_CONTACTS}, REQUEST_CODE_READ_CONTACTS);
+            return;
+        }
+
+        VisionContactResolver.ResolutionResult res = VisionContactResolver.queryAndResolve(this, action.target);
+        if (res.status == VisionContactResolver.ResolutionStatus.NO_MATCH) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("NO CONTACT FOUND\n\nNo contact found matching \"" + action.target + "\". No message was prepared.");
+            return;
+        }
+        if (res.status == VisionContactResolver.ResolutionStatus.MULTIPLE_MATCHES) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("AMBIGUOUS CONTACT\n\nMultiple contacts match \"" + action.target + "\". Please specify the full name.");
+            return;
+        }
+        if (res.status == VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("INVALID CONTACT NUMBER\n\nContact \"" + res.resolvedName + "\" does not have a valid international phone number (+ country code required).");
+            return;
+        }
+        if (res.status == VisionContactResolver.ResolutionStatus.PERMISSION_DENIED) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nContacts permission is needed to resolve contact names.");
+            return;
+        }
+
+        VisionAction boundAction = action.withResolvedContact(res.resolvedName, res.resolvedNumber);
+        String destDisplay = res.resolvedName + " (" + res.maskedNumber + ")";
+        handleExplicitDirectMessageAction(boundAction, input, destDisplay, res.resolvedName);
+    }
+
+    private void handleExplicitDirectMessageAction(VisionAction action, EditText input, String destDisplay, String targetName) {
         Intent compose = DirectMessageIntentFactory.create(action);
         if (compose == null || compose.resolveActivity(getPackageManager()) == null) {
             action.state = VisionAction.State.FAILED;
@@ -186,10 +236,9 @@ public class MainActivity extends Activity {
             return;
         }
 
-        String destination = action.target;
         String channel = action.channel.toUpperCase(java.util.Locale.US).replace('_', ' ');
         String confirmation = "I am ready to open the " + channel + " composer for "
-                + destination + ":\n\n\"" + action.replyText + "\"\n\n"
+                + destDisplay + ":\n\n\"" + action.replyText + "\"\n\n"
                 + "The message will not be reported as sent until you send it in that app.\n\nMay I proceed?";
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Tony, may I prepare this message?")
@@ -197,7 +246,7 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Deny", (d, which) -> {
                     if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.DENIED;
-                    activityText.setText("DENIED\n\nMessage to " + destination + "\n\nVision stopped this action.");
+                    activityText.setText("DENIED\n\nMessage to " + destDisplay + "\n\nVision stopped this action.");
                 })
                 .setPositiveButton("Open composer", (d, which) -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -207,9 +256,11 @@ public class MainActivity extends Activity {
                         startActivity(compose);
                         action.state = VisionAction.State.COMPOSER_OPENED;
                         activityText.setText("COMPOSER OPENED\n\n" + channel + " composer opened for "
-                                + destination + ".\n\nThe message has not been reported as sent.");
-                        input.setText("");
-                        hideKeyboard(input);
+                                + destDisplay + ".\n\nThe message has not been reported as sent.");
+                        if (input != null) {
+                            input.setText("");
+                            hideKeyboard(input);
+                        }
                     } catch (Exception e) {
                         action.state = VisionAction.State.FAILED;
                         activityText.setText("FAILED\n\nCould not open the " + channel + " composer.");
@@ -220,11 +271,34 @@ public class MainActivity extends Activity {
                     if (action.state == VisionAction.State.PROPOSED) {
                         action.state = VisionAction.State.DENIED;
                         if (isFinishing() || isDestroyed()) return;
-                        activityText.setText("CANCELLED\n\nMessage to " + destination + "\n\nConfirmation was dismissed.");
+                        activityText.setText("CANCELLED\n\nMessage to " + destDisplay + "\n\nConfirmation was dismissed.");
                     }
                 })
                 .create();
         showManagedDialog(dialog);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_CODE_READ_CONTACTS) {
+            VisionAction pending = pendingContactAction;
+            EditText input = pendingInputField;
+            pendingContactAction = null;
+            pendingInputField = null;
+            if (grantResults != null && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                if (pending != null && !isFinishing() && !isDestroyed()) {
+                    handleContactDirectMessageAction(pending, input);
+                }
+            } else {
+                if (pending != null) {
+                    pending.state = VisionAction.State.FAILED;
+                }
+                if (!isFinishing() && !isDestroyed()) {
+                    activityText.setText("FAILED\n\nContacts permission was denied. Vision cannot resolve contact names without permission.");
+                }
+            }
+        }
     }
 
     @Override

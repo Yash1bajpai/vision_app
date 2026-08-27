@@ -3,76 +3,35 @@
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**  
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 7 adds bounded, zero-disk-persistence composer handoffs while retaining deterministic execution and confirmation safety.
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 8 adds safe, deterministic in-memory contact name resolution for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
 
 ---
 
-## Phase 6.2 Architecture: Deterministic Reliability & Production Boundaries (v0.6.2)
+## Phase 8 Architecture: Safe Contact Name Resolution & Confirmed Composer Handoff (v0.8.0)
 
-### 1. In-Memory Transient State Model
-Notification state transitions are modeled deterministically in `VisionNotificationListener.ListenerState` with zero disk or database persistence:
-- **`NotificationStatus.NO_NOTIFICATION_YET`**: Initial boot or explicitly cleared state.
-- **`NotificationStatus.ACTIVE_NOTIFICATION`**: A supported messaging notification is active and cached in process memory.
-- **`NotificationStatus.NOTIFICATION_REMOVED`**: Active notification was dismissed by the user or cancelled by Android.
+### 1. Zero-Disk-Persistence Transient Contact Resolution
+Contact resolution is performed entirely in volatile process memory during action evaluation:
+- **Zero Disk Persistence:** No contact databases, cache files, shared preferences, or serialized contact snapshots are ever written to disk.
+- **Minimal Query Projection:** Android `ContactsContract.CommonDataKinds.Phone` is queried strictly for `DISPLAY_NAME` and `NUMBER` columns; no avatars, emails, notes, postal addresses, or metadata are requested or exposed.
+- **Immediate Cursor Release:** Content resolver cursors are read into transient objects and closed immediately within `try-with-resources` blocks.
 
-State metadata is restricted to safe operational identifiers: `key`, `packageName`, `postTime`, `hasReplyCapability`, and a monotonic `sequenceNumber`. **Never** stored or exposed in state logs: notification body, sender name, message text, PendingIntent, or RemoteInput.
+### 2. Deterministic, Fail-Closed Contact Matching Policy
+`VisionContactResolver` applies an exact-first, fail-closed matching algorithm:
+1. **Exact Full-Name Match:** Exact match (`contact.displayName.equalsIgnoreCase(query)`) takes precedence. If multiple entries exist for the same name with identical phone numbers (e.g. SIM + Google sync), duplicates are safely deduplicated.
+2. **Unique Safe Token Match:** If no exact match exists, queries match against whole whitespace/punctuation-delimited name tokens (e.g. `Rahul` matches `Rahul Sharma`). Substring matches without token boundaries (such as `li` against `Alice` or `ver` against `Verma`) are strictly rejected.
+3. **Fail-Closed Ambiguity Guard:** If zero contacts match (`NO_MATCH`) or multiple distinct contacts/phone numbers match (`MULTIPLE_MATCHES`), the action strictly fails closed without opening any composer.
+4. **Malformed Number Validation:** Contact phone numbers must normalize to valid international numbers with country codes (`+` followed by 7–15 digits). Unsigned or malformed contact numbers fail closed (`MALFORMED_NUMBER`).
 
-### 2. Deterministic Notification Ordering, Tie-Breaking & Processing Boundaries
-`VisionNotificationListener` routes Android notification callbacks through deterministic production processing methods:
-- **`processPostedNotification(...)`**:
-  - Rejects unsupported packages immediately without modifying state.
-  - Filters ongoing/summary noise without reply action while preserving existing active state.
-  - Enforces `postTime` ordering (`newPostTime > currentPostTime` accepted; older rejected).
-  - Handles equal timestamps via same-key update or lexicographical tie-break (`newKey.compareTo(currentKey) >= 0`).
-  - Atomically increments monotonic sequence counters and updates `ListenerState`.
-- **`processRemovedNotification(removeKey)`**:
-  - Matches strictly on the active notification's key, preserving active state on non-matching keys.
-  - Clears active snapshot/capability and transitions to `NotificationStatus.NOTIFICATION_REMOVED`.
+### 3. Masked Confirmation & Bound Action Security
+- **Phone Number Masking:** The confirmation dialog and activity surface display the resolved contact name alongside a masked phone number (e.g., `Rahul Sharma (+91 •••• 3210)`), concealing middle digits while confirming identity.
+- **Bound Action Integrity:** User approval binds the exact resolved name, normalized international number, message body, and target channel.
+- **Composer Handoff Only:** Approval opens only the explicit external application composer (`smsto:`, `mailto:`, `https://wa.me/`, `https://t.me/`) with package visibility guards (`com.whatsapp`, `com.whatsapp.w4b`, `org.telegram.messenger`). Vision reports `COMPOSER OPENED`, **never** `SENT`.
+- **Cancellation Safety:** Modal Allow/Deny dialog handles Back button, outside tap, device rotation, and Activity destruction by transitioning the action to `DENIED` with zero intent dispatch.
 
-### 3. F2 Atomic Validation-to-Dispatch in `sendBoundReply`
-- Validates bound capability identity and dispatches `PendingIntent.send()` inside the single synchronized monitor (`synchronized(VisionNotificationListener.class)`).
-- External IPC dispatch is intentionally retained inside the lock to guarantee atomic validation-to-dispatch, preventing stale-dispatch windows if `onNotificationRemoved` concurrently dismisses or replaces capabilities.
-
-### 4. Reply Action Selection & RemoteInput Eligibility
-When notifications expose multiple action buttons or RemoteInput fields:
-- **Semantic Action Priority**: Prefers `Notification.Action.SEMANTIC_ACTION_REPLY` on supported platforms (API 28+ / Android 9 Pie through API 34+).
-- **Deterministic Fallback**: Selects the first text-capable RemoteInput action if no semantic reply action is designated.
-- **Data-Only Exclusion**: Excludes non-text RemoteInputs (where `allowFreeFormInput` is `false` and `choices` are empty).
-
-### 5. Multiline Reply Integrity
-Multiline composer text is preserved byte-for-byte:
-- Outer leading/trailing whitespace is trimmed on submission.
-- Internal line breaks (`\n`, `\r\n`), indents, and paragraph breaks are preserved identically across command parsing, the conversational Jarvis confirmation dialog, and the dispatched `RemoteInput` intent bundle.
-
-### 6. Bounded Action Observability
-`MainActivity` maintains bounded, single-slot observability on the `Recent Activity` surface:
-- Shows only the immediate result (`SUCCEEDED`, `FAILED`, `DENIED`) and user-visible metadata of the most recent action.
-- Distinguishes exact failure reasons without revealing hidden or private notification content:
-  - *Notification access disabled*
-  - *No supported notification yet*
-  - *Notification removed / dismissed*
-  - *Latest notification not replyable*
-  - *Target mismatch*
-  - *Action cancelled or expired by Android*
-- Zero long-term action logs or notification history are stored on disk.
-
-## Phase 7: New Message Composer Handoff (v0.7.0)
-
-Vision can prepare a new message even when no notification exists. This workflow is a
-confirmed handoff to an external app composer; it does not send silently and never
-reports delivery merely because the composer opened. The user must review and send
-the message in the destination app.
-
-Supported explicit destinations:
-- SMS phone numbers: `send SMS to +919876543210: I will be late`
-- Email addresses: `send email to alice@example.com: Meeting confirmed`
-- WhatsApp phone numbers: `send WhatsApp message to +919876543210: On my way`
-- WhatsApp Business phone numbers: `send WhatsApp Business message to +919876543210: On my way`
-- Telegram usernames: `send Telegram message to @alice123: Hello`
-
-The destination must be explicit and valid for its channel. Contact-name lookup,
-Accessibility automation, root, Device Owner, and arbitrary app chooser fallbacks are
-not used. Back, outside-tap, and lifecycle dismissal cancel the proposed handoff.
+### 4. Selective Runtime Permission Handling
+- `READ_CONTACTS` is declared in `AndroidManifest.xml` and requested at runtime **only** when a command specifies a contact-name destination (e.g. `send WhatsApp message to Rahul: ...`).
+- Commands with explicit phone numbers, email addresses, Telegram usernames, app launches, or notification reads **never** check or request Contacts permission.
+- If permission is denied or revoked, Vision fails closed cleanly without crashing or opening an external composer.
 
 ---
 
@@ -83,17 +42,17 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 | Risk Tier | Policy | Action Types | Execution Flow |
 |---|---|---|---|
 | **Tier SAFE** | Auto-execute immediately (NO modal dialog) | `OPEN_APP`, `READ_NOTIFICATION` | Typed command is direct intent. Executes immediately upon validation and outputs concise `SUCCEEDED` / `FAILED` status to the Recent Activity surface. |
-| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`, `SEND_MESSAGE_DIRECT`<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Dialog shows the exact destination and payload. Notification replies re-verify bound capability identity; direct messages open only an approved external composer and never claim delivery. Never auto-executed. |
+| **Tier CONFIRMED** | Modal Allow/Deny dialog REQUIRED | `REPLY_NOTIFICATION`, `SEND_MESSAGE_DIRECT`<br>*Documented future members:* `PAYMENT`, `DELETE`, `DOWNLOAD_FILE`, `INSTALL`, `CHANGE_SETTING`<br>*Default fallback:* `UNKNOWN` / unlisted types | Dialog shows the exact destination (with masked number for resolved contacts) and payload. Notification replies re-verify bound capability identity; direct messages open only an approved external composer and never claim delivery. Never auto-executed. |
 
 ---
 
 ## Jarvis-Style Conversational Permission Request
 
-For `REPLY_NOTIFICATION` (Tier CONFIRMED):
-- **Dialog Title:** `"Tony, may I send this message?"`
-- **Dialog Body:** `"I am ready to send this message to [Resolved Destination]:\n\n\"[Exact Outgoing Text]\"\n\nMay I proceed?"`
-- **Controls:** `Allow` and `Deny` buttons.
-- **Safety:** Handles Back button / outside-tap dismissal gracefully without executing replies, preserves `activeDialog` tracking, and guards against TOCTOU races, stale capabilities, and destroyed Activity lifecycles.
+For `SEND_MESSAGE_DIRECT` (Tier CONFIRMED):
+- **Dialog Title:** `"Tony, may I prepare this message?"`
+- **Dialog Body:** `"I am ready to open the [CHANNEL] composer for [Resolved Contact Name (Masked Number)]:\n\n\"[Exact Outgoing Text]\"\n\nThe message will not be reported as sent until you send it in that app.\n\nMay I proceed?"`
+- **Controls:** `Open composer` and `Deny` buttons.
+- **Safety:** Handles Back button / outside-tap dismissal gracefully without opening composers, preserves `activeDialog` tracking, and guards against lifecycle destruction.
 
 ---
 
@@ -123,7 +82,15 @@ For `REPLY_NOTIFICATION` (Tier CONFIRMED):
 - `send reply <message>` (e.g. `send reply Confirmed`)
 - `answer <message>` (e.g. `answer Thank you`)
 
-### New Message Composer Handoff (Tier CONFIRMED)
+### Direct Message Composer Handoff with Contact Names (Tier CONFIRMED — Phase 8)
+- `send WhatsApp message to Rahul: I will be late`
+- `send WhatsApp message to Rahul Sharma: I will be late`
+- `send WhatsApp Business message to Rahul: I will be late`
+- `send message to Rahul: I will be late` (defaults to SMS)
+- `send SMS to Rahul: I will be late`
+- `send WhatsApp message to Rahul:\nMeeting at 5 PM\nRoom 2B` (multiline body preserved)
+
+### Direct Message Composer Handoff with Explicit Destinations (Tier CONFIRMED — Phase 7)
 - `send message to +919876543210: Hello`
 - `send SMS to +919876543210: Hello`
 - `send email to alice@example.com: Meeting confirmed`

@@ -13,7 +13,7 @@ public final class DirectMessageIntentFactory {
         if (action == null || action.type != VisionAction.Type.SEND_MESSAGE_DIRECT
                 || action.target.trim().isEmpty() || action.replyText.trim().isEmpty()) return null;
         String channel = action.channel.toLowerCase(Locale.US);
-        String destination = action.target.trim();
+        String destination = action.getEffectiveDestination().trim();
         String body = action.replyText;
         if ("sms".equals(channel)) {
             if (!isInternationalPhone(destination)) return null;
@@ -41,32 +41,36 @@ public final class DirectMessageIntentFactory {
         return null;
     }
 
-    private static String normalizePhone(String value) {
+    public static String normalizePhone(String value) {
+        if (value == null) return "";
         String trimmed = value.trim();
         boolean plus = trimmed.startsWith("+");
         String digits = digitsOnly(trimmed);
         return plus ? "+" + digits : digits;
     }
 
-    private static String digitsOnly(String value) {
+    public static String digitsOnly(String value) {
+        if (value == null) return "";
         return value.replaceAll("[^0-9]", "");
     }
 
-    private static boolean isPhone(String value) {
+    public static boolean isPhone(String value) {
+        if (value == null) return false;
         String digits = digitsOnly(value);
         return value.matches("^\\+?[0-9][0-9 .()-]*$")
                 && digits.length() >= 7 && digits.length() <= 15;
     }
 
-    private static boolean isEmail(String value) {
+    public static boolean isEmail(String value) {
+        if (value == null) return false;
         return value.matches("^[A-Za-z0-9.!#$%&'*+^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$");
     }
 
-    private static boolean isInternationalPhone(String value) {
-        return value.startsWith("+") && isPhone(value);
+    public static boolean isInternationalPhone(String value) {
+        return value != null && value.startsWith("+") && isPhone(value);
     }
 
-    private static boolean isTelegramUsername(String value) {
-        return value.matches("^@?[A-Za-z][A-Za-z0-9_]{4,31}$");
+    public static boolean isTelegramUsername(String value) {
+        return value != null && value.matches("^@?[A-Za-z][A-Za-z0-9_]{4,31}$");
     }
 }

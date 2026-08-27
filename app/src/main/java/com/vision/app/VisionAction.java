@@ -25,6 +25,8 @@ public final class VisionAction {
     public final String target;
     public final String replyText;
     public final String channel;
+    public final String resolvedContactName;
+    public final String resolvedNumber;
     public State state = State.PROPOSED;
 
     public VisionAction(Type type, String request, String target) {
@@ -36,11 +38,40 @@ public final class VisionAction {
     }
 
     public VisionAction(Type type, String request, String target, String replyText, String channel) {
+        this(type, request, target, replyText, channel, "", "");
+    }
+
+    public VisionAction(Type type, String request, String target, String replyText, String channel,
+                        String resolvedContactName, String resolvedNumber) {
         this.type = type != null ? type : Type.UNKNOWN;
         this.request = request != null ? request : "";
         this.target = target != null ? target : "";
         this.replyText = replyText != null ? replyText : "";
         this.channel = channel != null ? channel : "";
+        this.resolvedContactName = resolvedContactName != null ? resolvedContactName : "";
+        this.resolvedNumber = resolvedNumber != null ? resolvedNumber : "";
+    }
+
+    public VisionAction withResolvedContact(String contactName, String normalizedNumber) {
+        VisionAction action = new VisionAction(this.type, this.request, this.target, this.replyText, this.channel,
+                contactName, normalizedNumber);
+        action.state = this.state;
+        return action;
+    }
+
+    public boolean isContactDestination() {
+        if (type != Type.SEND_MESSAGE_DIRECT) return false;
+        if (!"sms".equals(channel) && !"whatsapp".equals(channel) && !"whatsapp_business".equals(channel)) {
+            return false;
+        }
+        return !target.trim().startsWith("+");
+    }
+
+    public String getEffectiveDestination() {
+        if (!resolvedNumber.isEmpty()) {
+            return resolvedNumber;
+        }
+        return target;
     }
 
     public String label() {

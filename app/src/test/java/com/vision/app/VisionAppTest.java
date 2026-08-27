@@ -889,9 +889,10 @@ public class VisionAppTest {
                 VisionActionParser.parse("send reply Hello").type);
         String[] invalid = {
                 "send message Hello", "send message to Alice Hello", "send message to Alice:",
-                "send message to Alice: Hello", "send message", "send fax message to 12345678: Hi",
+                "send message", "send fax message to 12345678: Hi",
                 "send email message to alice@example.com: ", "send message to 1-----: Hi",
-                "send telegram message to @bob: Hi"
+                "send message to 1234567890: Hi", "send telegram message to @bob: Hi",
+                "send email to Alice: Hello", "send telegram message to alice?bad: Hello"
         };
         for (String command : invalid) {
             assertEquals("Invalid direct message rejected: " + command,
@@ -908,6 +909,253 @@ public class VisionAppTest {
         assertNull("Unsigned SMS rejected at factory boundary", DirectMessageIntentFactory.create(
                 new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT, "x", "1234567890", "body", "sms")));
         assertNull("Null action has no intent", DirectMessageIntentFactory.create(null));
+    }
+
+    // Test 29: Exact contact match and unique safe token match
+    @Test
+    public void test29_contactResolutionExactAndUniqueMatching() {
+        List<VisionContactResolver.ContactEntry> contacts = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Alice", "+15551234567"),
+                new VisionContactResolver.ContactEntry("Rahul Sharma", "+919876543210"),
+                new VisionContactResolver.ContactEntry("Bob Smith", "+15559876543"),
+                new VisionContactResolver.ContactEntry("Dr. John Watson", "+447911123456")
+        );
+
+        // Exact match
+        VisionContactResolver.ResolutionResult r1 = VisionContactResolver.resolve("Alice", contacts);
+        assertTrue("Exact match succeeds", r1.isSuccess());
+        assertEquals("Alice", r1.resolvedName);
+        assertEquals("+15551234567", r1.resolvedNumber);
+        assertEquals("+15 •••• 4567", r1.maskedNumber);
+
+        // Case-insensitive exact match
+        VisionContactResolver.ResolutionResult r2 = VisionContactResolver.resolve("rahul sharma", contacts);
+        assertTrue("Case-insensitive exact match succeeds", r2.isSuccess());
+        assertEquals("Rahul Sharma", r2.resolvedName);
+        assertEquals("+919876543210", r2.resolvedNumber);
+        assertEquals("+91 •••• 3210", r2.maskedNumber);
+
+        // Unique token match (first name only)
+        VisionContactResolver.ResolutionResult r3 = VisionContactResolver.resolve("Rahul", contacts);
+        assertTrue("Unique token match succeeds", r3.isSuccess());
+        assertEquals("Rahul Sharma", r3.resolvedName);
+        assertEquals("+919876543210", r3.resolvedNumber);
+
+        // Unique token match (last name only)
+        VisionContactResolver.ResolutionResult r4 = VisionContactResolver.resolve("Sharma", contacts);
+        assertTrue("Unique token match on surname succeeds", r4.isSuccess());
+        assertEquals("Rahul Sharma", r4.resolvedName);
+
+        // Unique multi-token match ("John Watson" matches "Dr. John Watson")
+        VisionContactResolver.ResolutionResult r5 = VisionContactResolver.resolve("John Watson", contacts);
+        assertTrue("Multi-token subset match succeeds", r5.isSuccess());
+        assertEquals("Dr. John Watson", r5.resolvedName);
+        assertEquals("+447911123456", r5.resolvedNumber);
+
+        // Deduplication: Multiple entries for exact same contact name and exact same number (e.g. SIM + Google sync)
+        List<VisionContactResolver.ContactEntry> syncDuplicates = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Rahul Sharma", "+91 98765 43210"),
+                new VisionContactResolver.ContactEntry("Rahul Sharma", "+919876543210")
+        );
+        VisionContactResolver.ResolutionResult rDup = VisionContactResolver.resolve("Rahul Sharma", syncDuplicates);
+        assertTrue("Deduplicated identical entries succeed", rDup.isSuccess());
+        assertEquals("Rahul Sharma", rDup.resolvedName);
+        assertEquals("+919876543210", rDup.resolvedNumber);
+    }
+
+    // Test 30: Ambiguity, multiple matches, and no match (fail closed)
+    @Test
+    public void test30_contactResolutionAmbiguityAndNoMatchFailClosed() {
+        List<VisionContactResolver.ContactEntry> contacts = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Rahul Sharma", "+919876543210"),
+                new VisionContactResolver.ContactEntry("Rahul Verma", "+919876543211"),
+                new VisionContactResolver.ContactEntry("Alice Smith", "+15551112222"),
+                new VisionContactResolver.ContactEntry("Bob Smith", "+15553334444")
+        );
+
+        // No match (0 matches) fails closed
+        VisionContactResolver.ResolutionResult rNone = VisionContactResolver.resolve("Charlie", contacts);
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, rNone.status);
+        assertFalse(rNone.isSuccess());
+
+        // Multiple contacts with same first name token fail closed
+        VisionContactResolver.ResolutionResult rAmbName = VisionContactResolver.resolve("Rahul", contacts);
+        assertEquals(VisionContactResolver.ResolutionStatus.MULTIPLE_MATCHES, rAmbName.status);
+        assertFalse(rAmbName.isSuccess());
+
+        // Multiple contacts with same surname token fail closed
+        VisionContactResolver.ResolutionResult rAmbSurname = VisionContactResolver.resolve("Smith", contacts);
+        assertEquals(VisionContactResolver.ResolutionStatus.MULTIPLE_MATCHES, rAmbSurname.status);
+        assertFalse(rAmbSurname.isSuccess());
+
+        // Exact name match with multiple distinct phone numbers fails closed
+        List<VisionContactResolver.ContactEntry> multiNumbers = Arrays.asList(
+                new VisionContactResolver.ContactEntry("David", "+15550000001"),
+                new VisionContactResolver.ContactEntry("David", "+15550000002")
+        );
+        VisionContactResolver.ResolutionResult rMultiNum = VisionContactResolver.resolve("David", multiNumbers);
+        assertEquals(VisionContactResolver.ResolutionStatus.MULTIPLE_MATCHES, rMultiNum.status);
+        assertFalse(rMultiNum.isSuccess());
+
+        // Substring non-token matches MUST fail closed
+        VisionContactResolver.ResolutionResult rSub1 = VisionContactResolver.resolve("li", contacts);
+        assertEquals("Substring 'li' vs 'Alice' fails", VisionContactResolver.ResolutionStatus.NO_MATCH, rSub1.status);
+
+        VisionContactResolver.ResolutionResult rSub2 = VisionContactResolver.resolve("lic", contacts);
+        assertEquals("Substring 'lic' vs 'Alice' fails", VisionContactResolver.ResolutionStatus.NO_MATCH, rSub2.status);
+
+        VisionContactResolver.ResolutionResult rSub3 = VisionContactResolver.resolve("ver", contacts);
+        assertEquals("Substring 'ver' vs 'Verma' fails", VisionContactResolver.ResolutionStatus.NO_MATCH, rSub3.status);
+
+        // Empty and null queries fail closed
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve(null, contacts).status);
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve("   ", contacts).status);
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve("Rahul", null).status);
+        assertEquals(VisionContactResolver.ResolutionStatus.NO_MATCH, VisionContactResolver.resolve("Rahul", new ArrayList<>()).status);
+    }
+
+    // Test 31: Malformed contact numbers and phone number masking
+    @Test
+    public void test31_contactResolutionMalformedNumbersAndMasking() {
+        // Missing leading '+'
+        List<VisionContactResolver.ContactEntry> noPlus = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Eve", "9876543210")
+        );
+        VisionContactResolver.ResolutionResult rNoPlus = VisionContactResolver.resolve("Eve", noPlus);
+        assertEquals(VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER, rNoPlus.status);
+        assertFalse(rNoPlus.isSuccess());
+
+        // Too short (< 7 digits)
+        List<VisionContactResolver.ContactEntry> shortNum = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Frank", "+12345")
+        );
+        assertEquals(VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER, VisionContactResolver.resolve("Frank", shortNum).status);
+
+        // Non-digit characters
+        List<VisionContactResolver.ContactEntry> nonDigits = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Grace", "+1-800-CALL-NOW")
+        );
+        assertEquals(VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER, VisionContactResolver.resolve("Grace", nonDigits).status);
+
+        // Empty phone string
+        List<VisionContactResolver.ContactEntry> emptyNum = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Heidi", "")
+        );
+        assertEquals(VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER, VisionContactResolver.resolve("Heidi", emptyNum).status);
+
+        // Too long (> 15 digits)
+        List<VisionContactResolver.ContactEntry> longNum = Arrays.asList(
+                new VisionContactResolver.ContactEntry("Ivan", "+12345678901234567")
+        );
+        assertEquals(VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER, VisionContactResolver.resolve("Ivan", longNum).status);
+
+        // Normalization helper tests
+        assertEquals("+919876543210", VisionContactResolver.normalizeInternationalPhone("+91 98765-43210"));
+        assertEquals("+15551234567", VisionContactResolver.normalizeInternationalPhone("+1 (555) 123-4567"));
+        assertNull(VisionContactResolver.normalizeInternationalPhone("9876543210"));
+        assertNull(VisionContactResolver.normalizeInternationalPhone(null));
+        assertNull(VisionContactResolver.normalizeInternationalPhone(""));
+
+        // Masking tests
+        assertEquals("+91 •••• 3210", VisionContactResolver.maskPhoneNumber("+919876543210"));
+        assertEquals("+15 •••• 4567", VisionContactResolver.maskPhoneNumber("+15551234567"));
+        assertEquals("+44 •••• 3456", VisionContactResolver.maskPhoneNumber("+447911123456"));
+        assertEquals("", VisionContactResolver.maskPhoneNumber(null));
+        assertEquals("", VisionContactResolver.maskPhoneNumber("   "));
+    }
+
+    // Test 32: Permission-denied behavior and risk policy confirmation formatting
+    @Test
+    public void test32_contactResolutionPermissionAndRiskPolicy() {
+        VisionContactResolver.ResolutionResult permDenied = VisionContactResolver.ResolutionResult.permissionDenied("Rahul");
+        assertEquals(VisionContactResolver.ResolutionStatus.PERMISSION_DENIED, permDenied.status);
+        assertFalse(permDenied.isSuccess());
+        assertTrue(permDenied.errorMessage.contains("permission"));
+
+        // Action binding and effective destination
+        VisionAction contactAction = new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT,
+                "send WhatsApp message to Rahul: I will be late", "Rahul", "I will be late", "whatsapp");
+        assertTrue("Contact destination recognized", contactAction.isContactDestination());
+        assertEquals("Target is raw contact name before resolution", "Rahul", contactAction.getEffectiveDestination());
+
+        VisionAction boundAction = contactAction.withResolvedContact("Rahul Sharma", "+919876543210");
+        assertEquals("Rahul Sharma", boundAction.resolvedContactName);
+        assertEquals("+919876543210", boundAction.resolvedNumber);
+        assertEquals("+919876543210", boundAction.getEffectiveDestination());
+        assertTrue("Requires confirmation", boundAction.requiresConfirmation());
+        assertEquals(VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(boundAction.type));
+
+        // Explicit number action
+        VisionAction explicitAction = new VisionAction(VisionAction.Type.SEND_MESSAGE_DIRECT,
+                "send WhatsApp message to +919876543210: Hello", "+919876543210", "Hello", "whatsapp");
+        assertFalse("Explicit phone is not a contact destination", explicitAction.isContactDestination());
+        assertEquals("+919876543210", explicitAction.getEffectiveDestination());
+    }
+
+    // Test 33: Phase 8 direct message contact commands & regressions
+    @Test
+    public void test33_phase8DirectMessageContactCommandsAndRegressions() {
+        // WhatsApp with contact name
+        VisionAction waContact = VisionActionParser.parse("send WhatsApp message to Rahul: I will be late");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, waContact.type);
+        assertEquals("whatsapp", waContact.channel);
+        assertEquals("Rahul", waContact.target);
+        assertEquals("I will be late", waContact.replyText);
+        assertTrue(waContact.isContactDestination());
+
+        // WhatsApp Business with contact name
+        VisionAction w4bContact = VisionActionParser.parse("send WhatsApp Business message to Rahul: I will be late");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, w4bContact.type);
+        assertEquals("whatsapp_business", w4bContact.channel);
+        assertEquals("Rahul", w4bContact.target);
+        assertTrue(w4bContact.isContactDestination());
+
+        // SMS / text message with contact name
+        VisionAction smsContact = VisionActionParser.parse("send message to Rahul: I will be late");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, smsContact.type);
+        assertEquals("sms", smsContact.channel);
+        assertEquals("Rahul", smsContact.target);
+        assertTrue(smsContact.isContactDestination());
+
+        VisionAction smsExplicitChannel = VisionActionParser.parse("send SMS to Rahul Sharma: I will be late");
+        assertEquals("sms", smsExplicitChannel.channel);
+        assertEquals("Rahul Sharma", smsExplicitChannel.target);
+        assertTrue(smsExplicitChannel.isContactDestination());
+
+        // Multiline body with contact name
+        VisionAction multilineContact = VisionActionParser.parse("send WhatsApp message to Rahul:\nMeeting at 5 PM\nRoom 2B\nPlease bring slides");
+        assertEquals("Meeting at 5 PM\nRoom 2B\nPlease bring slides", multilineContact.replyText);
+        assertEquals("Rahul", multilineContact.target);
+        assertEquals("whatsapp", multilineContact.channel);
+
+        // Explicit number regressions preserved
+        VisionAction explicitWA = VisionActionParser.parse("send WhatsApp message to +919876543210: Hello");
+        assertEquals("+919876543210", explicitWA.target);
+        assertFalse(explicitWA.isContactDestination());
+
+        VisionAction explicitSMS = VisionActionParser.parse("send SMS to +15551234567: Hello");
+        assertEquals("+15551234567", explicitSMS.target);
+        assertFalse(explicitSMS.isContactDestination());
+
+        VisionAction explicitEmail = VisionActionParser.parse("send email to alice@example.com: Hello");
+        assertEquals("alice@example.com", explicitEmail.target);
+        assertFalse(explicitEmail.isContactDestination());
+
+        VisionAction explicitTG = VisionActionParser.parse("send Telegram message to @alice123: Hello");
+        assertEquals("@alice123", explicitTG.target);
+        assertFalse(explicitTG.isContactDestination());
+
+        // Email and Telegram do NOT allow contact names (must remain unchanged with strict validators)
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send email to Rahul: Hello").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send email to Rahul Sharma: Hello").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send telegram message to @bob: Hello").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send telegram message to user?name: Hello").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send telegram message to 12345: Hello").type);
+
+        // Invalid destinations rejected
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send message to 1234567890: Hi").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send message to 1-----: Hi").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("send WhatsApp message to 15551234567: Hi").type);
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {
