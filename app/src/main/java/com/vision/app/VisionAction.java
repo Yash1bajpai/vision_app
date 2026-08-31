@@ -59,6 +59,14 @@ public final class VisionAction {
         return action;
     }
 
+    /** Returns a copy of this action with the given request and all other fields and state preserved. */
+    public VisionAction withRequest(String newRequest) {
+        VisionAction action = new VisionAction(this.type, newRequest, this.target, this.replyText, this.channel,
+                this.resolvedContactName, this.resolvedNumber);
+        action.state = this.state;
+        return action;
+    }
+
     public boolean isContactDestination() {
         if (type != Type.SEND_MESSAGE_DIRECT) return false;
         if (!"sms".equals(channel) && !"whatsapp".equals(channel) && !"whatsapp_business".equals(channel)) {

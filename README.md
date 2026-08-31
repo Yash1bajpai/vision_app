@@ -3,7 +3,47 @@
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 9 adds only the trusted-boundary plumbing for a future model — the `ReasoningProvider` interface plus strict fail-closed proposal validation (interface + validation only; still no model, no network, no embeddings). Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
+
+---
+
+## Phase 9 Architecture: Reasoning Adapter (v0.9.0)
+
+### 1. Model Proposes, Deterministic Layer Disposes
+A future reasoning model is only ever consulted through the `ReasoningProvider` interface, and **only** when the deterministic parser returns `UNKNOWN`:
+- **Deterministic Fast Path:** `ReasoningCoordinator.coordinate()` always runs `VisionActionParser.parse()` first. Parser-understood commands are returned immediately and the provider is never consulted (verified in tests via `MockReasoningProvider.callCount == 0`).
+- **UNKNOWN-Only Consultation:** The provider is consulted exclusively for requests the deterministic layer cannot understand. A `null` provider, a `null` proposal, or a blank proposal all keep the request `UNKNOWN` with the original request text preserved.
+
+### 2. Strict Proposal Schema
+Provider output must be a single flat JSON object with exactly the four string keys `type`, `target`, `text`, and `channel`. Raw output is parsed by a hand-rolled `StrictJson` parser with zero dependencies:
+- **String-Only Flat Grammar:** Exactly one root object; keys and values must both be strings. Numbers, booleans, `null` literals, nested objects, and arrays are rejected.
+- **Bounded Size:** At most 16 unique keys and 8192 total characters.
+- **Grammar Rejections:** Duplicate keys, trailing garbage after the root object, unknown escape sequences, and raw control characters inside strings are all rejected.
+- **Never Throws:** Any violation returns `null` instead of throwing; callers treat `null` as invalid input.
+
+### 3. Fail-Closed Validation (`ReasoningProposalValidator`)
+The validator enforces the exact four-key schema — missing keys (`MISSING_KEYS`) and any extra key (`EXTRA_KEYS`) are rejected before an action can exist:
+- **Exact Type Guard:** `type` must be exactly one of the four supported action type strings (`READ_NOTIFICATION`, `REPLY_NOTIFICATION`, `SEND_MESSAGE_DIRECT`, `OPEN_APP`). Hallucinated or future types (`PAYMENT`, `INSTALL`, `DELETE`, `CHANGE_SETTING`, …) are rejected as `INVALID_TYPE`.
+- **Per-Type Target Rules:** `OPEN_APP` accepts canonical app names only (WhatsApp, WhatsApp Business, Telegram, Gmail, Messages, Calendar — normalized to canonical casing; package names and unsupported apps rejected); `SEND_MESSAGE_DIRECT` destinations must pass the existing parser validators per channel (`VisionActionParser.isValidDirectDestination`); `READ_NOTIFICATION` accepts only an empty or `latest notification` target; reply targets must be valid contact names, app names, or `latest notification` (max 70 characters).
+- **Per-Type Text & Channel Rules:** Text is required for messaging actions (`REPLY_NOTIFICATION`, `SEND_MESSAGE_DIRECT`, max 2000 characters) and forbidden otherwise; `channel` must be exactly one of the five supported channels (`sms`, `whatsapp`, `whatsapp_business`, `email`, `telegram`) for direct sends and empty for every other type.
+- **Fail-Closed Outcome:** Any rejection yields `UNKNOWN` with the original request preserved — never an exception, never a guessed action.
+
+### 4. No Risk-Tier Influence
+The proposal schema has no field that can influence risk:
+- Proposals smuggling keys such as `risk`, `requires_confirmation`, or `approved` are rejected as extra keys before any action is created.
+- Every accepted proposal flows through the **same** `VisionRiskPolicy` tiers and modal confirmations as typed commands. The coordinator itself never consults `VisionRiskPolicy`; risk policy is applied downstream, unchanged.
+
+### 5. Prompt-Injection Defense
+- Proposal `text` is message **content** bound to the confirmation dialog: it is displayed verbatim in the modal body and dispatched as the message payload, never interpreted as an instruction (injection-style text keeps its type, target, and confirmation requirements).
+- Untrusted notification or message content is never given to providers in this phase — providers receive only the user's typed request.
+
+### 6. Default Behavior Unchanged
+- Production wiring (`MainActivity`) uses `NoOpReasoningProvider`, which always returns `null`, so v0.9.0 behavior is identical to v0.8.0. This is regression-tested with a command corpus routed through the coordinator.
+- `MockReasoningProvider` (deterministic, no network, call counting) exists for tests and future instrumentation.
+
+### 7. Zero New Attack Surface
+- No new permissions, no network, no disk persistence, and no new dependencies.
+- Provider output is never logged.
 
 ---
 

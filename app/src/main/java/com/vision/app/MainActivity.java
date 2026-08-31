@@ -42,6 +42,7 @@ public class MainActivity extends Activity {
     private AlertDialog activeDialog;
     private VisionAction pendingContactAction;
     private EditText inputField;
+    private final ReasoningProvider reasoningProvider = new NoOpReasoningProvider();
 
     @Override
     public void onCreate(Bundle state) {
@@ -225,7 +226,7 @@ public class MainActivity extends Activity {
         send.setOnClickListener(v -> {
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
-                VisionAction action = VisionActionParser.parse(command);
+                VisionAction action = ReasoningCoordinator.coordinate(command, reasoningProvider);
                 if (action.type == VisionAction.Type.UNKNOWN) {
                     activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Try:\n\nRead my latest notification\nReply I'll be there soon\nOpen WhatsApp");
                     return;
