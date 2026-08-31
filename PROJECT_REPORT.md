@@ -5,9 +5,9 @@
 **Current Version:** 0.9.0 (versionCode: 15, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
-**APK SHA-256:** `b9b0bd504d222c6dc191c1117a7df96ba70d5b2727a4562f9ef7917a47c9cb50`
+**APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc`
 
-**Audit Status:** `PENDING INDEPENDENT AUDIT`
+**Audit Status:** Approved by independent self-review and two consecutive blind `opencode/mimo-v2.5-free` audits after remediation (see Section 6).
 
 ---
 
@@ -21,7 +21,8 @@
 5. **No Risk-Tier Influence:** The schema has no field that can influence risk. Proposals smuggling keys such as `risk`, `requires_confirmation`, or `approved` are rejected as extra keys. Every accepted proposal flows through the same `VisionRiskPolicy` tiers and modal confirmations as typed commands.
 6. **Default Behavior Unchanged:** Production wiring (`MainActivity`) uses `NoOpReasoningProvider`, which always returns `null`, so v0.9.0 behavior is identical to v0.8.0 — regression-tested with a command corpus routed through the coordinator. `MockReasoningProvider` (deterministic, no network, call counting) exists for tests and future instrumentation.
 7. **Zero New Attack Surface:** No new permissions, no network, no disk persistence, no new dependencies; provider output is never logged.
-8. **Deterministic JUnit 4 Test Suite:** Expanded test suite to 48 test groups covering strict JSON grammar and limits, proposal schema and hallucination guards, per-type validation, coordinator fast-path and fallback behavior, prompt-injection payload handling, risk-tier immunity, provider contracts, a v0.8.0 regression corpus, and the end-to-end proposal pipeline (48/48 tests passing offline).
+8. **Deterministic JUnit 4 Test Suite:** Expanded test suite to 49 test groups covering strict JSON grammar and limits, proposal schema and hallucination guards, per-type validation, coordinator fast-path and fallback behavior, prompt-injection payload handling, risk-tier immunity, provider contracts, a v0.8.0 regression corpus, the end-to-end proposal pipeline, and unicode-escape/target-normalization hardening (49/49 tests passing offline).
+9. **Audit Remediation Hardening:** Rejected escaped control characters (`\u0000`–`\u001F`) and lone/unpaired UTF-16 surrogates in `StrictJson`, decoded valid surrogate pairs correctly, and normalized empty `READ_NOTIFICATION` proposal targets to `latest notification` for exact parity with parser-produced actions.
 
 ### Preserved Phase 6–8 Architecture Foundations
 - **Phase 6.0–6.2 Reliability & Boundaries:** In-memory `ListenerState` lifecycle (`NO_NOTIFICATION_YET`, `ACTIVE_NOTIFICATION`, `NOTIFICATION_REMOVED`), deterministic `processPostedNotification` / `processRemovedNotification` ordering and tie-breaking boundaries, atomic validation-to-dispatch in `sendBoundReply`, semantic reply action priority (`SEMANTIC_ACTION_REPLY`), RemoteInput eligibility scoring, and multiline reply integrity.
@@ -73,10 +74,10 @@ Key invariants:
 
 ## 3. Deterministic JUnit 4 Test Suite Evidence
 
-The deterministic test suite (`com.vision.app.VisionAppTest`) executes 48 test groups offline via Gradle `:app:testDebugUnitTest`:
+The deterministic test suite (`com.vision.app.VisionAppTest`) executes 49 test groups offline via Gradle `:app:testDebugUnitTest`:
 
 ### Execution Summary from Gradle XML (`TEST-com.vision.app.VisionAppTest.xml`)
-- **Total Test Groups Executed:** 48
+- **Total Test Groups Executed:** 49
 - **Failures:** 0
 - **Errors:** 0
 - **Skipped:** 0
@@ -131,6 +132,7 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 48 test g
 46. `test46_providerImplementationsContract`: `NoOpReasoningProvider` proposes `null` for any input; `MockReasoningProvider` returns its canned response, increments `callCount`, and supports null responses.
 47. `test47_v08RegressionCorpusThroughCoordinator`: A 22-command v0.8.0 regression corpus (reads, app launches, replies, explicit-destination and contact-name direct sends, garbage input, unknown apps) produces output identical to the parser through the coordinator with the NoOp provider, confirming v0.9.0 behavior equals v0.8.0.
 48. `test48_endToEndProposalPipeline`: End-to-end pipeline outcomes for an unparsable request — a valid proposal becomes a `PROPOSED`, confirmation-gated action with the original request bound; malformed JSON, hallucinated `PAYMENT` type, null, and blank proposals all fall back to `UNKNOWN` with the request preserved.
+49. `test49_unicodeAndNormalizationHardening`: Rejection of escaped NUL and control characters, lone high/low surrogates, and unpaired high surrogates followed by non-escape input; acceptance and correct two-unit decoding of a valid surrogate pair; regular `\uXXXX` escapes still decode; empty `READ_NOTIFICATION` proposal targets normalize to `latest notification`; and full-pipeline acceptance of a valid Telegram `@handle` proposal through coordinator routing with confirmation required.
 
 ---
 
@@ -146,7 +148,7 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 48 test g
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
    - Uses Permission: `android.permission.READ_CONTACTS`
 5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk`
-   **SHA-256:** `b9b0bd504d222c6dc191c1117a7df96ba70d5b2727a4562f9ef7917a47c9cb50`
+   **SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc`
 
 ---
 
@@ -170,8 +172,16 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 48 test g
 ## 6. Audit Record
 
 ### Implementation Checkpoint
-- Phase 9 implementation checkpoint: v0.9.0 (versionCode 15) working tree; 48/48 offline JVM test groups passing; offline build, APK packaging, signature verification, and artifact hash recorded in Section 4.
-- Independent blind audit: PENDING. This section will be updated in a subsequent commit after the audit loop completes.
+- Phase 9 implementation checkpoint: commit `11663f4` — 48/48 offline JVM test groups passing; offline build, APK packaging, signature verification, and artifact hash independently verified.
+
+### Audit Remediation Loop
+- First blind MiMo audit of commit `11663f4` returned `OVERALL: APPROVED` with zero CRITICAL/MAJOR findings; four confirmed MINOR fail-closed gaps were remediated:
+  - Escaped control characters (`\u0000`) bypassed the raw control-character rejection in `StrictJson`.
+  - Lone/unpaired UTF-16 surrogates were accepted from untrusted provider output.
+  - Empty `READ_NOTIFICATION` proposal targets were not normalized to `latest notification` (parser-path parity).
+  - No full-pipeline acceptance test existed for valid Telegram `@handle` proposals.
+- Remediation: `StrictJson` now rejects escaped control characters and unpaired surrogates while correctly decoding valid surrogate pairs; the validator normalizes empty READ targets; `test49_unicodeAndNormalizationHardening` added (49/49 groups passing); two pre-existing assertions updated to the corrected expected value.
+- Second blind MiMo audit of the remediation returned `OVERALL: APPROVED` with zero CRITICAL/MAJOR findings; remaining observations (DEL/C1 control-character policy, boundary test suggestions) were explicitly assessed by the auditor as non-defects consistent with RFC 8259.
 
 ### Remaining Gates
 - No physical-device tests were claimed as complete.
