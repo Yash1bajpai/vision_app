@@ -152,6 +152,32 @@ public final class StrictJson {
             code = (code << 4) | digit;
         }
         pos += 4;
+        if (code < 0x20) {
+            return null;
+        }
+        if (code >= 0xD800 && code <= 0xDFFF) {
+            if (code > 0xDBFF) {
+                return null;
+            }
+            if (pos + 6 > src.length()
+                    || src.charAt(pos) != '\\'
+                    || src.charAt(pos + 1) != 'u') {
+                return null;
+            }
+            int low = 0;
+            for (int i = 0; i < 4; i++) {
+                int digit = hexValue(src.charAt(pos + 2 + i));
+                if (digit < 0) {
+                    return null;
+                }
+                low = (low << 4) | digit;
+            }
+            if (low < 0xDC00 || low > 0xDFFF) {
+                return null;
+            }
+            pos += 6;
+            return new String(Character.toChars(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)));
+        }
         return String.valueOf((char) code);
     }
 

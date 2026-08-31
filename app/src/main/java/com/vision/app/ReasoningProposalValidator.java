@@ -103,7 +103,7 @@ public final class ReasoningProposalValidator {
         if (!channel.isEmpty()) {
             return rejected(RejectionReason.INVALID_CHANNEL);
         }
-        String normalizedTarget = target.isEmpty() ? "" : "latest notification";
+        String normalizedTarget = "latest notification";
         return accepted(VisionAction.Type.READ_NOTIFICATION, normalizedTarget, text, channel);
     }
 

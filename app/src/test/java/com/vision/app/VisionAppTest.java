@@ -1357,7 +1357,7 @@ public class VisionAppTest {
         // All four types accepted with fields bound correctly
         VisionAction read = assertAccepted(proposal("READ_NOTIFICATION", "", "", ""));
         assertEquals("READ_NOTIFICATION type bound", VisionAction.Type.READ_NOTIFICATION, read.type);
-        assertEquals("READ_NOTIFICATION target bound", "", read.target);
+        assertEquals("READ_NOTIFICATION target bound", "latest notification", read.target);
         assertEquals("READ_NOTIFICATION replyText bound", "", read.replyText);
         assertEquals("READ_NOTIFICATION channel bound", "", read.channel);
 
@@ -1496,8 +1496,8 @@ public class VisionAppTest {
                 ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
 
         // READ_NOTIFICATION: only empty or "latest notification" (any case)
-        assertEquals("READ_NOTIFICATION empty target accepted and kept empty",
-                "", assertAccepted(proposal("READ_NOTIFICATION", "", "", "")).target);
+        assertEquals("READ_NOTIFICATION empty target normalized to latest notification",
+                "latest notification", assertAccepted(proposal("READ_NOTIFICATION", "", "", "")).target);
         String[] readTargets = {"latest notification", "LATEST NOTIFICATION", "Latest Notification"};
         for (String readTarget : readTargets) {
             VisionAction read = assertAccepted("READ_NOTIFICATION target accepted: " + readTarget,
@@ -1753,6 +1753,40 @@ public class VisionAppTest {
         VisionAction blank = ReasoningCoordinator.coordinate(command, blankProvider);
         assertEquals("Blank proposal falls back to UNKNOWN", VisionAction.Type.UNKNOWN, blank.type);
         assertEquals("Blank proposal fallback keeps request bound", command, blank.request);
+    }
+
+    // Test 49: Unicode escape hardening and READ target normalization
+    @Test
+    public void test49_unicodeAndNormalizationHardening() {
+        assertNull("Escaped NUL rejected", StrictJson.parseObject("{\"a\":\"\\u0000\"}"));
+        assertNull("Escaped control char rejected", StrictJson.parseObject("{\"a\":\"\\u001F\"}"));
+        assertNull("Lone high surrogate rejected", StrictJson.parseObject("{\"a\":\"\\uD800\"}"));
+        assertNull("Lone low surrogate rejected", StrictJson.parseObject("{\"a\":\"\\uDC00\"}"));
+        assertNull("High surrogate not followed by \\u escape rejected",
+                StrictJson.parseObject("{\"a\":\"\\uD800x\"}"));
+
+        Map<String, String> pair = StrictJson.parseObject("{\"a\":\"\\uD83D\\uDE00\"}");
+        assertNotNull("Valid surrogate pair accepted", pair);
+        assertEquals("Surrogate pair decodes to both UTF-16 units", "\uD83D\uDE00", pair.get("a"));
+        assertEquals("Surrogate pair value has length 2", 2, pair.get("a").length());
+
+        Map<String, String> basic = StrictJson.parseObject("{\"a\":\"\\u0041\"}");
+        assertNotNull("Regular unicode escape still works", basic);
+        assertEquals("Regular unicode escape decodes to 'A'", "A", basic.get("a"));
+
+        VisionAction read = assertAccepted(proposal("READ_NOTIFICATION", "", "", ""));
+        assertEquals("Empty READ target normalized to latest notification",
+                "latest notification", read.target);
+
+        MockReasoningProvider telegramMock = new MockReasoningProvider(
+                "{\"type\":\"SEND_MESSAGE_DIRECT\",\"target\":\"@alice123\",\"text\":\"Hello\",\"channel\":\"telegram\"}");
+        VisionAction telegram = ReasoningCoordinator.coordinate(
+                "message alice on telegram saying hello", telegramMock);
+        assertEquals("Telegram proposal becomes SEND_MESSAGE_DIRECT",
+                VisionAction.Type.SEND_MESSAGE_DIRECT, telegram.type);
+        assertEquals("Telegram proposal binds target", "@alice123", telegram.target);
+        assertEquals("Telegram proposal binds channel", "telegram", telegram.channel);
+        assertTrue("Telegram proposal requires confirmation", telegram.requiresConfirmation());
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {
