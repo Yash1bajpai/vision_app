@@ -19,7 +19,7 @@ public final class VisionActionParser {
     );
 
     private static final Pattern DIRECT_MESSAGE_PATTERN = Pattern.compile(
-            "^(?:please\\s+)?send(?:\\s+new)?\\s+(?:(sms|text|email|whatsapp(?:\\s+business)?|telegram)\\s+)?(?:message\\s+)?to\\s+([^:]+?)\\s*:\\s*(.+)$",
+            "^(?:please\\s+)?send(?:\\s+(?:a|an|the))?(?:\\s+new)?\\s+(?:(sms|text|email|whatsapp(?:\\s+business)?|telegram)\\s+)?(?:message\\s+)?to\\s+([^:]+?)\\s*:\\s*(.+)$",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL
     );
 
@@ -81,13 +81,13 @@ public final class VisionActionParser {
         }
 
         // 3. OPEN_APP matching
-        if (normalized.matches(".*\\b(open|launch|start)\\b.*\\b(whatsapp(\\s+business)?|w4b|telegram|gmail|mail|messages?|sms|calendar)\\b.*")) {
+        if (normalized.matches(".*\\b(open|launch|start)\\b.*\\b(whatsapp(\\s+business)?|w4b|wa|tg|telegram|gmail|mail|messages?|sms|calendar)\\b.*")) {
             String target;
-            if (normalized.contains("whatsapp business") || normalized.contains("w4b") || normalized.matches(".*\\bwhatsapp\\s+business\\b.*")) {
+            if (normalized.contains("whatsapp business") || normalized.contains("w4b")) {
                 target = "WhatsApp Business";
-            } else if (normalized.contains("whatsapp") || normalized.contains("wa")) {
+            } else if (normalized.contains("whatsapp") || hasWordToken(normalized, "wa")) {
                 target = "WhatsApp";
-            } else if (normalized.contains("telegram") || normalized.contains("tg")) {
+            } else if (normalized.contains("telegram") || hasWordToken(normalized, "tg")) {
                 target = "Telegram";
             } else if (normalized.contains("gmail") || normalized.contains("mail")) {
                 target = "Gmail";
@@ -100,6 +100,16 @@ public final class VisionActionParser {
         }
 
         return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
+    }
+
+    /** True only when {@code token} appears as a whole whitespace-delimited word, so short aliases like "wa" cannot match inside longer words. */
+    private static boolean hasWordToken(String normalized, String token) {
+        for (String word : normalized.split("\\s+")) {
+            if (word.equals(token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String inferChannel(String destination) {

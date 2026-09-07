@@ -60,6 +60,16 @@ public class VisionAppTest {
         assertAppLaunch("open sms", "Messages");
         assertAppLaunch("open whatsapp now", "WhatsApp");
         assertAppLaunch("please open telegram", "Telegram");
+
+        // v0.9.1: wa / tg whole-token aliases are recognized
+        assertAppLaunch("open wa", "WhatsApp");
+        assertAppLaunch("open wa now", "WhatsApp");
+        assertAppLaunch("launch tg", "Telegram");
+        assertAppLaunch("please start tg", "Telegram");
+        // Short aliases must not match inside longer words (whole-token boundary)
+        assertAppLaunch("open swan calendar", "Calendar");
+        assertEquals("Typo 'watsapp' stays UNKNOWN (word boundary)", VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("open watsapp").type);
     }
 
     // Test 4: Notification reply requests (F3 colon requirement, F9 reply-to-colon, N13 word boundaries)
@@ -928,6 +938,35 @@ public class VisionAppTest {
         assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, telegram.type);
         assertEquals("telegram", telegram.channel);
 
+        // v0.9.1: optional article (a/an/the) and "send a new" phrasing
+        VisionAction articleSms = VisionActionParser.parse("send a message to +919876543210: Hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, articleSms.type);
+        assertEquals("+919876543210", articleSms.target);
+        assertEquals("sms", articleSms.channel);
+
+        VisionAction articleEmail = VisionActionParser.parse("send an email to alice@example.com: Meeting confirmed");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, articleEmail.type);
+        assertEquals("email", articleEmail.channel);
+
+        VisionAction articleWhatsApp = VisionActionParser.parse("send a WhatsApp message to +919876543210: On my way");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, articleWhatsApp.type);
+        assertEquals("whatsapp", articleWhatsApp.channel);
+
+        VisionAction articleNewSms = VisionActionParser.parse("send a new message to +919876543210: Hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, articleNewSms.type);
+        assertEquals("sms", articleNewSms.channel);
+
+        VisionAction definiteSms = VisionActionParser.parse("send the SMS to +15551234567: Hello");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, definiteSms.type);
+        assertEquals("sms", definiteSms.channel);
+        assertEquals("+15551234567", definiteSms.target);
+
+        // Article phrasing does not weaken destination validation
+        assertEquals("send a message to invalid number -> UNKNOWN", VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("send a message to 1234567890: Hi").type);
+        assertEquals("send a fax -> UNKNOWN", VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("send a fax to Rahul: Hi").type);
+
         assertEquals("reply remains notification reply", VisionAction.Type.REPLY_NOTIFICATION,
                 VisionActionParser.parse("send reply Hello").type);
         String[] invalid = {
@@ -1105,6 +1144,13 @@ public class VisionAppTest {
         assertEquals("+44 •••• 3456", VisionContactResolver.maskPhoneNumber("+447911123456"));
         assertEquals("", VisionContactResolver.maskPhoneNumber(null));
         assertEquals("", VisionContactResolver.maskPhoneNumber("   "));
+
+        // v0.9.1: short numbers reveal at most 1 leading and 2 trailing digits
+        assertEquals("+12 •••• 67", VisionContactResolver.maskPhoneNumber("+1234567"));
+        assertEquals("+12 •••• 78", VisionContactResolver.maskPhoneNumber("+12345678"));
+        assertEquals("+12 •••• 90", VisionContactResolver.maskPhoneNumber("+1234567890"));
+        assertEquals("1 •••• 67", VisionContactResolver.maskPhoneNumber("1234567"));
+        assertEquals("+12 •••• 8901", VisionContactResolver.maskPhoneNumber("+12345678901"));
     }
 
     // Test 32: Permission-denied behavior and risk policy confirmation formatting
@@ -1159,6 +1205,13 @@ public class VisionAppTest {
         assertEquals("sms", smsContact.channel);
         assertEquals("Rahul", smsContact.target);
         assertTrue(smsContact.isContactDestination());
+
+        // v0.9.1: article phrasing with contact name
+        VisionAction articleContact = VisionActionParser.parse("send a message to Rahul: I will be late");
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT, articleContact.type);
+        assertEquals("sms", articleContact.channel);
+        assertEquals("Rahul", articleContact.target);
+        assertTrue(articleContact.isContactDestination());
 
         VisionAction smsExplicitChannel = VisionActionParser.parse("send SMS to Rahul Sharma: I will be late");
         assertEquals("sms", smsExplicitChannel.channel);

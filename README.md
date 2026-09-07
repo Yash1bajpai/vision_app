@@ -63,7 +63,7 @@ Contact resolution is performed entirely in volatile process memory during actio
 4. **Malformed Number Validation:** Contact phone numbers must normalize to valid international numbers with country codes (`+` followed by 7–15 digits). Unsigned or malformed contact numbers fail closed (`MALFORMED_NUMBER`).
 
 ### 3. Masked Confirmation & Bound Action Security
-- **Phone Number Masking:** The confirmation dialog and activity surface display the resolved contact name alongside a masked phone number (e.g., `Rahul Sharma (+91 •••• 3210)`), concealing middle digits while confirming identity.
+- **Phone Number Masking:** The confirmation dialog and activity surface display the resolved contact name alongside a masked phone number (e.g., `Rahul Sharma (+91 •••• 3210)`), concealing middle digits while confirming identity. Short numbers (fewer than 11 digits) reveal only one leading and two trailing digits.
 - **Bound Action Integrity:** User approval binds the exact resolved name, normalized international number, message body, and target channel.
 - **Composer Handoff Only:** Approval opens only the explicit external application composer (`smsto:`, `mailto:`, `https://wa.me/`, `https://t.me/`) with package visibility guards (`com.whatsapp`, `com.whatsapp.w4b`, `org.telegram.messenger`). Vision reports `COMPOSER OPENED`, **never** `SENT`.
 - **Cancellation Safety:** Modal Allow/Deny dialog handles Back button, outside tap, and Activity destruction by transitioning the action to `DENIED` with zero intent dispatch (note: `MainActivity` is portrait-locked).
@@ -176,9 +176,9 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
   - `show my latest message` / `check messages`
   - `start reading my messages`
 - **App Launching:**
-  - `open whatsapp` / `open whatsapp now`
+  - `open whatsapp` / `open whatsapp now` / `open wa`
   - `open whatsapp business` / `launch whatsapp business` / `start w4b`
-  - `launch telegram` / `please open telegram`
+  - `launch telegram` / `please open telegram` / `open tg`
   - `start gmail`
   - `open messages` / `open sms` / `launch messages`
   - `open calendar` / `launch calendar`
@@ -203,6 +203,7 @@ Under the inverted fail-closed model (N33), only explicitly designated `SAFE_TYP
 
 ### Direct Message Composer Handoff with Explicit Destinations (Tier CONFIRMED — Phase 7)
 - `send message to +919876543210: Hello`
+- `send a message to +919876543210: Hello` (optional a/an/the and "new" phrasing)
 - `send SMS to +919876543210: Hello`
 - `send email to alice@example.com: Meeting confirmed`
 - `send WhatsApp message to +919876543210: On my way`

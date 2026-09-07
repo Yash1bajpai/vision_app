@@ -231,6 +231,9 @@ public final class VisionContactResolver {
 
     /**
      * Masks middle digits of a phone number for user-facing confirmation.
+     * Reveals at most 2 leading digits (plus the "+" country prefix) and the last 4 digits
+     * for numbers with at least 11 digits; shorter numbers reveal only 1 leading and 2
+     * trailing digits so a majority of digits always stays hidden.
      * e.g. "+919876543210" -> "+91 •••• 3210"
      */
     public static String maskPhoneNumber(String phone) {
@@ -241,8 +244,8 @@ public final class VisionContactResolver {
             return trimmed;
         }
         boolean hasPlus = trimmed.startsWith("+");
-        int keepStart = (hasPlus && digits.length() >= 7) ? 2 : (digits.length() >= 7 ? 2 : 1);
-        int keepEnd = digits.length() >= 7 ? 4 : 2;
+        int keepStart = hasPlus ? 2 : 1;
+        int keepEnd = digits.length() >= 11 ? 4 : 2;
         if (keepStart + keepEnd >= digits.length()) {
             keepStart = 1;
             keepEnd = 2;

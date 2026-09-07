@@ -1,8 +1,8 @@
 # Vision Project Report — Phase 9: Reasoning Adapter (Trusted Proposal Boundary)
 
-**Date:** 2026-08-31
+**Date:** 2026-09-07
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.9.0 (versionCode: 15, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.9.1 (versionCode: 16, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc`
@@ -23,6 +23,14 @@
 7. **Zero New Attack Surface:** No new permissions, no network, no disk persistence, no new dependencies; provider output is never logged.
 8. **Deterministic JUnit 4 Test Suite:** Expanded test suite to 49 test groups covering strict JSON grammar and limits, proposal schema and hallucination guards, per-type validation, coordinator fast-path and fallback behavior, prompt-injection payload handling, risk-tier immunity, provider contracts, a v0.8.0 regression corpus, the end-to-end proposal pipeline, and unicode-escape/target-normalization hardening (49/49 tests passing offline).
 9. **Audit Remediation Hardening:** Rejected escaped control characters (`\u0000`–`\u001F`) and lone/unpaired UTF-16 surrogates in `StrictJson`, decoded valid surrogate pairs correctly, and normalized empty `READ_NOTIFICATION` proposal targets to `latest notification` for exact parity with parser-produced actions.
+
+### v0.9.1 Post-Approval Remediation (2026-09-07)
+Follow-up to a post-Phase-9 full-repo scan; three verified minor findings remediated with zero behavior regressions (verified against the full locked test corpus via offline simulation before the change, then covered by expanded in-suite assertions):
+1. **Dead `wa`/`tg` alias branches (`VisionActionParser`):** The OPEN_APP grammar never matched bare `wa`/`tg`, so the alias target-selection branches were unreachable (`open wa` returned `UNKNOWN`). The two aliases are now part of the word-boundary app grammar, and alias matching uses whole-token comparison (`hasWordToken`) so short aliases cannot match inside longer words (`swan`, `watsapp`).
+2. **Unsupported article phrasing (`VisionActionParser`):** The direct-message grammar required `send [channel] [message] to …`; natural phrasing with an article (`send a message to +91…`, `send an email to …`, `send a new message to …`, `send the SMS to …`) returned `UNKNOWN`. An optional `(a|an|the)` article (before the optional `new`) is now accepted; destination validation is unchanged, so invalid destinations with article phrasing still fail closed.
+3. **Short-number masking (`VisionContactResolver.maskPhoneNumber`):** Numbers with 7–10 digits previously revealed 6 of 7 digits (e.g. `+1234567` → `+12 •••• 4567`). Masking now reveals at most 2 leading digits (only when a `+` country prefix is present) and the last 4 digits for numbers with at least 11 digits, and only 1 leading + 2 trailing digits for shorter numbers; all existing 11–12 digit masked outputs are unchanged.
+
+Test suite remains at 49 groups with new assertions added to `test03` (alias and token-boundary coverage), `test27`/`test33` (article phrasing, including contact names), and `test31` (short-number masking). Version bumped to 0.9.1 (versionCode 16).
 
 ### Preserved Phase 6–8 Architecture Foundations
 - **Phase 6.0–6.2 Reliability & Boundaries:** In-memory `ListenerState` lifecycle (`NO_NOTIFICATION_YET`, `ACTIVE_NOTIFICATION`, `NOTIFICATION_REMOVED`), deterministic `processPostedNotification` / `processRemovedNotification` ordering and tie-breaking boundaries, atomic validation-to-dispatch in `sendBoundReply`, semantic reply action priority (`SEMANTIC_ACTION_REPLY`), RemoteInput eligibility scoring, and multiline reply integrity.
