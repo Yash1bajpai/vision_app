@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-07
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.9.1 (versionCode: 16, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.9.2 (versionCode: 17, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc`
@@ -31,6 +31,14 @@ Follow-up to a post-Phase-9 full-repo scan; three verified minor findings remedi
 3. **Short-number masking (`VisionContactResolver.maskPhoneNumber`):** Numbers with 7–10 digits previously revealed 6 of 7 digits (e.g. `+1234567` → `+12 •••• 4567`). Masking now reveals at most 2 leading digits (only when a `+` country prefix is present) and the last 4 digits for numbers with at least 11 digits, and only 1 leading + 2 trailing digits for shorter numbers; all existing 11–12 digit masked outputs are unchanged.
 
 Test suite remains at 49 groups with new assertions added to `test03` (alias and token-boundary coverage), `test27`/`test33` (article phrasing, including contact names), and `test31` (short-number masking). Version bumped to 0.9.1 (versionCode 16).
+
+### v0.9.2 Audit Remediation (2026-09-07)
+Both v0.9.1 auditors (opencode and agy) independently confirmed the same findings; all were remediated in this release:
+1. **Punctuation fallthrough to Messages (V091-SEC-01, MEDIUM):** The OPEN_APP gate uses `\b` word boundaries (where punctuation counts as a boundary) while v0.9.1 alias matching used whitespace-only token equality, so `open wa.` / `launch tg!` / `open wa, please` passed the gate but fell through to the unconditional `Messages` default — auto-launching the wrong app in the SAFE tier. `hasWordToken` now splits on non-alphanumeric runs (`[^a-z0-9]+`), mirroring `\b` semantics: punctuation-terminated aliases resolve correctly (`open wa.` → WhatsApp) while in-word substrings stay rejected (`swan`, `watsapp`).
+2. **Masking implementation/spec reconciliation (V091-PRV-02, LOW):** Documentation stated short numbers reveal "1 leading digit" but the v0.9.1 code revealed 2 leading digits whenever a `+` prefix was present. The code now matches the documented contract: `keepStart = 2` only for `+` numbers with ≥11 digits, otherwise 1; `keepEnd` stays 4 for ≥11 digits, else 2. New expected outputs: `+1234567` → `+1 •••• 67`. All ≥11-digit outputs (the production case) are unchanged.
+3. **Stale badging metadata (V091-DOC-03, LOW):** The Section 4 `aapt2 dump badging` record is now annotated as the v0.9.0 on-device verification, to be refreshed at the next device build; the APK artifact hash line is annotated the same way.
+
+New assertions in `test03` (punctuation-terminated aliases) and `test31` (1-leading-digit short-number masking); suite remains 49 groups, full corpus regression-verified offline. Version bumped to 0.9.2 (versionCode 17).
 
 ### Preserved Phase 6–8 Architecture Foundations
 - **Phase 6.0–6.2 Reliability & Boundaries:** In-memory `ListenerState` lifecycle (`NO_NOTIFICATION_YET`, `ACTIVE_NOTIFICATION`, `NOTIFICATION_REMOVED`), deterministic `processPostedNotification` / `processRemovedNotification` ordering and tie-breaking boundaries, atomic validation-to-dispatch in `sendBoundReply`, semantic reply action priority (`SEMANTIC_ACTION_REPLY`), RemoteInput eligibility scoring, and multiline reply integrity.
@@ -149,14 +157,14 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 49 test g
 1. **Compilation:** Built completely offline with Gradle 8.7 (`:app:testDebugUnitTest :app:assembleDebug --offline`).
 2. **ZIP Integrity:** `unzip -t Vision-debug.apk` -> Clean (no CRC errors, valid DEX archives and resources).
 3. **Signature Verification:** `apksigner verify --verbose` -> Verified using APK Signature Scheme v2 (1 signer).
-4. **Package Metadata (`aapt2 dump badging`):**
+4. **Package Metadata (`aapt2 dump badging`)** *(v0.9.0 APK — last on-device verification; to be refreshed at the next device build of v0.9.2)*:
    - Application ID: `com.vision.app`
    - Version Code: `15`
    - Version Name: `0.9.0`
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
    - Uses Permission: `android.permission.READ_CONTACTS`
-5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk`
-   **SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc`
+5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 artifact)*
+   **SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 artifact)*
 
 ---
 

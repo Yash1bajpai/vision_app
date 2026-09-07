@@ -70,6 +70,12 @@ public class VisionAppTest {
         assertAppLaunch("open swan calendar", "Calendar");
         assertEquals("Typo 'watsapp' stays UNKNOWN (word boundary)", VisionAction.Type.UNKNOWN,
                 VisionActionParser.parse("open watsapp").type);
+
+        // v0.9.2: punctuation-terminated aliases must not fall through to the Messages default
+        assertAppLaunch("open wa.", "WhatsApp");
+        assertAppLaunch("launch tg!", "Telegram");
+        assertAppLaunch("open wa, please", "WhatsApp");
+        assertAppLaunch("open wa,please", "WhatsApp");
     }
 
     // Test 4: Notification reply requests (F3 colon requirement, F9 reply-to-colon, N13 word boundaries)
@@ -1145,10 +1151,10 @@ public class VisionAppTest {
         assertEquals("", VisionContactResolver.maskPhoneNumber(null));
         assertEquals("", VisionContactResolver.maskPhoneNumber("   "));
 
-        // v0.9.1: short numbers reveal at most 1 leading and 2 trailing digits
-        assertEquals("+12 •••• 67", VisionContactResolver.maskPhoneNumber("+1234567"));
-        assertEquals("+12 •••• 78", VisionContactResolver.maskPhoneNumber("+12345678"));
-        assertEquals("+12 •••• 90", VisionContactResolver.maskPhoneNumber("+1234567890"));
+        // v0.9.2: short numbers (<11 digits) reveal exactly 1 leading and 2 trailing digits
+        assertEquals("+1 •••• 67", VisionContactResolver.maskPhoneNumber("+1234567"));
+        assertEquals("+1 •••• 78", VisionContactResolver.maskPhoneNumber("+12345678"));
+        assertEquals("+1 •••• 90", VisionContactResolver.maskPhoneNumber("+1234567890"));
         assertEquals("1 •••• 67", VisionContactResolver.maskPhoneNumber("1234567"));
         assertEquals("+12 •••• 8901", VisionContactResolver.maskPhoneNumber("+12345678901"));
     }

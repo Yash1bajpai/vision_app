@@ -102,10 +102,15 @@ public final class VisionActionParser {
         return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
     }
 
-    /** True only when {@code token} appears as a whole whitespace-delimited word, so short aliases like "wa" cannot match inside longer words. */
+    /**
+     * True only when {@code token} appears as a whole word delimited by non-alphanumeric
+     * characters, mirroring the {@code \b} boundaries of the OPEN_APP gate. Short aliases
+     * like "wa" cannot match inside longer words ("swan"), while trailing punctuation
+     * ("open wa.") still matches instead of falling through to the Messages default.
+     */
     private static boolean hasWordToken(String normalized, String token) {
-        for (String word : normalized.split("\\s+")) {
-            if (word.equals(token)) {
+        for (String segment : normalized.split("[^a-z0-9]+")) {
+            if (segment.equals(token)) {
                 return true;
             }
         }
