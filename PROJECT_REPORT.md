@@ -168,15 +168,42 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 49 test g
 
 ---
 
-## 5. Live Device Verification Checklist (Pending Physical Execution for v0.9.0)
+## 5. Live Device Verification Checklist
 
-*Note: No live physical device tests or on-device instrumentation tests have been executed yet for v0.9.0. With the default `NoOpReasoningProvider`, the app is behaviorally identical to v0.8.0, so the v0.8.0 hardware-dependent checklist remains the applicable baseline:*
+### v0.9.2 First Physical-Device Verification (2026-09-07) — EXECUTED & PASSED
+Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, driven via ADB over USB.
+
+**Build & test chain executed on a Windows PC (first non-Termux build):**
+- Toolchain: Microsoft OpenJDK 17.0.20, Gradle 8.7, Android SDK platform 34 + build-tools 34.0.0.
+- `local.properties` points the build at the PC SDK (git-ignored); the tracked `gradle.properties` retains the Termux ARM64 `aapt2` path — PC builds pass `-Pandroid.aapt2FromMavenOverride=C:/Yash/android-sdk/build-tools/34.0.0/aapt2.exe` on the command line, so no repo file differs between build environments.
+- `:app:testDebugUnitTest`: **49/49 test groups, 0 failures, 0 errors** (JUnit XML: `tests=49 failures=0 errors=0`), executed on the PC JVM — first independent execution outside the phone-local Termux environment.
+- `:app:assembleDebug`: APK built, `aapt2 dump badging` confirms `versionCode='17' versionName='0.9.2'`, `minSdk 26 / targetSdk 34`, `READ_CONTACTS` only permission; `apksigner verify`: **APK Signature Scheme v2: true**; SHA-256 `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782`.
+- Installed via `adb install -r`; launch confirmed (`MainActivity` top-resumed, displayed in 806 ms, zero crashes/ANRs in logcat).
+
+**On-device behavior matrix (commands entered through the on-screen composer exactly as a user would):**
+
+| # | Input (typed) | Expected | Observed | Verdict |
+|---|---|---|---|---|
+| 1 | `open wa.` | WhatsApp launch via `wa` alias + trailing period (V091-SEC-01 fix) | `com.whatsapp.w4b` Conversation activity foreground (plain WhatsApp not installed — candidate fallback to WA Business exercised); Vision surface: `SUCCEEDED — Opened WhatsApp.` | PASS |
+| 2 | `open tg.` | Telegram launch | `org.telegram.messenger/.DefaultIcon` foreground | PASS |
+| 3 | `open watsapp` (typo) | Fail closed — no launch | Vision stayed foreground; surface: `REQUEST NOT RECOGNIZED — Vision did not perform anything.` (Note: Gboard autocorrected to `wasapp`; word-boundary rejection identical) | PASS |
+| 4 | `send a message to Rahul: I will be late` | v0.9.1 article grammar → contact resolution → runtime permission | Android `GrantPermissionsActivity` for `READ_CONTACTS` shown; after Allow, app resumed flow automatically | PASS |
+| 5 | (continuation of #4) | Fail closed on unknown contact | Surface: `NO CONTACT FOUND — No contact found matching "Rahul". No message was prepared.` (no "Rahul" in device contacts) | PASS |
+| 6 | `send a message to Contact B: Test from Vision` | Masked-number confirmation dialog | `Tony, may I prepare this message?` … `SMS composer for Contact B (+91 •••• redacted)` … `The message will not be reported as sent until you send it in that app.` with Deny / Open composer | PASS |
+| 7 | (Allow on #6) | External composer handoff, never claims SENT | Google Messages opened the Contact B RCS thread with `Test from Vision` prefilled; Vision surface: `COMPOSER OPENED — SMS composer opened for Contact B (+91 •••• redacted). The message has not been reported as sent.` | PASS |
+| 8 | `send a message to Contact C: Hello from Vision! Automated test message` | Full user-authorized end-to-end send | Confirmation dialog `Contact C (+91 •••• redacted)` → Open composer → Messages thread prefilled → message sent in the external app (thread shows `You said: Hello from Vision! Automated test message, 11:00 PM`); Vision still reports only `COMPOSER OPENED` | PASS |
+
+**Observations:** the SAFE-tier alias commands auto-execute with no confirmation (by design, per risk policy); the confirmation gate fired exactly once per messaging command; masking on-device matched the JVM-verified outputs byte-for-byte; no crash, ANR, or unexpected permission request at any point.
+
+**Still pending device verification (notification-path items):** notification status lifecycle on live notifications, semantic reply action dispatch (`reply to <contact>: <text>` against a real posted notification), and permission-flow lifecycle recovery across Activity recreation. These require an incoming supported-app notification during the session.
+
+### v0.8.0 Hardware-Dependent Checklist (baseline retained)
 1. **Notification Status Lifecycle:** Clean start without notifications, incoming notification read, and dismissed notification (`NOTIFICATION REMOVED`) behavior.
 2. **Semantic Reply Action Priority:** `reply to <contact>: <text>` selecting and dispatching `SEMANTIC_ACTION_REPLY` upon user approval.
 3. **Contact Name Resolution & Runtime Permission:** Runtime `READ_CONTACTS` request only for contact-name destinations, permission-denied failure, masked number confirmation (`Rahul Sharma (+91 •••• 3210)`), ambiguity and malformed-number fail-closed behavior.
 4. **Permission Flow Lifecycle Recovery & Composer Handoff:** Pending action recovery across Activity recreation while the permission dialog is displayed, Deny/Back/outside-tap safety with zero intent dispatch, and `COMPOSER OPENED` (never `SENT`) upon approval.
 
-*The provider path itself is JVM-verified only until a real provider exists — no model ships in this phase — so no new device-only behavior is claimed for v0.9.0.*
+*The provider path itself is JVM-verified only until a real provider exists — no model ships in this phase — so no new device-only behavior is claimed.*
 
 **Future device test coverage once a real provider is attached:**
 - Provider is consulted only when the deterministic parser returns `UNKNOWN` (parser-known commands never trigger a provider call).
@@ -206,7 +233,7 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 49 test g
 - Both audits were static on this machine (no local JDK/Gradle); every affected assertion was hand-traced against the implementation semantics. On-device execution of the 49-group suite remains a standing gate for the next device build.
 
 ### Remaining Gates
-- No physical-device tests were claimed as complete.
-- No Android instrumentation tests were claimed as complete.
+- Parser, contact-resolution, permission-flow, confirmation-gate, and composer-handoff behaviors: **verified on physical device 2026-09-07 (v0.9.2, see Section 5)**; notification-path items (live notification lifecycle, semantic reply dispatch, lifecycle recovery under Activity recreation) still require a posted supported-app notification during a test session.
+- No Android instrumentation tests were claimed as complete (device verification was driven via ADB/UI automation, not `connectedAndroidTest`).
 - No actual model or reasoning provider implementation exists in this phase — the `ReasoningProvider` interface, strict JSON parsing, and fail-closed proposal validation are interface and validation only.
 - No new permissions were added in Phase 9.

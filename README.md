@@ -223,6 +223,13 @@ After approval, Vision reports `COMPOSER OPENED`, not `SENT`.
 
 The phone-local Termux toolchain uses Gradle 8.7, Android API 34, and an ARM64-native `aapt2` override.
 
+**PC (Windows) builds:** the tracked `gradle.properties` keeps the Termux `aapt2` path; a PC build supplies its own override on the command line so no repo file changes between environments:
+```bash
+gradle :app:testDebugUnitTest :app:assembleDebug \
+  -Pandroid.aapt2FromMavenOverride=C:/Yash/android-sdk/build-tools/34.0.0/aapt2.exe
+```
+Requires JDK 17, Gradle 8.7, Android SDK platform 34 + build-tools 34.0.0, and a git-ignored `local.properties` pointing `sdk.dir` at the PC SDK. Verified 2026-09-07: 49/49 test groups green on the PC JVM and an APK (v0.9.2, v2-signed) built, installed, and verified on the iQOO Z9x via ADB (see PROJECT_REPORT Section 5).
+
 ## Resource Guardrails
 
 The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the deterministic integration phase.
