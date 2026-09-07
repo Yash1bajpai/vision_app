@@ -199,6 +199,12 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 49 test g
 - Remediation: `StrictJson` now rejects escaped control characters and unpaired surrogates while correctly decoding valid surrogate pairs; the validator normalizes empty READ targets; `test49_unicodeAndNormalizationHardening` added (49/49 groups passing); two pre-existing assertions updated to the corrected expected value.
 - Second blind MiMo audit of the remediation returned `OVERALL: APPROVED` with zero CRITICAL/MAJOR findings; remaining observations (DEL/C1 control-character policy, boundary test suggestions) were explicitly assessed by the auditor as non-defects consistent with RFC 8259.
 
+### v0.9.1 / v0.9.2 Post-Scan Audit Loop (2026-09-07)
+- Dual-auditor protocol (opencode session + agy session, both reused persistently) applied to the post-Phase-9 remediation commits:
+  - v0.9.1 (`e20d7fe`): opencode verdict `APPROVE WITH MINOR FOLLOW-UPS`; agy verdict `APPROVED WITH ADVISORIES (PASS WITH OBSERVATIONS)`. Zero CRITICAL/HIGH. Both auditors independently flagged the same MEDIUM (V091-SEC-01: punctuation-terminated aliases falling through to the Messages default) and the same LOW (V091-PRV-02: masking implementation/doc mismatch), plus a stale-badging LOW (V091-DOC-03).
+  - v0.9.2 (`25b47a4`): opencode verdict `APPROVE` — all three findings verified closed, the MEDIUM proven unreachable (gate boundary ⊆ split delimiter); one new LOW follow-up noted for v0.9.3 (V092-01: underscore asymmetry in `hasWordToken`'s segment alphabet vs the gate's word set — contrived trigger, allowlisted package only). agy verdict: `APPROVED for release` — exemplary remediation, zero regression risk, "majority hidden" claim now mathematically true for all valid international numbers.
+- Both audits were static on this machine (no local JDK/Gradle); every affected assertion was hand-traced against the implementation semantics. On-device execution of the 49-group suite remains a standing gate for the next device build.
+
 ### Remaining Gates
 - No physical-device tests were claimed as complete.
 - No Android instrumentation tests were claimed as complete.
