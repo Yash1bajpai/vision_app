@@ -4,8 +4,8 @@
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
 **Current Version:** 0.9.2 (versionCode: 17, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
-**APK Output:** `/storage/emulated/0/Download/Vision-debug.apk`
-**APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc`
+**APK Output:** `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact: `app/build/outputs/apk/debug/app-debug.apk` — see Section 5)*
+**APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782` — see Section 5)*
 
 **Audit Status:** Approved by independent self-review and two consecutive blind `opencode/mimo-v2.5-free` audits after remediation (see Section 6).
 
@@ -157,14 +157,14 @@ The deterministic test suite (`com.vision.app.VisionAppTest`) executes 49 test g
 1. **Compilation:** Built completely offline with Gradle 8.7 (`:app:testDebugUnitTest :app:assembleDebug --offline`).
 2. **ZIP Integrity:** `unzip -t Vision-debug.apk` -> Clean (no CRC errors, valid DEX archives and resources).
 3. **Signature Verification:** `apksigner verify --verbose` -> Verified using APK Signature Scheme v2 (1 signer).
-4. **Package Metadata (`aapt2 dump badging`)** *(v0.9.0 APK — last on-device verification; to be refreshed at the next device build of v0.9.2)*:
+4. **Package Metadata (`aapt2 dump badging`)** *(v0.9.0 Termux APK — superseded by the v0.9.2 PC-built APK metadata in Section 5)*:
    - Application ID: `com.vision.app`
    - Version Code: `15`
    - Version Name: `0.9.0`
    - Compile SDK: `34`, Target SDK: `34`, Min SDK: `26`
    - Uses Permission: `android.permission.READ_CONTACTS`
-5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 artifact)*
-   **SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 artifact)*
+5. **APK Artifact:** Copied to `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact recorded in Section 5)*
+   **SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782`)*
 
 ---
 
@@ -230,7 +230,13 @@ Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, d
 - Dual-auditor protocol (opencode session + agy session, both reused persistently) applied to the post-Phase-9 remediation commits:
   - v0.9.1 (`e20d7fe`): opencode verdict `APPROVE WITH MINOR FOLLOW-UPS`; agy verdict `APPROVED WITH ADVISORIES (PASS WITH OBSERVATIONS)`. Zero CRITICAL/HIGH. Both auditors independently flagged the same MEDIUM (V091-SEC-01: punctuation-terminated aliases falling through to the Messages default) and the same LOW (V091-PRV-02: masking implementation/doc mismatch), plus a stale-badging LOW (V091-DOC-03).
   - v0.9.2 (`25b47a4`): opencode verdict `APPROVE` — all three findings verified closed, the MEDIUM proven unreachable (gate boundary ⊆ split delimiter); one new LOW follow-up noted for v0.9.3 (V092-01: underscore asymmetry in `hasWordToken`'s segment alphabet vs the gate's word set — contrived trigger, allowlisted package only). agy verdict: `APPROVED for release` — exemplary remediation, zero regression risk, "majority hidden" claim now mathematically true for all valid international numbers.
-- Both audits were static on this machine (no local JDK/Gradle); every affected assertion was hand-traced against the implementation semantics. On-device execution of the 49-group suite remains a standing gate for the next device build.
+- Both audits were static on this machine (no local JDK/Gradle at audit time); every affected assertion was hand-traced against the implementation semantics. The 49-group suite has since been executed for real on the PC JVM (49/49, see Section 5), superseding the static-verification caveat for v0.9.2 onward.
+
+### v0.9.2 Device-Verification Audit (2026-09-07, commit `247fa28`)
+- The device-verification documentation (Section 5 + README PC-build instructions) was audited by both persistent sessions:
+  - opencode verdict: `APPROVE` — every quoted surface string verified verbatim against source, the PC-build story corroborated by the machine's filesystem, notification-path limits honestly stated, never-SENT guarantee intact. LOW follow-ups: annotate the stale v0.9.0 header hash (F1), resolve Section 4's dangling refresh promise (F2), redact the device serial if the repo is ever published (F3, deferred — repo is private).
+  - agy verdict: `APPROVED` — "an honest, rigorous, and verifiable audit trail of the first physical-device execution." LOW: same header-hash annotation (V092-DOC-04); INFORMATIONAL: README's bash line-continuation needs a backtick in PowerShell (V092-DOC-05).
+- All findings remediated in the follow-up commit: header and Section 4 artifact lines now annotated with both the v0.9.0 (Termux) and v0.9.2 (PC) hashes; the dangling "to be refreshed" promise replaced by "superseded by Section 5"; the PowerShell note accepted as informational; the serial-redaction item deferred while the repo stays private.
 
 ### Remaining Gates
 - Parser, contact-resolution, permission-flow, confirmation-gate, and composer-handoff behaviors: **verified on physical device 2026-09-07 (v0.9.2, see Section 5)**; notification-path items (live notification lifecycle, semantic reply dispatch, lifecycle recovery under Activity recreation) still require a posted supported-app notification during a test session.
