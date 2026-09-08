@@ -241,6 +241,10 @@ Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, d
 ### v0.9.3 Audit Follow-Up (2026-09-08)
 Closed the one LOW carried over from the v0.9.2 audit (V092-01): `hasWordToken`'s segment alphabet now exactly mirrors the OPEN_APP gate's Java word set — `[^a-z0-9_]+` instead of `[^a-z0-9]+` — making the token check a perfect `\b` mirror in both directions. Underscore-suffixed aliases (`open wa_`, `open tg_`) now stay `UNKNOWN` (underscore is a word character, so the gate never matched them), and mixed commands (`open messages wa_`) correctly resolve to Messages instead of WhatsApp/Telegram. New assertions in `test03`; suite remains 49 groups, executed green on the PC JVM (49/49, 0 failures). Version bumped to 0.9.3 (versionCode 18).
 
+### v0.9.3 Audit (2026-09-08, commit `569b3b9`)
+- opencode verdict: `APPROVE` — alphabet parity proven exact in both directions ("the punctuation fallthrough class of bugs is structurally closed, not just patched"); all four new expectations verified; the 49/49 claim independently confirmed by the auditor's own forced fresh Gradle execution. Zero findings above INFORMATIONAL.
+- agy verdict: `APPROVED` — "a clean, mathematically sound patch that permanently resolves delimiter asymmetry while strictly preserving parser invariants and backward compatibility." All four new test expectations hand-traced and confirmed; v0.9.2 punctuation cases re-verified.
+
 ### Remaining Gates
 - Parser, contact-resolution, permission-flow, confirmation-gate, and composer-handoff behaviors: **verified on physical device 2026-09-07 (v0.9.2, see Section 5)**; notification-path items (live notification lifecycle, semantic reply dispatch, lifecycle recovery under Activity recreation) still require a posted supported-app notification during a test session.
 - No Android instrumentation tests were claimed as complete (device verification was driven via ADB/UI automation, not `connectedAndroidTest`).
