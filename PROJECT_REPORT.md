@@ -206,7 +206,24 @@ Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, d
 
 **Observations:** the SAFE-tier alias commands auto-execute with no confirmation (by design, per risk policy); the confirmation gate fired exactly once per messaging command; masking on-device matched the JVM-verified outputs byte-for-byte; no crash, ANR, or unexpected permission request at any point.
 
-**Still pending device verification (notification-path items):** notification status lifecycle on live notifications, semantic reply action dispatch (`reply to <contact>: <text>` against a real posted notification), and permission-flow lifecycle recovery across Activity recreation. These require an incoming supported-app notification during the session.
+**Still pending device verification (notification-path items):** ~~notification status lifecycle on live notifications, semantic reply action dispatch~~ — **completed 2026-09-08, see the v0.10.0 notification-path matrix below**; permission-flow lifecycle recovery across Activity recreation remains the one open item.
+
+### v0.10.0 Notification-Path Device Verification (2026-09-08) — EXECUTED & PASSED
+Notification access was granted to Vision through the Android settings UI (system dialog: "Read your notifications / Reply to messages"). All tests below ran on live, real notifications with the production listener bound.
+
+| # | Test | Result | Verdict |
+|---|---|---|---|
+| 1 | Live WhatsApp Business notification read (`read my latest notification`) | `SUCCEEDED — WhatsApp / Contact A / a genuine incoming message body (content redacted)` — genuine MessagingStyle extraction (sender + body) from a real incoming message | PASS |
+| 2 | Second live read on a newer message | `SUCCEEDED — WhatsApp / Contact A / a second genuine incoming message body (content redacted)` — post-time ordering with real consecutive messages | PASS |
+| 3 | Reply target mismatch (`reply to Rahul: …` while the active notification is from Contact A) | `TARGET MISMATCH — The active notification is from WhatsApp (Contact A), not "Rahul". No reply was sent.` — fail-closed, no dialog, no dispatch | PASS |
+| 4 | Garbled/overloaded composer input | Parser still failed closed on unrecognized text (no misparse into an action) | PASS |
+| 5 | Group-summary/ongoing notification filtering | A silent-channel `FLAG_GROUP_SUMMARY` WhatsApp notification was heard and correctly ignored without erasing state | PASS |
+| 6 | Messages-app notification capture | Outgoing SMS to a contact produced a `com.google.android.apps.messaging` notification captured by the listener | PASS |
+| 7 | Process-death state reset | After `am force-stop`, reads correctly report `NO SUPPORTED NOTIFICATION` — zero persistence across process death, no ghost state | PASS |
+| 8 | Notification removal | Opening the chat dismissed the notification; subsequent reads report the empty state (`NO SUPPORTED NOTIFICATION` on a fresh process, `NOTIFICATION REMOVED` when the listener observed the dismissal), no stale snapshot | PASS |
+| 9 | **Live reply dispatch** (`reply to Contact A: <test payload>` against the active replyable notification) | Modal confirmation (`Tony, may I send this message?` … exact payload) → user-approved Allow → `SUCCEEDED — Replied to WhatsApp (Contact A): <test payload>` → message verified present in the actual WhatsApp thread (RemoteInput → PendingIntent delivery confirmed end-to-end) | PASS |
+
+**Observations:** every CONFIRMED-tier dispatch fired exactly one confirmation dialog; SAFE-tier reads auto-executed without dialogs; no crash, ANR, or unexpected permission prompt at any point. The synthetic `cmd notification post` path was correctly ignored (shell package is not in the supported allowlist) and the SMS provider rejected shell-side inserts (Android 16 hardening) — both fail-closed as designed.
 
 ### v0.8.0 Hardware-Dependent Checklist (baseline retained)
 1. **Notification Status Lifecycle:** Clean start without notifications, incoming notification read, and dismissed notification (`NOTIFICATION REMOVED`) behavior.
@@ -268,7 +285,7 @@ Closed the one LOW carried over from the v0.9.2 audit (V092-01): `hasWordToken`'
 - agy verdict: `APPROVED` — "a clean, mathematically sound patch that permanently resolves delimiter asymmetry while strictly preserving parser invariants and backward compatibility." All four new test expectations hand-traced and confirmed; v0.9.2 punctuation cases re-verified.
 
 ### Remaining Gates
-- Parser, contact-resolution, permission-flow, confirmation-gate, and composer-handoff behaviors: **verified on physical device 2026-09-07 (v0.9.2, see Section 5)**; notification-path items (live notification lifecycle, semantic reply dispatch, lifecycle recovery under Activity recreation) still require a posted supported-app notification during a test session.
+- ~~Notification-path device verification~~ — **completed 2026-09-08** (live WhatsApp reads, target-mismatch fail-closed, group-summary filtering, removal handling, and a real RemoteInput reply dispatch verified in-thread; see Section 5). Remaining: permission-flow lifecycle recovery across Activity recreation (needs a configuration change during the permission dialog).
 - No Android instrumentation tests were claimed as complete (device verification was driven via ADB/UI automation, not `connectedAndroidTest`).
-- No actual model or reasoning provider implementation exists in this phase — the `ReasoningProvider` interface, strict JSON parsing, and fail-closed proposal validation are interface and validation only.
-- No new permissions were added in Phase 9.
+- No actual model or reasoning provider implementation exists in this phase — the `ReasoningProvider` interface, strict JSON parsing, and fail-closed proposal/plan validation are interface and validation only.
+- No new permissions were added in Phase 9 or Phase 10.
