@@ -64,7 +64,10 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (outState != null) {
-            if (pendingContactAction != null) {
+            // A pending action belonging to a plan step is deliberately NOT saved: the plan
+            // dies with the Activity, and restoring the step as a standalone action would
+            // orphan it after lifecycle loss (fail-closed).
+            if (pendingContactAction != null && pendingStepCompletion == null) {
                 if (pendingContactAction.type != null) {
                     outState.putString(STATE_PENDING_ACTION_TYPE, pendingContactAction.type.name());
                 }
@@ -289,7 +292,14 @@ public class MainActivity extends Activity {
             return;
         }
         VisionAction step = pendingPlan.step(planStepIndex);
-        Runnable advance = () -> onPlanStepTerminal(input);
+        // One-shot latch: dialog buttons and the dismiss listener may both fire completion
+        // for the same step; only the first advances the plan.
+        final boolean[] advanced = new boolean[1];
+        Runnable advance = () -> {
+            if (advanced[0]) return;
+            advanced[0] = true;
+            onPlanStepTerminal(input);
+        };
         if (step.type == VisionAction.Type.READ_NOTIFICATION) {
             handleReadAction(step, step.request, input, advance);
         } else if (step.type == VisionAction.Type.OPEN_APP) {
@@ -412,7 +422,6 @@ public class MainActivity extends Activity {
                     if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nMessage to " + destDisplay + "\n\nVision stopped this action.");
-                    if (onComplete != null) onComplete.run();
                 })
                 .setPositiveButton("Open composer", (d, which) -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -431,7 +440,6 @@ public class MainActivity extends Activity {
                         action.state = VisionAction.State.FAILED;
                         activityText.setText("FAILED\n\nCould not open the " + channel + " composer.");
                     }
-                    if (onComplete != null) onComplete.run();
                 })
                 .setOnDismissListener(d -> {
                     if (activeDialog == d) activeDialog = null;
@@ -443,6 +451,8 @@ public class MainActivity extends Activity {
                         }
                         activityText.setText("CANCELLED\n\nMessage to " + destDisplay + "\n\nConfirmation was dismissed.");
                     }
+                    // Single fire-point: every dismissal path (button, back, outside tap,
+                    // programmatic) passes here exactly once.
                     if (onComplete != null) onComplete.run();
                 })
                 .create();
@@ -569,7 +579,6 @@ public class MainActivity extends Activity {
                     if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nReply to " + destDisplay + "\n\nVision stopped this action.");
-                    if (onComplete != null) onComplete.run();
                 })
                 .setPositiveButton("Allow", (d, which) -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -577,17 +586,21 @@ public class MainActivity extends Activity {
                     executeBoundNotificationReply(action, boundCap, destDisplay);
                     input.setText("");
                     hideKeyboard(input);
-                    if (onComplete != null) onComplete.run();
                 })
                 .setOnDismissListener(d -> {
                     if (activeDialog == d) {
                         activeDialog = null;
                     }
-                    if (isFinishing() || isDestroyed()) return;
                     if (action.state == VisionAction.State.PROPOSED) {
                         action.state = VisionAction.State.DENIED;
+                        if (isFinishing() || isDestroyed()) {
+                            if (onComplete != null) onComplete.run();
+                            return;
+                        }
                         activityText.setText("CANCELLED\n\nReply to " + destDisplay + "\n\nConfirmation was dismissed.");
                     }
+                    // Single fire-point: every dismissal path (button, back, outside tap,
+                    // programmatic) passes here exactly once.
                     if (onComplete != null) onComplete.run();
                 })
                 .create();
@@ -690,6 +703,10 @@ public class MainActivity extends Activity {
     }
 
     private void onReadNotificationButtonClicked(Runnable onComplete) {
+        if (pendingPlan != null) {
+            activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Wait for it to finish before starting a new request.");
+            return;
+        }
         if (!isNotificationAccessEnabled()) {
             AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Notification access needed")
