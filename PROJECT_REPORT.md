@@ -228,6 +228,14 @@ Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, d
 ### Phase 10 Implementation Checkpoint (2026-09-08)
 - Commit: `569b3b9`..Phase 10 — v0.9.3 underscore fix (dual-approved) followed by the Phase 10 plan boundary; 56/56 offline JVM test groups green on the PC toolchain; production wiring unchanged (`NoOpReasoningProvider`), so v0.10.0 runtime behavior is identical to v0.9.3. Physical-device verification of the plan path is pending a real provider (none ships in this phase); the notification-path device tests remain a standing gate (see Section 5).
 
+### Phase 10 Audit Loop (2026-09-08, commits `8b209a1` + `0237f3c`)
+- opencode audit of `8b209a1`: verdict `APPROVE WITH FOLLOW-UPS` — the trusted plan boundary verified sound (no provider output can reach execution without full per-step validation; no plan-level semantics can be smuggled; routing deterministic; single-action behavior regression-free; 56/56 independently confirmed by the auditor's own fresh Gradle execution). Findings, all remediated in `0237f3c`:
+  - F1 (MEDIUM, latent — unreachable with `NoOpReasoningProvider`): step-completion Runnable could double-fire (button handler + dismiss listener), causing spurious PLAN STOPPED or an orphan step when a real provider is attached. Fix: one-shot latch on the advance runnable plus a single completion fire-point (the dismiss listener; button handlers no longer call completion directly).
+  - F2 (LOW): a plan-step pending contact action was saved to instance state and could resume as a standalone orphan after Activity recreation. Fix: plan-step pendings are no longer saved.
+  - F3 (LOW): the Read-latest-notification button was not guarded during plan execution. Fix: guarded, same as the composer.
+  - Follow-up noted for the next phase: extract the step-advance state machine from the Activity into a pure testable class.
+- agy audit of the combined range (`8b209a1`+`0237f3c`): verdict `APPROVED` — "a clean, well-architected trusted plan boundary… absolute fidelity to Vision's safety guarantees: fail-closed validation, explicit user authorization, deterministic parser priority, zero disk persistence, and per-action modal confirmations." Sequential execution, lifecycle destruction, routing, regression, and all seven new test groups verified.
+
 ### Phase 9 Implementation Checkpoint
 - Phase 9 implementation checkpoint: commit `11663f4` — 48/48 offline JVM test groups passing; offline build, APK packaging, signature verification, and artifact hash independently verified.
 
