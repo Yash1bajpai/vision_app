@@ -1,8 +1,8 @@
-# Vision Project Report — Phase 9: Reasoning Adapter (Trusted Proposal Boundary)
+# Vision Project Report — Phase 10: Bounded Multi-Step Plans (Trusted Plan Boundary)
 
-**Date:** 2026-09-07
+**Date:** 2026-09-08
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.9.3 (versionCode: 18, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.10.0 (versionCode: 19, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact: `app/build/outputs/apk/debug/app-debug.apk` — see Section 5)*
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782` — see Section 5)*
@@ -12,6 +12,17 @@
 ---
 
 ## 1. Executive Summary
+
+### Phase 10 Deliverables (Bounded Multi-Step Plans — Trusted Plan Boundary)
+1. **Plan grammar (`StrictJson.parseArray`):** one JSON array of flat string-only objects, inheriting every Phase 9 strictness rule (string-only flat elements, ≤16 keys/element, ≤8 elements, 8192-char cap; duplicate keys, trailing garbage, nesting, non-string values all rejected; never throws, returns `null`).
+2. **Plan validation (`ReasoningPlanValidator`):** every step must independently pass the exact Phase 9 proposal validator; no plan-level keys or semantics exist — smuggled `approved`/`risk`/`skip_confirmation` keys reject the whole plan with the invalid step index; bounded at `VisionPlan.MAX_ACTIONS = 3`; empty and null step lists rejected.
+3. **Immutable bounded plan model (`VisionPlan`):** unmodifiable step list, null steps dropped at construction, over-limit plans rejected; carries no approval semantics of any kind.
+4. **Sequential execution policy (`VisionPlanExecutor`, pure):** only `SUCCEEDED`/`COMPOSER_OPENED` advance the plan; `DENIED`/`FAILED` halt it and remaining steps are never offered; per-step risk tiers are unchanged (a `SEND_MESSAGE_DIRECT` step in a plan is still CONFIRMED).
+5. **Coordinator plan routing (`ReasoningCoordinator.coordinateFull`):** parser-first, unchanged; provider consulted only for UNKNOWN; array root → plan path, object root → single-action path; any failure yields UNKNOWN with the original request. `coordinate()` retained as a delegate with identical single-action behavior.
+6. **MainActivity sequential executor:** plans run one step at a time through the same handlers, risk policy, and modal confirmations as typed commands; a CONFIRMED step shows its own Allow/Deny (approval of one step never approves the next); permission callbacks resume the correct pending step; a plan in progress blocks new commands; plan state is in-memory only and dies with the Activity (fail-closed); surface reports `PLAN STARTED`/`PLAN COMPLETED`/`PLAN STOPPED`.
+7. **Default behavior unchanged:** production still wires `NoOpReasoningProvider`; v0.9.3 command corpus regression-tested through `coordinateFull` (`test56`).
+8. **Zero new attack surface:** no new permissions, no network, no disk persistence, no new dependencies; provider output never logged.
+9. **Evaluation suite:** 56/56 test groups green on the PC JVM (JUnit XML: tests=56 failures=0 errors=0) — array grammar (`test50`), plan validation/bounds (`test51`), model immutability (`test52`), coordinator routing (`test53`), step policy and per-step risk tiers (`test54`), prompt-injection payload semantics and plan-level smuggling rejection (`test55`), v0.9.x regression corpus (`test56`).
 
 ### Phase 9 Deliverables (Reasoning Adapter — Trusted Proposal Boundary)
 1. **Reasoning Provider Boundary (`ReasoningProvider`):** A single-method interface through which a future reasoning model (local or cloud) may propose actions. Providers are never trusted: raw provider output must survive strict JSON parsing and fail-closed proposal validation before any action is created, and can never bypass the deterministic risk policy or user confirmation. No model is attached in this phase.
@@ -214,7 +225,10 @@ Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, d
 
 ## 6. Audit Record
 
-### Implementation Checkpoint
+### Phase 10 Implementation Checkpoint (2026-09-08)
+- Commit: `569b3b9`..Phase 10 — v0.9.3 underscore fix (dual-approved) followed by the Phase 10 plan boundary; 56/56 offline JVM test groups green on the PC toolchain; production wiring unchanged (`NoOpReasoningProvider`), so v0.10.0 runtime behavior is identical to v0.9.3. Physical-device verification of the plan path is pending a real provider (none ships in this phase); the notification-path device tests remain a standing gate (see Section 5).
+
+### Phase 9 Implementation Checkpoint
 - Phase 9 implementation checkpoint: commit `11663f4` — 48/48 offline JVM test groups passing; offline build, APK packaging, signature verification, and artifact hash independently verified.
 
 ### Audit Remediation Loop

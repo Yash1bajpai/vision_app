@@ -1,6 +1,8 @@
 package com.vision.app;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -11,12 +13,17 @@ import java.util.Map;
  * validator does not expect), at most 16 unique keys, and standard JSON string
  * escapes which are decoded into the returned values.
  *
+ * {@link #parseArray} additionally accepts exactly one root array whose
+ * elements must each be such a flat string-only object, at most 8 elements,
+ * for bounded multi-step plan proposals.
+ *
  * Fail-closed: any violation of the grammar or the limits returns null instead
  * of throwing, so callers must treat null as invalid input.
  */
 public final class StrictJson {
     private static final int MAX_LENGTH = 8192;
     private static final int MAX_KEYS = 16;
+    private static final int MAX_ARRAY_ELEMENTS = 8;
 
     private final String src;
     private int pos;
@@ -36,15 +43,68 @@ public final class StrictJson {
         return new StrictJson(raw).parseRootObject();
     }
 
-    private Map<String, String> parseRootObject() {
-        Map<String, String> result = new LinkedHashMap<String, String>();
-        if (!expect('{')) {
+    /**
+     * Parses raw input as a single JSON array of flat string-only objects.
+     * Returns null for any malformed or oversized input, never throws.
+     * An empty array parses to an empty list; plan-level validation rejects it.
+     */
+    public static List<Map<String, String>> parseArray(String raw) {
+        if (raw == null || raw.length() == 0 || raw.length() > MAX_LENGTH) {
+            return null;
+        }
+        return new StrictJson(raw).parseRootArray();
+    }
+
+    private List<Map<String, String>> parseRootArray() {
+        if (!expect('[')) {
+            return null;
+        }
+        List<Map<String, String>> list = new ArrayList<Map<String, String>>();
+        skipWs();
+        if (expect(']')) {
+            skipWs();
+            return atEnd() ? list : null;
+        }
+        while (true) {
+            if (list.size() >= MAX_ARRAY_ELEMENTS) {
+                return null;
+            }
+            skipWs();
+            Map<String, String> element = parseObjectValue();
+            if (element == null) {
+                return null;
+            }
+            list.add(element);
+            skipWs();
+            if (expect(',')) {
+                continue;
+            }
+            if (expect(']')) {
+                break;
+            }
             return null;
         }
         skipWs();
+        return atEnd() ? list : null;
+    }
+
+    private Map<String, String> parseRootObject() {
+        Map<String, String> result = parseObjectValue();
+        if (result == null) {
+            return null;
+        }
+        skipWs();
+        return atEnd() ? result : null;
+    }
+
+    private Map<String, String> parseObjectValue() {
+        if (!expect('{')) {
+            return null;
+        }
+        Map<String, String> result = new LinkedHashMap<String, String>();
+        skipWs();
         if (expect('}')) {
-            skipWs();
-            return atEnd() ? result : null;
+            return result;
         }
         while (true) {
             if (result.size() >= MAX_KEYS) {
@@ -73,12 +133,10 @@ public final class StrictJson {
                 continue;
             }
             if (expect('}')) {
-                break;
+                return result;
             }
             return null;
         }
-        skipWs();
-        return atEnd() ? result : null;
     }
 
     private String parseString() {

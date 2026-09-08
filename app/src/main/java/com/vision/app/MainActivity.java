@@ -44,6 +44,11 @@ public class MainActivity extends Activity {
     private EditText inputField;
     private final ReasoningProvider reasoningProvider = new NoOpReasoningProvider();
 
+    // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
+    private VisionPlan pendingPlan;
+    private int planStepIndex = 0;
+    private Runnable pendingStepCompletion;
+
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -118,7 +123,11 @@ public class MainActivity extends Activity {
             }
             activeDialog = null;
         }
+        // Fail-closed: a plan dies with the Activity; no step ever resumes after lifecycle loss.
         pendingContactAction = null;
+        pendingPlan = null;
+        planStepIndex = 0;
+        pendingStepCompletion = null;
         inputField = null;
     }
 
@@ -179,7 +188,7 @@ public class MainActivity extends Activity {
         readNotification.setTextColor(TEXT);
         readNotification.setGravity(Gravity.CENTER);
         readNotification.setBackground(round(PANEL, 12));
-        readNotification.setOnClickListener(v -> onReadNotificationButtonClicked());
+        readNotification.setOnClickListener(v -> onReadNotificationButtonClicked(null));
         LinearLayout.LayoutParams readParams = new LinearLayout.LayoutParams(-1, dp(48));
         readParams.setMargins(0, 0, 0, dp(22));
         root.addView(readNotification, readParams);
@@ -226,19 +235,29 @@ public class MainActivity extends Activity {
         send.setOnClickListener(v -> {
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
-                VisionAction action = ReasoningCoordinator.coordinate(command, reasoningProvider);
+                if (pendingPlan != null) {
+                    activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Wait for it to finish before starting a new request.");
+                    return;
+                }
+                ReasoningCoordinator.CoordinationResult coordination =
+                        ReasoningCoordinator.coordinateFull(command, reasoningProvider);
+                if (coordination.plan != null) {
+                    startPlan(coordination.plan, input);
+                    return;
+                }
+                VisionAction action = coordination.action;
                 if (action.type == VisionAction.Type.UNKNOWN) {
                     activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Try:\n\nRead my latest notification\nReply I'll be there soon\nOpen WhatsApp");
                     return;
                 }
                 if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
-                    handleReplyAction(action, command, input);
+                    handleReplyAction(action, command, input, null);
                 } else if (action.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
-                    handleDirectMessageAction(action, input);
+                    handleDirectMessageAction(action, input, null);
                 } else if (action.type == VisionAction.Type.READ_NOTIFICATION) {
-                    handleReadAction(action, command, input);
+                    handleReadAction(action, command, input, null);
                 } else if (action.type == VisionAction.Type.OPEN_APP) {
-                    handleOpenAppAction(action, command, input);
+                    handleOpenAppAction(action, command, input, null);
                 } else {
                     action.state = VisionAction.State.FAILED;
                     activityText.setText("FAILED\n\nVision could not process this request.");
@@ -250,18 +269,87 @@ public class MainActivity extends Activity {
         updateAccessStatus();
     }
 
-    // Tier CONFIRMED: opening an external composer is not proof that a message was sent.
-    private void handleDirectMessageAction(VisionAction action, EditText input) {
-        if (action.isContactDestination()) {
-            handleContactDirectMessageAction(action, input);
-            return;
-        }
-        handleExplicitDirectMessageAction(action, input, action.target, action.target);
+    // ===================== Multi-step plan execution =====================
+    // Sequential, one step at a time. Every step flows through the same handler and the
+    // same risk policy as a single typed command; approval of one step never approves
+    // the next; a DENIED or FAILED step halts the plan and remaining steps never run.
+
+    private void startPlan(VisionPlan plan, EditText input) {
+        pendingPlan = plan;
+        planStepIndex = 0;
+        pendingStepCompletion = null;
+        activityText.setText("PLAN STARTED\n\n" + plan.stepCount() + " steps proposed. Step 1 of " + plan.stepCount() + " is starting.");
+        executeNextPlanStep(input);
     }
 
-    private void handleContactDirectMessageAction(VisionAction action, EditText input) {
+    private void executeNextPlanStep(final EditText input) {
+        if (pendingPlan == null) return;
+        if (planStepIndex >= pendingPlan.stepCount()) {
+            finishPlan(input, true);
+            return;
+        }
+        VisionAction step = pendingPlan.step(planStepIndex);
+        Runnable advance = () -> onPlanStepTerminal(input);
+        if (step.type == VisionAction.Type.READ_NOTIFICATION) {
+            handleReadAction(step, step.request, input, advance);
+        } else if (step.type == VisionAction.Type.OPEN_APP) {
+            handleOpenAppAction(step, step.request, input, advance);
+        } else if (step.type == VisionAction.Type.REPLY_NOTIFICATION) {
+            handleReplyAction(step, step.request, input, advance);
+        } else if (step.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
+            handleDirectMessageAction(step, input, advance);
+        } else {
+            step.state = VisionAction.State.FAILED;
+            onPlanStepTerminal(input);
+        }
+    }
+
+    private void onPlanStepTerminal(EditText input) {
+        if (pendingPlan == null) return;
+        VisionAction step = pendingPlan.step(Math.min(planStepIndex, pendingPlan.stepCount() - 1));
+        if (!VisionPlanExecutor.shouldProceedToNextStep(step.state)) {
+            finishPlan(input, false);
+            return;
+        }
+        planStepIndex++;
+        if (planStepIndex >= pendingPlan.stepCount()) {
+            finishPlan(input, true);
+            return;
+        }
+        executeNextPlanStep(input);
+    }
+
+    private void finishPlan(EditText input, boolean completed) {
+        int total = pendingPlan != null ? pendingPlan.stepCount() : 0;
+        int succeeded = completed ? total : planStepIndex;
+        String headline = completed ? "PLAN COMPLETED" : "PLAN STOPPED";
+        String body = completed
+                ? "All " + total + " steps finished."
+                : succeeded + " of " + total + " steps finished. The remaining steps were not executed.";
+        pendingPlan = null;
+        planStepIndex = 0;
+        pendingStepCompletion = null;
+        if (isFinishing() || isDestroyed()) return;
+        activityText.setText(headline + "\n\n" + body);
+        if (input != null) {
+            input.setText("");
+            hideKeyboard(input);
+        }
+    }
+
+    // Tier CONFIRMED: opening an external composer is not proof that a message was sent.
+    private void handleDirectMessageAction(VisionAction action, EditText input, Runnable onComplete) {
+        if (action.isContactDestination()) {
+            handleContactDirectMessageAction(action, input, onComplete);
+            return;
+        }
+        handleExplicitDirectMessageAction(action, input, action.target, action.target, onComplete);
+    }
+
+    private void handleContactDirectMessageAction(VisionAction action, EditText input, Runnable onComplete) {
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             pendingContactAction = action;
+            pendingStepCompletion = onComplete;
             activityText.setText("CONTACTS PERMISSION NEEDED\n\nVision needs Contacts permission to resolve \"" + action.target + "\".");
             requestPermissions(new String[]{android.Manifest.permission.READ_CONTACTS}, REQUEST_CODE_READ_CONTACTS);
             return;
@@ -271,39 +359,45 @@ public class MainActivity extends Activity {
         if (res.status == VisionContactResolver.ResolutionStatus.NO_MATCH) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("NO CONTACT FOUND\n\nNo contact found matching \"" + action.target + "\". No message was prepared.");
+            if (onComplete != null) onComplete.run();
             return;
         }
         if (res.status == VisionContactResolver.ResolutionStatus.MULTIPLE_MATCHES) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("AMBIGUOUS CONTACT\n\nMultiple contacts match \"" + action.target + "\". Please specify the full name.");
+            if (onComplete != null) onComplete.run();
             return;
         }
         if (res.status == VisionContactResolver.ResolutionStatus.MALFORMED_NUMBER) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("INVALID CONTACT NUMBER\n\nContact \"" + res.resolvedName + "\" does not have a valid international phone number (+ country code required).");
+            if (onComplete != null) onComplete.run();
             return;
         }
         if (res.status == VisionContactResolver.ResolutionStatus.PERMISSION_DENIED) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nContacts permission is needed to resolve contact names.");
+            if (onComplete != null) onComplete.run();
             return;
         }
         if (!res.isSuccess() || res.resolvedNumber.isEmpty()) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\n" + (res.errorMessage.isEmpty() ? "Could not resolve contact." : res.errorMessage));
+            if (onComplete != null) onComplete.run();
             return;
         }
 
         VisionAction boundAction = action.withResolvedContact(res.resolvedName, res.resolvedNumber);
         String destDisplay = res.resolvedName + " (" + res.maskedNumber + ")";
-        handleExplicitDirectMessageAction(boundAction, input, destDisplay, res.resolvedName);
+        handleExplicitDirectMessageAction(boundAction, input, destDisplay, res.resolvedName, onComplete);
     }
 
-    private void handleExplicitDirectMessageAction(VisionAction action, EditText input, String destDisplay, String targetName) {
+    private void handleExplicitDirectMessageAction(VisionAction action, EditText input, String destDisplay, String targetName, Runnable onComplete) {
         Intent compose = DirectMessageIntentFactory.create(action);
         if (compose == null || compose.resolveActivity(getPackageManager()) == null) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nNo supported composer is available for " + action.channel + ".");
+            if (onComplete != null) onComplete.run();
             return;
         }
 
@@ -318,6 +412,7 @@ public class MainActivity extends Activity {
                     if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nMessage to " + destDisplay + "\n\nVision stopped this action.");
+                    if (onComplete != null) onComplete.run();
                 })
                 .setPositiveButton("Open composer", (d, which) -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -336,14 +431,19 @@ public class MainActivity extends Activity {
                         action.state = VisionAction.State.FAILED;
                         activityText.setText("FAILED\n\nCould not open the " + channel + " composer.");
                     }
+                    if (onComplete != null) onComplete.run();
                 })
                 .setOnDismissListener(d -> {
                     if (activeDialog == d) activeDialog = null;
                     if (action.state == VisionAction.State.PROPOSED) {
                         action.state = VisionAction.State.DENIED;
-                        if (isFinishing() || isDestroyed()) return;
+                        if (isFinishing() || isDestroyed()) {
+                            if (onComplete != null) onComplete.run();
+                            return;
+                        }
                         activityText.setText("CANCELLED\n\nMessage to " + destDisplay + "\n\nConfirmation was dismissed.");
                     }
+                    if (onComplete != null) onComplete.run();
                 })
                 .create();
         showManagedDialog(dialog);
@@ -355,12 +455,16 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_CODE_READ_CONTACTS) {
             VisionAction pending = pendingContactAction;
             EditText input = inputField;
+            Runnable completion = pendingStepCompletion;
             pendingContactAction = null;
+            pendingStepCompletion = null;
             if (grantResults != null && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 if (pending != null && !isFinishing() && !isDestroyed()) {
-                    handleContactDirectMessageAction(pending, input);
+                    handleContactDirectMessageAction(pending, input, completion);
                 } else if (!isFinishing() && !isDestroyed()) {
+                    if (pending != null) pending.state = VisionAction.State.FAILED;
                     activityText.setText("FAILED\n\nContacts permission was granted, but the pending request could not be recovered. Please make your request again.");
+                    if (completion != null) completion.run();
                 }
             } else {
                 if (pending != null) {
@@ -369,6 +473,7 @@ public class MainActivity extends Activity {
                 if (!isFinishing() && !isDestroyed()) {
                     activityText.setText("FAILED\n\nContacts permission was denied. Vision cannot resolve contact names without permission.");
                 }
+                if (completion != null) completion.run();
             }
         }
     }
@@ -399,7 +504,7 @@ public class MainActivity extends Activity {
     }
 
     // Tier CONFIRMED: modal Allow/Deny confirmation required before sending replies
-    private void handleReplyAction(VisionAction action, String command, EditText input) {
+    private void handleReplyAction(VisionAction action, String command, EditText input, Runnable onComplete) {
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
             AlertDialog dialog = new AlertDialog.Builder(this)
@@ -419,6 +524,7 @@ public class MainActivity extends Activity {
                     .create();
             showManagedDialog(dialog);
             activityText.setText("FAILED\n\nNotification access is not enabled.");
+            if (onComplete != null) onComplete.run();
             return;
         }
 
@@ -435,6 +541,7 @@ public class MainActivity extends Activity {
             } else {
                 activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a notification to reply to yet.");
             }
+            if (onComplete != null) onComplete.run();
             return;
         }
 
@@ -445,6 +552,7 @@ public class MainActivity extends Activity {
             action.state = VisionAction.State.FAILED;
             String mismatchDesc = formatDestinationDisplay(source, replyCap);
             activityText.setText("TARGET MISMATCH\n\nThe active notification is from " + mismatchDesc + ", not \"" + action.target + "\". No reply was sent.");
+            if (onComplete != null) onComplete.run();
             return;
         }
 
@@ -461,6 +569,7 @@ public class MainActivity extends Activity {
                     if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nReply to " + destDisplay + "\n\nVision stopped this action.");
+                    if (onComplete != null) onComplete.run();
                 })
                 .setPositiveButton("Allow", (d, which) -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -468,6 +577,7 @@ public class MainActivity extends Activity {
                     executeBoundNotificationReply(action, boundCap, destDisplay);
                     input.setText("");
                     hideKeyboard(input);
+                    if (onComplete != null) onComplete.run();
                 })
                 .setOnDismissListener(d -> {
                     if (activeDialog == d) {
@@ -478,6 +588,7 @@ public class MainActivity extends Activity {
                         action.state = VisionAction.State.DENIED;
                         activityText.setText("CANCELLED\n\nReply to " + destDisplay + "\n\nConfirmation was dismissed.");
                     }
+                    if (onComplete != null) onComplete.run();
                 })
                 .create();
         showManagedDialog(dialog);
@@ -499,7 +610,7 @@ public class MainActivity extends Activity {
     }
 
     // Tier SAFE: auto-executes immediately without modal confirmation dialog
-    private void handleReadAction(VisionAction action, String command, EditText input) {
+    private void handleReadAction(VisionAction action, String command, EditText input, Runnable onComplete) {
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
             AlertDialog dialog = new AlertDialog.Builder(this)
@@ -519,6 +630,7 @@ public class MainActivity extends Activity {
                     .create();
             showManagedDialog(dialog);
             activityText.setText("FAILED\n\nNotification access is not enabled.");
+            if (onComplete != null) onComplete.run();
             return;
         }
         VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
@@ -530,12 +642,14 @@ public class MainActivity extends Activity {
             } else {
                 activityText.setText("NO SUPPORTED NOTIFICATION\n\nVision has not received a Gmail, WhatsApp, Telegram, Messages, or Calendar notification yet.");
             }
+            if (onComplete != null) onComplete.run();
             return;
         }
 
         executeBoundNotificationRead(action, snapshot);
         input.setText("");
         hideKeyboard(input);
+        if (onComplete != null) onComplete.run();
     }
 
     private void executeBoundNotificationRead(VisionAction action, VisionNotificationListener.NotificationSnapshot boundSnapshot) {
@@ -553,11 +667,12 @@ public class MainActivity extends Activity {
     }
 
     // Tier SAFE: auto-executes immediately without modal confirmation dialog
-    private void handleOpenAppAction(VisionAction action, String command, EditText input) {
+    private void handleOpenAppAction(VisionAction action, String command, EditText input, Runnable onComplete) {
         Intent launch = resolveAppLaunchIntent(action.target);
         if (launch == null) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not open " + action.target + ".\nThe app is not installed or has no launch screen.");
+            if (onComplete != null) onComplete.run();
             return;
         }
         action.state = VisionAction.State.RUNNING;
@@ -571,9 +686,10 @@ public class MainActivity extends Activity {
         }
         input.setText("");
         hideKeyboard(input);
+        if (onComplete != null) onComplete.run();
     }
 
-    private void onReadNotificationButtonClicked() {
+    private void onReadNotificationButtonClicked(Runnable onComplete) {
         if (!isNotificationAccessEnabled()) {
             AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Notification access needed")

@@ -3,7 +3,37 @@
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**
-> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 9 adds only the trusted-boundary plumbing for a future model — the `ReasoningProvider` interface plus strict fail-closed proposal validation (interface + validation only; still no model, no network, no embeddings). Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
+> Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 10 adds only trusted-boundary plumbing for a future model — bounded multi-step plan proposals on top of the Phase 9 single-proposal boundary (grammar + validation + sequential per-action execution policy only; still no model, no network, no embeddings). Phase 9 added the `ReasoningProvider` interface plus strict fail-closed proposal validation. Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
+
+---
+
+## Phase 10 Architecture: Bounded Multi-Step Plans (v0.10.0)
+
+Phase 10 extends the trusted proposal boundary from a single action to a bounded plan, following the same fail-closed philosophy. Production behavior is **identical to v0.9.3** (the `NoOpReasoningProvider` never proposes anything); the plan path exists only for a future model and is fully covered by tests.
+
+### 1. Plan Grammar (`StrictJson.parseArray`)
+Providers may return a single flat JSON object (Phase 9 single action) or a single JSON array of flat string-only objects (Phase 10 plan). The array grammar inherits every strictness rule: string-only flat elements, at most 16 keys per element, at most 8 elements, 8192-character cap, duplicate keys, trailing garbage, nesting, and non-string values all rejected. Fail-closed: any violation returns `null`.
+
+### 2. Plan Validation (`ReasoningPlanValidator`)
+Every step must independently survive the exact Phase 9 `ReasoningProposalValidator` rules — exact four-key schema, supported types only, per-type target/text/channel rules. There are **no plan-level keys and no plan-level semantics**: a step smuggling `approved`, `risk`, or `skip_confirmation` rejects the whole plan (the invalid step index is reported). Plans are bounded at `VisionPlan.MAX_ACTIONS = 3`; empty plans and oversized plans are rejected.
+
+### 3. Sequential Execution (`VisionPlanExecutor` policy, MainActivity)
+Plans execute strictly one step at a time through the **same handlers, same risk policy, and same modal confirmations as typed commands**:
+- A CONFIRMED step still shows its own Allow/Deny dialog; **approval of one step never approves a later step**.
+- A step ending `DENIED` or `FAILED` halts the plan; remaining steps are never offered.
+- Only `SUCCEEDED` or `COMPOSER_OPENED` advances to the next step.
+- A plan in progress blocks new commands ("PLAN IN PROGRESS").
+- Plans are in-memory only and die with the Activity — no step ever resumes after lifecycle loss (fail-closed).
+- The activity surface reports `PLAN STARTED`, `PLAN COMPLETED`, or `PLAN STOPPED` with the step count; individual step outcomes keep their existing per-action messages.
+
+### 4. Coordinator Routing (`ReasoningCoordinator.coordinateFull`)
+Parser-first, unchanged: the deterministic parser is always consulted first; the provider is consulted only for `UNKNOWN` requests; array vs. object output selects the plan path vs. the single-action path; any parse or validation failure yields `UNKNOWN` with the original request preserved. `coordinate()` remains as a delegate with byte-identical behavior for single actions.
+
+### 5. Default Behavior Unchanged
+`MainActivity` still wires `NoOpReasoningProvider`; with no provider output there are no plans, and the v0.9.3 command corpus behaves identically through `coordinateFull` (regression-tested, `test56`).
+
+### 6. Zero New Attack Surface
+No new permissions, no network, no disk persistence, no new dependencies. Provider output is never logged. The evaluation suite covers: array grammar acceptance/malformed rejection (`test50`), plan validation and bounds (`test51`), plan immutability (`test52`), coordinator routing and parser-first guarantees (`test53`), step-advance/halt policy and per-step risk tiers (`test54`), prompt-injection payload semantics and plan-level smuggling rejection (`test55`), and the v0.9.x regression corpus (`test56`) — 56/56 test groups.
 
 ---
 
