@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-07
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.9.2 (versionCode: 17, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.9.3 (versionCode: 18, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact: `app/build/outputs/apk/debug/app-debug.apk` — see Section 5)*
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782` — see Section 5)*
@@ -237,6 +237,9 @@ Device: iQOO Z9x (I2219), Android 16 / API 36, arm64-v8a, serial `[redacted]`, d
   - opencode verdict: `APPROVE` — every quoted surface string verified verbatim against source, the PC-build story corroborated by the machine's filesystem, notification-path limits honestly stated, never-SENT guarantee intact. LOW follow-ups: annotate the stale v0.9.0 header hash (F1), resolve Section 4's dangling refresh promise (F2), redact the device serial if the repo is ever published (F3, deferred — repo is private).
   - agy verdict: `APPROVED` — "an honest, rigorous, and verifiable audit trail of the first physical-device execution." LOW: same header-hash annotation (V092-DOC-04); INFORMATIONAL: README's bash line-continuation needs a backtick in PowerShell (V092-DOC-05).
 - All findings remediated in the follow-up commit: header and Section 4 artifact lines now annotated with both the v0.9.0 (Termux) and v0.9.2 (PC) hashes; the dangling "to be refreshed" promise replaced by "superseded by Section 5"; the PowerShell note accepted as informational; the serial-redaction item deferred while the repo stays private.
+
+### v0.9.3 Audit Follow-Up (2026-09-08)
+Closed the one LOW carried over from the v0.9.2 audit (V092-01): `hasWordToken`'s segment alphabet now exactly mirrors the OPEN_APP gate's Java word set — `[^a-z0-9_]+` instead of `[^a-z0-9]+` — making the token check a perfect `\b` mirror in both directions. Underscore-suffixed aliases (`open wa_`, `open tg_`) now stay `UNKNOWN` (underscore is a word character, so the gate never matched them), and mixed commands (`open messages wa_`) correctly resolve to Messages instead of WhatsApp/Telegram. New assertions in `test03`; suite remains 49 groups, executed green on the PC JVM (49/49, 0 failures). Version bumped to 0.9.3 (versionCode 18).
 
 ### Remaining Gates
 - Parser, contact-resolution, permission-flow, confirmation-gate, and composer-handoff behaviors: **verified on physical device 2026-09-07 (v0.9.2, see Section 5)**; notification-path items (live notification lifecycle, semantic reply dispatch, lifecycle recovery under Activity recreation) still require a posted supported-app notification during a test session.

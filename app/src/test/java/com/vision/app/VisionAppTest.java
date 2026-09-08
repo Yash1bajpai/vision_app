@@ -76,6 +76,15 @@ public class VisionAppTest {
         assertAppLaunch("launch tg!", "Telegram");
         assertAppLaunch("open wa, please", "WhatsApp");
         assertAppLaunch("open wa,please", "WhatsApp");
+
+        // v0.9.3: underscore is a word character in the gate, so underscore-suffixed aliases
+        // must not resolve as bare aliases (V092-01: gate/split alphabet parity)
+        assertEquals("open wa_ stays UNKNOWN (underscore is a word char)", VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("open wa_").type);
+        assertEquals("open tg_ stays UNKNOWN (underscore is a word char)", VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("open tg_").type);
+        assertAppLaunch("open messages wa_", "Messages");
+        assertAppLaunch("open sms tg_", "Messages");
     }
 
     // Test 4: Notification reply requests (F3 colon requirement, F9 reply-to-colon, N13 word boundaries)
