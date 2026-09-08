@@ -243,7 +243,7 @@ Notification access was granted to Vision through the Android settings UI (syste
 ## 6. Audit Record
 
 ### Phase 10 Implementation Checkpoint (2026-09-08)
-- Commit: `569b3b9`..Phase 10 — v0.9.3 underscore fix (dual-approved) followed by the Phase 10 plan boundary; 56/56 offline JVM test groups green on the PC toolchain; production wiring unchanged (`NoOpReasoningProvider`), so v0.10.0 runtime behavior is identical to v0.9.3. Physical-device verification of the plan path is pending a real provider (none ships in this phase); the notification-path device tests remain a standing gate (see Section 5).
+- Commit: `569b3b9`..Phase 10 — v0.9.3 underscore fix (dual-approved) followed by the Phase 10 plan boundary; 56/56 offline JVM test groups green on the PC toolchain; production wiring unchanged (`NoOpReasoningProvider`), so v0.10.0 runtime behavior is identical to v0.9.3. Physical-device verification of the plan path is pending a real provider (none ships in this phase); ~~the notification-path device tests remain a standing gate~~ — completed 2026-09-08, see the v0.10.0 notification-path matrix in Section 5.
 
 ### Phase 10 Audit Loop (2026-09-08, commits `8b209a1` + `0237f3c`)
 - opencode audit of `8b209a1`: verdict `APPROVE WITH FOLLOW-UPS` — the trusted plan boundary verified sound (no provider output can reach execution without full per-step validation; no plan-level semantics can be smuggled; routing deterministic; single-action behavior regression-free; 56/56 independently confirmed by the auditor's own fresh Gradle execution). Findings, all remediated in `0237f3c`:
@@ -252,6 +252,11 @@ Notification access was granted to Vision through the Android settings UI (syste
   - F3 (LOW): the Read-latest-notification button was not guarded during plan execution. Fix: guarded, same as the composer.
   - Follow-up noted for the next phase: extract the step-advance state machine from the Activity into a pure testable class.
 - agy audit of the combined range (`8b209a1`+`0237f3c`): verdict `APPROVED` — "a clean, well-architected trusted plan boundary… absolute fidelity to Vision's safety guarantees: fail-closed validation, explicit user authorization, deterministic parser priority, zero disk persistence, and per-action modal confirmations." Sequential execution, lifecycle destruction, routing, regression, and all seven new test groups verified.
+
+### v0.10.0 Notification-Verification Audit (2026-09-08, commit `637a24c`)
+- opencode (muse-spark-1.3, high effort — first audit on the new model): verdict `APPROVE WITH ONE PRIVACY FOLLOW-UP` — all 9 matrix claims verified verbatim against the implementation (surface strings, allowlist, state machine, `sendBoundReply` path); the sole untested item (permission lifecycle recovery) honestly retained as pending. Findings: F2 (MEDIUM) — third-party full name and verbatim message bodies had been committed to git history; remediated by redacting to placeholders (`Contact A`, `<test payload>`, `content redacted`) and replacing the unpushed-dependents commit; F1 (LOW) — exact removal surface named (`NO SUPPORTED NOTIFICATION` fresh-process vs `NOTIFICATION REMOVED` when observed) — resolved inline.
+- agy audit: verdict `APPROVED` — "an exemplary, privacy-compliant, and technically verified on-device test record. It proves that Vision's notification listener, target validation, ordering, filtering, and reply dispatch operate on physical Android 16 hardware exactly as specified." Redaction verified complete (no real names, numbers, or message bodies remain); informational note V100-DOC-01 (cross-reference the Phase 10 checkpoint line) resolved in the follow-up commit.
+- Owner policy from this point forward: **no history rewrites** — every change lands as a forward commit; sensitive content is redacted in follow-up commits only.
 
 ### Phase 9 Implementation Checkpoint
 - Phase 9 implementation checkpoint: commit `11663f4` — 48/48 offline JVM test groups passing; offline build, APK packaging, signature verification, and artifact hash independently verified.
