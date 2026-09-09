@@ -14,6 +14,10 @@ import java.util.Set;
  * Tier SAFE (auto-execute immediately, NO modal dialog):
  * - OPEN_APP
  * - READ_NOTIFICATION
+ * - READ_BATTERY
+ * - READ_NETWORK
+ * - READ_TIME
+ * - READ_CALENDAR (read-only query; creating/modifying events stays CONFIRMED)
  *
  * Tier CONFIRMED (modal Allow/Deny REQUIRED before execution):
  * - REPLY_NOTIFICATION (active MVP)
@@ -36,7 +40,11 @@ public final class VisionRiskPolicy {
 
     private static final Set<VisionAction.Type> SAFE_TYPES = EnumSet.of(
             VisionAction.Type.OPEN_APP,
-            VisionAction.Type.READ_NOTIFICATION
+            VisionAction.Type.READ_NOTIFICATION,
+            VisionAction.Type.READ_BATTERY,
+            VisionAction.Type.READ_NETWORK,
+            VisionAction.Type.READ_TIME,
+            VisionAction.Type.READ_CALENDAR
     );
 
     private VisionRiskPolicy() { }

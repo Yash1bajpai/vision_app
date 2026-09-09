@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-08
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.10.0 (versionCode: 19, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.11.0 (versionCode: 20, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact: `app/build/outputs/apk/debug/app-debug.apk` — see Section 5)*
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782` — see Section 5)*
@@ -12,6 +12,16 @@
 ---
 
 ## 1. Executive Summary
+
+### Phase 11 Deliverables (More Android Actions — Device Status Reads)
+1. **Four new SAFE-tier action types:** `READ_BATTERY`, `READ_NETWORK`, `READ_TIME`, `READ_CALENDAR` — all read-only, auto-executing without modal confirmation, per the risk policy's inverted fail-closed model.
+2. **Parser grammar:** natural phrasings for each (`read battery` / `check battery status` / `what is my battery level`; `read network status` / `check my internet connection`; `what time is it` / `tell me the time`; `read calendar` / `show my next appointment` / `what's on my schedule today`), evaluated after notification reads and before app-launch matching to preserve precedence.
+3. **Executor implementations:** battery percentage + charging state via `BatteryManager` (sticky `ACTION_BATTERY_CHANGED` read, no receiver leak); network status via `ConnectivityManager` with transport classification (Wi-Fi / mobile data / Ethernet / offline); local clock read via `SimpleDateFormat`; calendar read via `CalendarContract.Instances` time-range query (next 7 days, up to 3 upcoming events, all-day awareness), with try-with-resources cursor handling and zero disk persistence.
+4. **Runtime permission parity with Phase 8:** `READ_CALENDAR` requested at runtime only when a calendar read is commanded; denial fails closed with an informative surface; the pending read is in-memory only and dies with the Activity. Manifest gains `READ_CALENDAR` (the only new permission).
+5. **Proposal-path parity:** the four types are valid reasoning-provider proposal and plan types under the same strictness as `READ_NOTIFICATION` — canonical single-word target (or empty, normalized), text forbidden, channel forbidden; hallucinated targets rejected.
+6. **Risk policy:** all four added to `SAFE_TYPES`; everything unlisted (including future calendar *creation/modification*) remains CONFIRMED by default.
+7. **Tests:** `test57_deviceStatusReadActions` — parser acceptance and precedence (notification reads not hijacked), SAFE-tier verification, labels, validator parity including rejection reasons, coordinator single-action routing, and plan composition with the new types. Suite: 57/57 green on the PC JVM.
+8. **Roadmap note:** the reasoning provider will ship as dual implementations — a cloud API provider and an on-device local model provider — both behind the existing validated boundary (user decision recorded 2026-09-08).
 
 ### Phase 10 Deliverables (Bounded Multi-Step Plans — Trusted Plan Boundary)
 1. **Plan grammar (`StrictJson.parseArray`):** one JSON array of flat string-only objects, inheriting every Phase 9 strictness rule (string-only flat elements, ≤16 keys/element, ≤8 elements, 8192-char cap; duplicate keys, trailing garbage, nesting, non-string values all rejected; never throws, returns `null`).

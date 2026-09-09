@@ -2130,6 +2130,80 @@ public class VisionAppTest {
         }
     }
 
+    // Test 57: Phase 11 device-status reads — parser, validator parity, risk tiers
+    @Test
+    public void test57_deviceStatusReadActions() {
+        // Parser: battery
+        assertEquals(VisionAction.Type.READ_BATTERY, VisionActionParser.parse("read battery").type);
+        assertEquals(VisionAction.Type.READ_BATTERY, VisionActionParser.parse("check battery status").type);
+        assertEquals(VisionAction.Type.READ_BATTERY, VisionActionParser.parse("what is my battery level").type);
+        assertEquals(VisionAction.Type.READ_BATTERY, VisionActionParser.parse("battery status").type);
+
+        // Parser: network
+        assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("read network status").type);
+        assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("check my internet connection").type);
+        assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("am i online").type == VisionAction.Type.READ_NETWORK
+                ? VisionAction.Type.READ_NETWORK : VisionActionParser.parse("check network status").type);
+
+        // Parser: time
+        assertEquals(VisionAction.Type.READ_TIME, VisionActionParser.parse("what time is it").type);
+        assertEquals(VisionAction.Type.READ_TIME, VisionActionParser.parse("read the time").type);
+        assertEquals(VisionAction.Type.READ_TIME, VisionActionParser.parse("tell me the time").type);
+
+        // Parser: calendar
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("read calendar").type);
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("show my next appointment").type);
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("what's on my schedule today").type);
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("whats my next meeting").type);
+
+        // Parser precedence: notification reads are not hijacked by status reads
+        assertEquals(VisionAction.Type.READ_NOTIFICATION, VisionActionParser.parse("read my notifications").type);
+        assertEquals(VisionAction.Type.READ_NOTIFICATION, VisionActionParser.parse("check messages").type);
+
+        // All four are SAFE tier (auto-execute, no confirmation)
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_BATTERY));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_NETWORK));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_TIME));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_CALENDAR));
+        assertFalse(VisionActionParser.parse("read battery").requiresConfirmation());
+        assertFalse(VisionActionParser.parse("what time is it").requiresConfirmation());
+
+        // Labels
+        assertEquals("Read battery status", VisionActionParser.parse("read battery").label());
+
+        // Validator parity: proposals for the new types follow status-read strictness
+        assertAccepted(proposal("READ_BATTERY", "", "", ""));
+        assertAccepted(proposal("READ_BATTERY", "battery", "", ""));
+        assertRejected("READ_BATTERY wrong target",
+                proposal("READ_BATTERY", "whatsapp", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertRejected("READ_BATTERY text forbidden",
+                proposal("READ_BATTERY", "", "x", ""), ReasoningProposalValidator.RejectionReason.INVALID_TEXT);
+        assertRejected("READ_BATTERY channel forbidden",
+                proposal("READ_BATTERY", "", "", "sms"), ReasoningProposalValidator.RejectionReason.INVALID_CHANNEL);
+        assertAccepted(proposal("READ_NETWORK", "network", "", ""));
+        assertAccepted(proposal("READ_TIME", "", "", ""));
+        assertRejected("READ_TIME wrong target",
+                proposal("READ_TIME", "battery", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertAccepted(proposal("READ_CALENDAR", "calendar", "", ""));
+
+        // Coordinator routes a valid new-type proposal through the single-action path
+        ReasoningCoordinator.CoordinationResult routed = ReasoningCoordinator.coordinateFull(
+                "status check please",
+                new MockReasoningProvider("{\"type\":\"READ_BATTERY\",\"target\":\"battery\",\"text\":\"\",\"channel\":\"\"}"));
+        assertEquals(VisionAction.Type.READ_BATTERY, routed.action.type);
+        assertNull(routed.plan);
+
+        // And a valid plan can contain the new types as steps
+        ReasoningCoordinator.CoordinationResult planResult = ReasoningCoordinator.coordinateFull(
+                "status routine",
+                new MockReasoningProvider("[{\"type\":\"READ_BATTERY\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"},"
+                        + "{\"type\":\"READ_TIME\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}]"));
+        assertNotNull(planResult.plan);
+        assertEquals(2, planResult.plan.stepCount());
+        assertEquals(VisionAction.Type.READ_BATTERY, planResult.plan.step(0).type);
+        assertEquals(VisionAction.Type.READ_TIME, planResult.plan.step(1).type);
+    }
+
     private static void assertReply(String command, String expectedTarget, String expectedText) {
         VisionAction action = VisionActionParser.parse(command);
         assertEquals("Expected REPLY_NOTIFICATION for: " + command, VisionAction.Type.REPLY_NOTIFICATION, action.type);

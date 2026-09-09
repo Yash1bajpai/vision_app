@@ -7,6 +7,10 @@ public final class VisionAction {
         REPLY_NOTIFICATION,
         SEND_MESSAGE_DIRECT,
         OPEN_APP,
+        READ_BATTERY,
+        READ_NETWORK,
+        READ_TIME,
+        READ_CALENDAR,
         UNKNOWN
     }
 
@@ -94,6 +98,10 @@ public final class VisionAction {
         }
         if (type == Type.SEND_MESSAGE_DIRECT) return "Send a new message to " + target;
         if (type == Type.OPEN_APP) return "Open " + target;
+        if (type == Type.READ_BATTERY) return "Read battery status";
+        if (type == Type.READ_NETWORK) return "Read network status";
+        if (type == Type.READ_TIME) return "Read the current time";
+        if (type == Type.READ_CALENDAR) return "Read the next calendar appointment";
         return "Process this request locally";
     }
 

@@ -84,6 +84,11 @@ public final class ReasoningProposalValidator {
         switch (type) {
             case READ_NOTIFICATION:
                 return validateRead(target, text, channel);
+            case READ_BATTERY:
+            case READ_NETWORK:
+            case READ_TIME:
+            case READ_CALENDAR:
+                return validateStatusRead(type, target, text, channel);
             case OPEN_APP:
                 return validateOpenApp(target, text, channel);
             case REPLY_NOTIFICATION:
@@ -91,6 +96,32 @@ public final class ReasoningProposalValidator {
             default:
                 return validateDirect(target, text, channel);
         }
+    }
+
+    /**
+     * Device-status reads accept the canonical single-word target for their type (or empty,
+     * normalized to it), no text, and no channel — mirroring READ_NOTIFICATION's strictness.
+     */
+    private static ValidationResult validateStatusRead(VisionAction.Type type, String target, String text, String channel) {
+        String canonical = canonicalStatusTarget(type);
+        String normalizedTarget = target.isEmpty() ? canonical : target;
+        if (!normalizedTarget.equalsIgnoreCase(canonical)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(type, canonical, text, channel);
+    }
+
+    private static String canonicalStatusTarget(VisionAction.Type type) {
+        if (type == VisionAction.Type.READ_BATTERY) return "battery";
+        if (type == VisionAction.Type.READ_NETWORK) return "network";
+        if (type == VisionAction.Type.READ_TIME) return "time";
+        return "calendar";
     }
 
     private static ValidationResult validateRead(String target, String text, String channel) {
@@ -187,6 +218,10 @@ public final class ReasoningProposalValidator {
         if ("REPLY_NOTIFICATION".equals(raw)) return VisionAction.Type.REPLY_NOTIFICATION;
         if ("SEND_MESSAGE_DIRECT".equals(raw)) return VisionAction.Type.SEND_MESSAGE_DIRECT;
         if ("OPEN_APP".equals(raw)) return VisionAction.Type.OPEN_APP;
+        if ("READ_BATTERY".equals(raw)) return VisionAction.Type.READ_BATTERY;
+        if ("READ_NETWORK".equals(raw)) return VisionAction.Type.READ_NETWORK;
+        if ("READ_TIME".equals(raw)) return VisionAction.Type.READ_TIME;
+        if ("READ_CALENDAR".equals(raw)) return VisionAction.Type.READ_CALENDAR;
         return null;
     }
 
