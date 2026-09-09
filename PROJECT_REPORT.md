@@ -51,6 +51,10 @@ The calendar row doubles as live proof of the grammar-precedence fix (a "what ti
   - LOW-3 (vacuous `am i online` test assertion — the phrase parsed UNKNOWN, so the ternary silently tested a different phrase) — `am i online` added to the READ_NETWORK grammar and the assertion made direct;
   - LOW-4 (asymmetric cross-pending clearing between the contacts and calendar permission paths) — both paths now clear the opposite pending slot symmetrically.
 
+### Phase 11 Follow-up Audit (2026-09-09, commit `3500bd1`) — BOTH APPROVED, ZERO FINDINGS
+- **agy (Gemini 3.1 Pro, high, persistent session):** verdict `APPROVE` — all four LOW closures verified in source with file:line references (DST-exact `getOffset()`, `am i online` grammar + direct assertion, symmetric pending clearing, v0.11.1 report record). **Remaining findings: NONE.**
+- **opencode (muse-spark-1.3, high, persistent session):** verdict `APPROVE` — independently re-ran the suite with `--rerun-tasks` (57/57, 0 failures/errors/skips) and traced all four closures plus no-hijack placement of the new grammar alternative. **Remaining findings: NONE.**
+
 ### Phase 10 Deliverables (Bounded Multi-Step Plans — Trusted Plan Boundary)
 1. **Plan grammar (`StrictJson.parseArray`):** one JSON array of flat string-only objects, inheriting every Phase 9 strictness rule (string-only flat elements, ≤16 keys/element, ≤8 elements, 8192-char cap; duplicate keys, trailing garbage, nesting, non-string values all rejected; never throws, returns `null`).
 2. **Plan validation (`ReasoningPlanValidator`):** every step must independently pass the exact Phase 9 proposal validator; no plan-level keys or semantics exist — smuggled `approved`/`risk`/`skip_confirmation` keys reject the whole plan with the invalid step index; bounded at `VisionPlan.MAX_ACTIONS = 3`; empty and null step lists rejected.
