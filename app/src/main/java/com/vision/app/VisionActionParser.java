@@ -80,7 +80,9 @@ public final class VisionActionParser {
             return new VisionAction(VisionAction.Type.READ_NOTIFICATION, request, "latest notification");
         }
 
-        // 2a. Device status reads (SAFE tier): battery, network, time, calendar
+        // 2a. Device status reads (SAFE tier): battery, network, calendar, time.
+        // Calendar is matched before time so 'what time is my next appointment' resolves to
+        // READ_CALENDAR instead of being hijacked by the time grammar.
         if (normalized.matches(".*\\b(read|check|checking|show|what|whats|how|tell|get|see)\\b.*\\b(battery|charge|charging level)\\b.*")
                 || normalized.matches(".*\\bbattery\\b.*\\b(status|level|percentage|percent|charge)\\b.*")) {
             return new VisionAction(VisionAction.Type.READ_BATTERY, request, "battery");
@@ -89,15 +91,15 @@ public final class VisionActionParser {
                 || normalized.matches(".*\\b(network|internet|wifi|wi-fi|connection|connectivity)\\b.*\\b(status|state|speed)\\b.*")) {
             return new VisionAction(VisionAction.Type.READ_NETWORK, request, "network");
         }
+        if (normalized.matches(".*\\b(read|check|checking|show|what|whats|see|get)\\b.*\\b(appointment|appointments|event|events|schedule|calendar|agenda|meeting|meetings)\\b.*")
+                || normalized.matches(".*\\b(next|upcoming|today's|todays)\\b.*\\b(appointment|event|meeting|schedule|calendar|agenda)\\b.*")) {
+            return new VisionAction(VisionAction.Type.READ_CALENDAR, request, "calendar");
+        }
         if (normalized.matches("^.*\\bwhat\\b.*\\btime\\b.*$")
                 || normalized.matches(".*\\b(read|tell|show|say|check|get)\\b.*\\btime\\b.*")
                 || normalized.equals("time")
                 || normalized.equals("the time")) {
             return new VisionAction(VisionAction.Type.READ_TIME, request, "time");
-        }
-        if (normalized.matches(".*\\b(read|check|checking|show|what|whats|see|get)\\b.*\\b(appointment|appointments|event|events|schedule|calendar|agenda|meeting|meetings)\\b.*")
-                || normalized.matches(".*\\b(next|upcoming|today's|todays)\\b.*\\b(appointment|event|meeting|schedule|calendar|agenda)\\b.*")) {
-            return new VisionAction(VisionAction.Type.READ_CALENDAR, request, "calendar");
         }
 
         // 3. OPEN_APP matching

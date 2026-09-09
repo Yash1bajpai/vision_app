@@ -43,6 +43,8 @@ public class MainActivity extends Activity {
     private static final String STATE_PENDING_ACTION_REPLY_TEXT = "pending_action_reply_text";
     private static final String STATE_PENDING_ACTION_CHANNEL = "pending_action_channel";
     private static final String STATE_PENDING_ACTION_STATE = "pending_action_state";
+    private static final String STATE_PENDING_CALENDAR_TYPE = "pending_calendar_type";
+    private static final String STATE_PENDING_CALENDAR_STATE = "pending_calendar_state";
     private static final String STATE_ACTIVITY_TEXT = "activity_text";
 
     private TextView activityText;
@@ -59,6 +61,7 @@ public class MainActivity extends Activity {
 
     // Pending calendar read across the runtime permission dialog (in-memory only)
     private VisionAction pendingCalendarAction;
+    private Runnable pendingCalendarCompletion;
 
     @Override
     public void onCreate(Bundle state) {
@@ -88,6 +91,15 @@ public class MainActivity extends Activity {
                 outState.putString(STATE_PENDING_ACTION_CHANNEL, pendingContactAction.channel);
                 if (pendingContactAction.state != null) {
                     outState.putString(STATE_PENDING_ACTION_STATE, pendingContactAction.state.name());
+                }
+            }
+            // A pending calendar read is a standalone SAFE action (never a plan step when
+            // pending: plan-step pendings carry pendingStepCompletion and are skipped above),
+            // so it is safe to restore — same lifecycle-recovery contract as Phase 8 contacts.
+            if (pendingCalendarAction != null && pendingCalendarCompletion == null) {
+                outState.putString(STATE_PENDING_CALENDAR_TYPE, "READ_CALENDAR");
+                if (pendingCalendarAction.state != null) {
+                    outState.putString(STATE_PENDING_CALENDAR_STATE, pendingCalendarAction.state.name());
                 }
             }
             if (activityText != null && activityText.getText() != null) {
@@ -126,6 +138,16 @@ public class MainActivity extends Activity {
                 pendingContactAction = null;
             }
         }
+        if ("READ_CALENDAR".equals(state.getString(STATE_PENDING_CALENDAR_TYPE))) {
+            VisionAction restored = new VisionAction(VisionAction.Type.READ_CALENDAR, "", "calendar");
+            String stateStr = state.getString(STATE_PENDING_CALENDAR_STATE);
+            if (stateStr != null) {
+                try {
+                    restored.state = VisionAction.State.valueOf(stateStr);
+                } catch (Exception ignored) { }
+            }
+            pendingCalendarAction = restored;
+        }
     }
 
     @Override
@@ -140,6 +162,7 @@ public class MainActivity extends Activity {
         // Fail-closed: a plan dies with the Activity; no step ever resumes after lifecycle loss.
         pendingContactAction = null;
         pendingCalendarAction = null;
+        pendingCalendarCompletion = null;
         pendingPlan = null;
         planStepIndex = 0;
         pendingStepCompletion = null;
@@ -274,13 +297,13 @@ public class MainActivity extends Activity {
                 } else if (action.type == VisionAction.Type.OPEN_APP) {
                     handleOpenAppAction(action, command, input, null);
                 } else if (action.type == VisionAction.Type.READ_BATTERY) {
-                    handleReadBatteryAction(action);
+                    handleReadBatteryAction(action, null);
                 } else if (action.type == VisionAction.Type.READ_NETWORK) {
-                    handleReadNetworkAction(action);
+                    handleReadNetworkAction(action, null);
                 } else if (action.type == VisionAction.Type.READ_TIME) {
-                    handleReadTimeAction(action);
+                    handleReadTimeAction(action, null);
                 } else if (action.type == VisionAction.Type.READ_CALENDAR) {
-                    handleReadCalendarAction(action);
+                    handleReadCalendarAction(action, null);
                 } else {
                     action.state = VisionAction.State.FAILED;
                     activityText.setText("FAILED\n\nVision could not process this request.");
@@ -294,13 +317,14 @@ public class MainActivity extends Activity {
 
     // ===================== Device status reads (Tier SAFE) =====================
 
-    private void handleReadBatteryAction(VisionAction action) {
+    private void handleReadBatteryAction(VisionAction action, Runnable onComplete) {
         try {
             BatteryManager bm = (BatteryManager) getSystemService(Context.BATTERY_SERVICE);
             int percent = bm != null ? bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) : -1;
             if (percent < 0) {
                 action.state = VisionAction.State.FAILED;
                 activityText.setText("FAILED\n\nCould not read the battery status.");
+                if (onComplete != null) onComplete.run();
                 return;
             }
             // Charging state from the sticky battery-changed broadcast without registering a receiver.
@@ -315,9 +339,10 @@ public class MainActivity extends Activity {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the battery status.");
         }
+        if (onComplete != null) onComplete.run();
     }
 
-    private void handleReadNetworkAction(VisionAction action) {
+    private void handleReadNetworkAction(VisionAction action, Runnable onComplete) {
         try {
             android.net.ConnectivityManager cm =
                     (android.net.ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -347,9 +372,10 @@ public class MainActivity extends Activity {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the network status.");
         }
+        if (onComplete != null) onComplete.run();
     }
 
-    private void handleReadTimeAction(VisionAction action) {
+    private void handleReadTimeAction(VisionAction action, Runnable onComplete) {
         try {
             SimpleDateFormat dayFormat = new SimpleDateFormat("EEEE, d MMMM yyyy", Locale.US);
             SimpleDateFormat timeFormat = new SimpleDateFormat("h:mm a", Locale.US);
@@ -361,20 +387,22 @@ public class MainActivity extends Activity {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the current time.");
         }
+        if (onComplete != null) onComplete.run();
     }
 
-    private void handleReadCalendarAction(VisionAction action) {
+    private void handleReadCalendarAction(VisionAction action, Runnable onComplete) {
         if (checkSelfPermission(android.Manifest.permission.READ_CALENDAR) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             pendingContactAction = null;
             pendingCalendarAction = action;
+            pendingCalendarCompletion = onComplete;
             activityText.setText("CALENDAR PERMISSION NEEDED\n\nVision needs Calendar permission to read your next appointment.");
             requestPermissions(new String[]{android.Manifest.permission.READ_CALENDAR}, REQUEST_CODE_READ_CALENDAR);
             return;
         }
-        executeCalendarRead(action);
+        executeCalendarRead(action, onComplete);
     }
 
-    private void executeCalendarRead(VisionAction action) {
+    private void executeCalendarRead(VisionAction action, Runnable onComplete) {
         String[] projection = new String[] {
                 CalendarContract.Instances.TITLE,
                 CalendarContract.Instances.BEGIN,
@@ -398,21 +426,25 @@ public class MainActivity extends Activity {
                 long begin = cursor.getLong(1);
                 long end = cursor.getLong(2);
                 boolean allDay = cursor.getInt(3) != 0;
-                if (begin + (allDay ? 24L * 60L * 60L * 1000L : 0) < now) continue; // already ended
+                if (end < now) continue; // already ended; ongoing events are kept
                 if (shown > 0) result.append("\n\n");
                 SimpleDateFormat dayFormat = new SimpleDateFormat("EEEE, d MMMM", Locale.US);
                 SimpleDateFormat timeFormat = new SimpleDateFormat("h:mm a", Locale.US);
+                // All-day events are stored at UTC midnight; render in UTC to show the intended day.
+                Date beginDate = allDay ? new Date(begin - java.util.TimeZone.getDefault().getRawOffset()) : new Date(begin);
+                Date endDate = allDay ? new Date(end - java.util.TimeZone.getDefault().getRawOffset()) : new Date(end);
                 result.append("• ").append(title != null && !title.isEmpty() ? title : "(untitled event)")
-                        .append("\n  ").append(dayFormat.format(new Date(begin)));
+                        .append("\n  ").append(dayFormat.format(beginDate));
                 if (!allDay) {
-                    result.append(" at ").append(timeFormat.format(new Date(begin)))
-                            .append(" – ").append(timeFormat.format(new Date(end)));
+                    result.append(" at ").append(timeFormat.format(beginDate))
+                            .append(" – ").append(timeFormat.format(endDate));
                 }
                 shown++;
             }
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the calendar.");
+            if (onComplete != null) onComplete.run();
             return;
         }
         action.state = VisionAction.State.SUCCEEDED;
@@ -420,6 +452,7 @@ public class MainActivity extends Activity {
                 + (result.length() > 0
                         ? "Your next appointment(s):\n\n" + result
                         : "No upcoming events in the next 7 days."));
+        if (onComplete != null) onComplete.run();
     }
 
     // ===================== Multi-step plan execution =====================
@@ -458,6 +491,14 @@ public class MainActivity extends Activity {
             handleReplyAction(step, step.request, input, advance);
         } else if (step.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
             handleDirectMessageAction(step, input, advance);
+        } else if (step.type == VisionAction.Type.READ_BATTERY) {
+            handleReadBatteryAction(step, advance);
+        } else if (step.type == VisionAction.Type.READ_NETWORK) {
+            handleReadNetworkAction(step, advance);
+        } else if (step.type == VisionAction.Type.READ_TIME) {
+            handleReadTimeAction(step, advance);
+        } else if (step.type == VisionAction.Type.READ_CALENDAR) {
+            handleReadCalendarAction(step, advance);
         } else {
             step.state = VisionAction.State.FAILED;
             onPlanStepTerminal(input);
@@ -614,16 +655,19 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_READ_CALENDAR) {
             VisionAction pending = pendingCalendarAction;
+            Runnable completion = pendingCalendarCompletion;
             pendingCalendarAction = null;
+            pendingCalendarCompletion = null;
             boolean granted = grantResults != null && grantResults.length > 0
                     && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             if (pending != null && granted && !isFinishing() && !isDestroyed()) {
-                executeCalendarRead(pending);
+                executeCalendarRead(pending, completion);
             } else {
                 if (pending != null) pending.state = VisionAction.State.FAILED;
                 if (!isFinishing() && !isDestroyed()) {
                     activityText.setText("FAILED\n\nCalendar permission was denied. Vision cannot read appointments without permission.");
                 }
+                if (completion != null) completion.run();
             }
             return;
         }

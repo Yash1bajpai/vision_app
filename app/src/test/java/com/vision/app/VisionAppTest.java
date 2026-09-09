@@ -2160,6 +2160,11 @@ public class VisionAppTest {
         assertEquals(VisionAction.Type.READ_NOTIFICATION, VisionActionParser.parse("read my notifications").type);
         assertEquals(VisionAction.Type.READ_NOTIFICATION, VisionActionParser.parse("check messages").type);
 
+        // v0.11.0 remediation: calendar questions are not hijacked by the time grammar
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("what time is my next appointment").type);
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("what time is my meeting").type);
+        assertEquals(VisionAction.Type.READ_TIME, VisionActionParser.parse("what time is it").type);
+
         // All four are SAFE tier (auto-execute, no confirmation)
         assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_BATTERY));
         assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.READ_NETWORK));
