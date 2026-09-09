@@ -456,6 +456,8 @@ public class MainActivity extends Activity {
     private void handleReadCalendarAction(VisionAction action, Runnable onComplete) {
         if (checkSelfPermission(android.Manifest.permission.READ_CALENDAR) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             pendingContactAction = null;
+            pendingEventWriteAction = null;
+            pendingEventWriteCompletion = null;
             pendingCalendarAction = action;
             pendingCalendarCompletion = onComplete;
             activityText.setText("CALENDAR PERMISSION NEEDED\n\nVision needs Calendar permission to read your next appointment.");
@@ -732,7 +734,7 @@ public class MainActivity extends Activity {
                                 android.Manifest.permission.READ_CALENDAR}, REQUEST_CODE_WRITE_CALENDAR);
                         return;
                     }
-                    executeCalendarEventInsert(action, null);
+                    executeCalendarEventInsert(action);
                 })
                 .setOnDismissListener(d -> {
                     if (activeDialog == d) activeDialog = null;
@@ -755,11 +757,11 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Inserts the approved event. Completion is owned by the caller: the dismiss
-     * listener when reached via the modal button, the permission callback when
-     * reached via the deferred permission flow — never both, never here.
+     * Inserts the approved event. Never fires completion: the modal dismiss listener
+     * (button path) and the permission callback (deferred path) each own the latch
+     * exclusively, so it fires exactly once on every path.
      */
-    private void executeCalendarEventInsert(VisionAction action, Runnable onComplete) {
+    private void executeCalendarEventInsert(VisionAction action) {
         action.state = VisionAction.State.RUNNING;
         try {
             String calendarId = resolvePrimaryCalendarId();
@@ -792,7 +794,6 @@ public class MainActivity extends Activity {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not create the event.");
         }
-        if (onComplete != null) onComplete.run();
     }
 
     /** Returns the device's primary (or first visible) calendar id, or null when none is writable. */
@@ -939,6 +940,9 @@ public class MainActivity extends Activity {
     private void handleContactDirectMessageAction(VisionAction action, EditText input, Runnable onComplete) {
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             pendingCalendarAction = null;
+            pendingCalendarCompletion = null;
+            pendingEventWriteAction = null;
+            pendingEventWriteCompletion = null;
             pendingContactAction = action;
             pendingStepCompletion = onComplete;
             activityText.setText("CONTACTS PERMISSION NEEDED\n\nVision needs Contacts permission to resolve \"" + action.target + "\".");
@@ -1053,14 +1057,14 @@ public class MainActivity extends Activity {
                     && grantResults.length > 1
                     && grantResults[1] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             if (pending != null && granted && !isFinishing() && !isDestroyed()) {
-                executeCalendarEventInsert(pending, completion);
+                executeCalendarEventInsert(pending);
             } else {
                 if (pending != null) pending.state = VisionAction.State.FAILED;
                 if (!isFinishing() && !isDestroyed()) {
                     activityText.setText("FAILED\n\nCalendar permission was denied. Vision cannot create events without permission.");
                 }
-                if (completion != null) completion.run();
             }
+            if (completion != null) completion.run();
             return;
         }
         if (requestCode == REQUEST_CODE_READ_CALENDAR) {
