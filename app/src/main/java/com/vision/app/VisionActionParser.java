@@ -88,7 +88,8 @@ public final class VisionActionParser {
             return new VisionAction(VisionAction.Type.READ_BATTERY, request, "battery");
         }
         if (normalized.matches(".*\\b(read|check|checking|show|what|whats|how|tell|get|see)\\b.*\\b(network|internet|wifi|wi-fi|connection|connectivity|signal)\\b.*")
-                || normalized.matches(".*\\b(network|internet|wifi|wi-fi|connection|connectivity)\\b.*\\b(status|state|speed)\\b.*")) {
+                || normalized.matches(".*\\b(network|internet|wifi|wi-fi|connection|connectivity)\\b.*\\b(status|state|speed)\\b.*")
+                || normalized.matches(".*\\bam\\s+i\\s+online\\b.*")) {
             return new VisionAction(VisionAction.Type.READ_NETWORK, request, "network");
         }
         if (normalized.matches(".*\\b(read|check|checking|show|what|whats|see|get)\\b.*\\b(appointment|appointments|event|events|schedule|calendar|agenda|meeting|meetings)\\b.*")

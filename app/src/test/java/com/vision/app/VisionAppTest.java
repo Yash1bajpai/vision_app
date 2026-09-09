@@ -2142,8 +2142,7 @@ public class VisionAppTest {
         // Parser: network
         assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("read network status").type);
         assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("check my internet connection").type);
-        assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("am i online").type == VisionAction.Type.READ_NETWORK
-                ? VisionAction.Type.READ_NETWORK : VisionActionParser.parse("check network status").type);
+        assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("am i online").type);
 
         // Parser: time
         assertEquals(VisionAction.Type.READ_TIME, VisionActionParser.parse("what time is it").type);

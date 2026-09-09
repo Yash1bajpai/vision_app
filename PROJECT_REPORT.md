@@ -1,8 +1,8 @@
-# Vision Project Report — Phase 10: Bounded Multi-Step Plans (Trusted Plan Boundary)
+# Vision Project Report — Phase 11: More Android Actions (Device Status Reads)
 
-**Date:** 2026-09-08
+**Date:** 2026-09-09
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.11.0 (versionCode: 20, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.11.1 (versionCode: 21, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact: `app/build/outputs/apk/debug/app-debug.apk` — see Section 5)*
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782` — see Section 5)*
@@ -22,6 +22,34 @@
 6. **Risk policy:** all four added to `SAFE_TYPES`; everything unlisted (including future calendar *creation/modification*) remains CONFIRMED by default.
 7. **Tests:** `test57_deviceStatusReadActions` — parser acceptance and precedence (notification reads not hijacked), SAFE-tier verification, labels, validator parity including rejection reasons, coordinator single-action routing, and plan composition with the new types. Suite: 57/57 green on the PC JVM.
 8. **Roadmap note:** the reasoning provider will ship as dual implementations — a cloud API provider and an on-device local model provider — both behind the existing validated boundary (user decision recorded 2026-09-08).
+
+### Phase 11 Initial Audit & Remediation (2026-09-09, commits `e802f47` → `4403dda`)
+The initial Phase 11 commit `e802f47` was **REJECTED** by the agy Gemini 3.1 Pro audit with 2 CRITICAL + 3 HIGH + 1 MEDIUM findings, all confirmed valid and all remediated in the forward commit `4403dda` (v0.11.1, versionCode 21; no history rewrite):
+1. **CRITICAL — missing manifest permission:** `READ_NETWORK` executed `ConnectivityManager` queries without `ACCESS_NETWORK_STATE` declared, risking `SecurityException`; declared in `AndroidManifest.xml`.
+2. **CRITICAL — no plan routing for the new types:** `executeNextPlanStep` had no branches for the four status reads, so plan steps of these types silently failed to advance; routing added with the latched `advance` runnable.
+3. **HIGH — ongoing events dropped:** the calendar filter rejected events already begun; changed to skip only `end < now` so ongoing and multi-day events are kept.
+4. **HIGH — all-day timezone display:** all-day instances (UTC midnight) rendered on the wrong day; corrected with a local-`getOffset()` shift (DST-exact after the follow-up below).
+5. **HIGH — pending calendar lifecycle:** `pendingCalendarAction` was not saved/restored across Activity recreation; now saved (only for standalone reads — plan-step pendings correctly die with the Activity), restored, cleared on destroy, and the permission-denial path completes the pending step.
+6. **MEDIUM — grammar hijack:** "what time is my next appointment" resolved to `READ_TIME`; the calendar grammar now precedes the time grammar, with regression assertions in `test57`.
+
+### Phase 11 Device Verification (2026-09-09, v0.11.1 on-device) — EXECUTED & PASSED 4/4
+All four new actions verified live on the iQOO Z9x via ADB-driven UI (fresh process per query, uiautomator-verified surfaces):
+| Query (typed verbatim) | Routed type | Surface result |
+|---|---|---|
+| `whats my battery level` | READ_BATTERY | SUCCEEDED — battery percentage + charging state |
+| `check my network status` | READ_NETWORK | SUCCEEDED — online via mobile data |
+| `what time is it` | READ_TIME | SUCCEEDED — time, weekday, date |
+| `what time is my next appointment` | READ_CALENDAR | SUCCEEDED — next events from the next 7 days, including a correct all-day event display |
+
+The calendar row doubles as live proof of the grammar-precedence fix (a "what time…" phrasing routing to calendar, not time) and the all-day timezone fix (the device's all-day holiday event displayed on its correct local date).
+
+### Phase 11 Remediation Re-Audit (2026-09-09, commit `4403dda`) — BOTH APPROVED
+- **agy (Gemini 3.1 Pro, high, persistent session):** verdict `APPROVE` — all eight remediation items verified in source with file:line references (manifest permission, plan routing, exactly-once completion latches, ongoing-event filter, timezone correction, lifecycle save/restore, parser precedence, regression assertions). **Remaining findings: NONE.**
+- **opencode (muse-spark-1.3, high, persistent session):** verdict `APPROVE` — independently re-ran the full suite with `--rerun-tasks` (57/57, 0 failures/errors/skips) and hand-traced every remediation item and the 20+ test57 assertions. Four LOW findings, all remediated in the follow-up commit:
+  - LOW-1 (stale report header at 0.11.0) — resolved in this document update;
+  - LOW-2 (all-day correction used `getRawOffset()` instead of DST-exact `getOffset(begin)`) — switched to `getOffset()`;
+  - LOW-3 (vacuous `am i online` test assertion — the phrase parsed UNKNOWN, so the ternary silently tested a different phrase) — `am i online` added to the READ_NETWORK grammar and the assertion made direct;
+  - LOW-4 (asymmetric cross-pending clearing between the contacts and calendar permission paths) — both paths now clear the opposite pending slot symmetrically.
 
 ### Phase 10 Deliverables (Bounded Multi-Step Plans — Trusted Plan Boundary)
 1. **Plan grammar (`StrictJson.parseArray`):** one JSON array of flat string-only objects, inheriting every Phase 9 strictness rule (string-only flat elements, ≤16 keys/element, ≤8 elements, 8192-char cap; duplicate keys, trailing garbage, nesting, non-string values all rejected; never throws, returns `null`).

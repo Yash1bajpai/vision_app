@@ -431,8 +431,8 @@ public class MainActivity extends Activity {
                 SimpleDateFormat dayFormat = new SimpleDateFormat("EEEE, d MMMM", Locale.US);
                 SimpleDateFormat timeFormat = new SimpleDateFormat("h:mm a", Locale.US);
                 // All-day events are stored at UTC midnight; render in UTC to show the intended day.
-                Date beginDate = allDay ? new Date(begin - java.util.TimeZone.getDefault().getRawOffset()) : new Date(begin);
-                Date endDate = allDay ? new Date(end - java.util.TimeZone.getDefault().getRawOffset()) : new Date(end);
+                Date beginDate = allDay ? new Date(begin - java.util.TimeZone.getDefault().getOffset(begin)) : new Date(begin);
+                Date endDate = allDay ? new Date(end - java.util.TimeZone.getDefault().getOffset(end)) : new Date(end);
                 result.append("• ").append(title != null && !title.isEmpty() ? title : "(untitled event)")
                         .append("\n  ").append(dayFormat.format(beginDate));
                 if (!allDay) {
@@ -549,6 +549,7 @@ public class MainActivity extends Activity {
 
     private void handleContactDirectMessageAction(VisionAction action, EditText input, Runnable onComplete) {
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingCalendarAction = null;
             pendingContactAction = action;
             pendingStepCompletion = onComplete;
             activityText.setText("CONTACTS PERMISSION NEEDED\n\nVision needs Contacts permission to resolve \"" + action.target + "\".");
