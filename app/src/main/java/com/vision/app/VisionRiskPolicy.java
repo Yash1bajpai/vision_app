@@ -18,10 +18,16 @@ import java.util.Set;
  * - READ_NETWORK
  * - READ_TIME
  * - READ_CALENDAR (read-only query; creating/modifying events stays CONFIRMED)
+ * - SET_TIMER / SET_ALARM (clock app shows the pending timer/alarm for review)
+ * - NAVIGATE_TO (opens navigation; the route is reviewed in the maps app)
+ * - MEDIA_CONTROL (play/pause/skip transport control)
+ * - SET_VOLUME (local audio setting only)
+ * - TOGGLE_TORCH (reversible local hardware toggle)
  *
  * Tier CONFIRMED (modal Allow/Deny REQUIRED before execution):
  * - REPLY_NOTIFICATION (active MVP)
  * - SEND_MESSAGE_DIRECT (compose handoff; final send remains external)
+ * - CREATE_CALENDAR_EVENT (writes user calendar data)
  * - UNKNOWN / null / any unlisted future action types (fail-closed default)
  *
  * Future high-risk types documented for upcoming phases:
@@ -44,7 +50,13 @@ public final class VisionRiskPolicy {
             VisionAction.Type.READ_BATTERY,
             VisionAction.Type.READ_NETWORK,
             VisionAction.Type.READ_TIME,
-            VisionAction.Type.READ_CALENDAR
+            VisionAction.Type.READ_CALENDAR,
+            VisionAction.Type.SET_TIMER,
+            VisionAction.Type.SET_ALARM,
+            VisionAction.Type.NAVIGATE_TO,
+            VisionAction.Type.MEDIA_CONTROL,
+            VisionAction.Type.SET_VOLUME,
+            VisionAction.Type.TOGGLE_TORCH
     );
 
     private VisionRiskPolicy() { }

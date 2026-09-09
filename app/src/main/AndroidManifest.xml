@@ -2,7 +2,9 @@
 
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <queries>
         <package android:name="com.whatsapp" />
@@ -27,6 +29,26 @@
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.provider.action.SET_TIMER" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
+        <intent>
+            <action android:name="android.provider.action.SET_ALARM" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="geo" />
         </intent>
     </queries>
 

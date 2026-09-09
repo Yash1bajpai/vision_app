@@ -3,19 +3,26 @@ package com.vision.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.media.AudioManager;
 import android.os.BatteryManager;
 import android.os.Bundle;
+import android.provider.AlarmClock;
 import android.provider.CalendarContract;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -36,6 +43,7 @@ public class MainActivity extends Activity {
     private static final int MINT = Color.rgb(158, 230, 194);
     private static final int REQUEST_CODE_READ_CONTACTS = 101;
     private static final int REQUEST_CODE_READ_CALENDAR = 102;
+    private static final int REQUEST_CODE_WRITE_CALENDAR = 103;
 
     private static final String STATE_PENDING_ACTION_TYPE = "pending_action_type";
     private static final String STATE_PENDING_ACTION_REQUEST = "pending_action_request";
@@ -45,6 +53,11 @@ public class MainActivity extends Activity {
     private static final String STATE_PENDING_ACTION_STATE = "pending_action_state";
     private static final String STATE_PENDING_CALENDAR_TYPE = "pending_calendar_type";
     private static final String STATE_PENDING_CALENDAR_STATE = "pending_calendar_state";
+    private static final String STATE_PENDING_EVENT_WRITE_TYPE = "pending_event_write_type";
+    private static final String STATE_PENDING_EVENT_WRITE_REQUEST = "pending_event_write_request";
+    private static final String STATE_PENDING_EVENT_WRITE_TARGET = "pending_event_write_target";
+    private static final String STATE_PENDING_EVENT_WRITE_TEXT = "pending_event_write_text";
+    private static final String STATE_PENDING_EVENT_WRITE_STATE = "pending_event_write_state";
     private static final String STATE_ACTIVITY_TEXT = "activity_text";
 
     private TextView activityText;
@@ -62,6 +75,11 @@ public class MainActivity extends Activity {
     // Pending calendar read across the runtime permission dialog (in-memory only)
     private VisionAction pendingCalendarAction;
     private Runnable pendingCalendarCompletion;
+
+    // Pending calendar event write across the runtime permission dialog (in-memory only;
+    // gated behind the CONFIRMED modal, which has already been approved by the time this is set)
+    private VisionAction pendingEventWriteAction;
+    private Runnable pendingEventWriteCompletion;
 
     @Override
     public void onCreate(Bundle state) {
@@ -100,6 +118,17 @@ public class MainActivity extends Activity {
                 outState.putString(STATE_PENDING_CALENDAR_TYPE, "READ_CALENDAR");
                 if (pendingCalendarAction.state != null) {
                     outState.putString(STATE_PENDING_CALENDAR_STATE, pendingCalendarAction.state.name());
+                }
+            }
+            // A pending event write is always modal-approved already; a plan-step write
+            // carries pendingEventWriteCompletion and is skipped (plan dies, fail-closed).
+            if (pendingEventWriteAction != null && pendingEventWriteCompletion == null) {
+                outState.putString(STATE_PENDING_EVENT_WRITE_TYPE, "CREATE_CALENDAR_EVENT");
+                outState.putString(STATE_PENDING_EVENT_WRITE_REQUEST, pendingEventWriteAction.request);
+                outState.putString(STATE_PENDING_EVENT_WRITE_TARGET, pendingEventWriteAction.target);
+                outState.putString(STATE_PENDING_EVENT_WRITE_TEXT, pendingEventWriteAction.replyText);
+                if (pendingEventWriteAction.state != null) {
+                    outState.putString(STATE_PENDING_EVENT_WRITE_STATE, pendingEventWriteAction.state.name());
                 }
             }
             if (activityText != null && activityText.getText() != null) {
@@ -148,6 +177,21 @@ public class MainActivity extends Activity {
             }
             pendingCalendarAction = restored;
         }
+        if ("CREATE_CALENDAR_EVENT".equals(state.getString(STATE_PENDING_EVENT_WRITE_TYPE))) {
+            String target = state.getString(STATE_PENDING_EVENT_WRITE_TARGET, "");
+            String text = state.getString(STATE_PENDING_EVENT_WRITE_TEXT, "");
+            if (VisionActionParser.isValidEventTitle(target) && VisionActionParser.isValidCanonicalEventTime(text)) {
+                VisionAction restored = new VisionAction(VisionAction.Type.CREATE_CALENDAR_EVENT,
+                        state.getString(STATE_PENDING_EVENT_WRITE_REQUEST, ""), target, text);
+                String stateStr = state.getString(STATE_PENDING_EVENT_WRITE_STATE);
+                if (stateStr != null) {
+                    try {
+                        restored.state = VisionAction.State.valueOf(stateStr);
+                    } catch (Exception ignored) { }
+                }
+                pendingEventWriteAction = restored;
+            }
+        }
     }
 
     @Override
@@ -163,6 +207,8 @@ public class MainActivity extends Activity {
         pendingContactAction = null;
         pendingCalendarAction = null;
         pendingCalendarCompletion = null;
+        pendingEventWriteAction = null;
+        pendingEventWriteCompletion = null;
         pendingPlan = null;
         planStepIndex = 0;
         pendingStepCompletion = null;
@@ -273,6 +319,9 @@ public class MainActivity extends Activity {
         send.setOnClickListener(v -> {
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
+                // The command is captured; clear the composer so every action type and
+                // error surface starts from an empty field (send is final regardless of outcome).
+                input.setText("");
                 if (pendingPlan != null) {
                     activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Wait for it to finish before starting a new request.");
                     return;
@@ -304,6 +353,20 @@ public class MainActivity extends Activity {
                     handleReadTimeAction(action, null);
                 } else if (action.type == VisionAction.Type.READ_CALENDAR) {
                     handleReadCalendarAction(action, null);
+                } else if (action.type == VisionAction.Type.SET_TIMER) {
+                    handleSetTimerAction(action, null);
+                } else if (action.type == VisionAction.Type.SET_ALARM) {
+                    handleSetAlarmAction(action, null);
+                } else if (action.type == VisionAction.Type.NAVIGATE_TO) {
+                    handleNavigateAction(action, null);
+                } else if (action.type == VisionAction.Type.MEDIA_CONTROL) {
+                    handleMediaControlAction(action, null);
+                } else if (action.type == VisionAction.Type.SET_VOLUME) {
+                    handleSetVolumeAction(action, null);
+                } else if (action.type == VisionAction.Type.TOGGLE_TORCH) {
+                    handleToggleTorchAction(action, null);
+                } else if (action.type == VisionAction.Type.CREATE_CALENDAR_EVENT) {
+                    handleCreateCalendarEventAction(action, null);
                 } else {
                     action.state = VisionAction.State.FAILED;
                     activityText.setText("FAILED\n\nVision could not process this request.");
@@ -455,6 +518,309 @@ public class MainActivity extends Activity {
         if (onComplete != null) onComplete.run();
     }
 
+    // ===================== Daily-driver intents (Phase 12) =====================
+
+    private void handleSetTimerAction(VisionAction action, Runnable onComplete) {
+        try {
+            int seconds = (int) VisionActionParser.canonicalDurationSeconds(action.target);
+            // The standard android.provider.action.SET_TIMER is tried first; some OEM clock
+            // apps (BBK/vivo on this device) only register the nonstandard android.intent
+            // action string, so that variant is the fallback. SKIP_UI is deliberately not
+            // set: the vivo clock silently rejects the intent when asked to skip its UI,
+            // and showing the timer screen doubles as a visual confirmation for the user.
+            Intent timer = new Intent(AlarmClock.ACTION_SET_TIMER)
+                    .putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+                    .putExtra(AlarmClock.EXTRA_MESSAGE, "Vision timer")
+                    .addCategory(Intent.CATEGORY_DEFAULT);
+            if (timer.resolveActivity(getPackageManager()) == null) {
+                timer = new Intent("android.intent.action.SET_TIMER")
+                        .putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+                        .putExtra(AlarmClock.EXTRA_MESSAGE, "Vision timer")
+                        .addCategory(Intent.CATEGORY_DEFAULT);
+            }
+            if (timer.resolveActivity(getPackageManager()) == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nNo clock app is available to set timers.");
+            } else {
+                startActivity(timer);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nTimer set for " + action.target
+                        + ".\n\nThe countdown is running in your clock app.");
+            }
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not set the timer.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    private void handleSetAlarmAction(VisionAction action, Runnable onComplete) {
+        try {
+            String[] parts = action.target.split(":");
+            int hour = Integer.parseInt(parts[0]);
+            int minute = Integer.parseInt(parts[1]);
+            Intent alarm = new Intent(AlarmClock.ACTION_SET_ALARM)
+                    .putExtra(AlarmClock.EXTRA_HOUR, hour)
+                    .putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                    .putExtra(AlarmClock.EXTRA_MESSAGE, "Vision alarm")
+                    .addCategory(Intent.CATEGORY_DEFAULT);
+            if (alarm.resolveActivity(getPackageManager()) == null) {
+                alarm = new Intent("android.intent.action.SET_ALARM")
+                        .putExtra(AlarmClock.EXTRA_HOUR, hour)
+                        .putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                        .putExtra(AlarmClock.EXTRA_MESSAGE, "Vision alarm")
+                        .addCategory(Intent.CATEGORY_DEFAULT);
+            }
+            if (alarm.resolveActivity(getPackageManager()) == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nNo clock app is available to set alarms.");
+            } else {
+                startActivity(alarm);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nAlarm set for " + action.target
+                        + ".\n\nThe alarm is scheduled in your clock app.");
+            }
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not set the alarm.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    private void handleNavigateAction(VisionAction action, Runnable onComplete) {
+        try {
+            android.net.Uri destination = android.net.Uri.parse("geo:0,0?q=" + android.net.Uri.encode(action.target));
+            Intent navigate = new Intent(Intent.ACTION_VIEW, destination);
+            if (navigate.resolveActivity(getPackageManager()) == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nNo maps app is available for navigation.");
+            } else {
+                startActivity(navigate);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nNavigation opened to \"" + action.target
+                        + "\".\n\nReview the route in your maps app before starting.");
+            }
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not open navigation.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    private void handleMediaControlAction(VisionAction action, Runnable onComplete) {
+        try {
+            int keyCode;
+            if ("next".equals(action.target)) {
+                keyCode = KeyEvent.KEYCODE_MEDIA_NEXT;
+            } else if ("previous".equals(action.target)) {
+                keyCode = KeyEvent.KEYCODE_MEDIA_PREVIOUS;
+            } else if ("stop".equals(action.target)) {
+                keyCode = KeyEvent.KEYCODE_MEDIA_STOP;
+            } else {
+                keyCode = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
+            }
+            AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (audio == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nAudio service is not available.");
+            } else {
+                audio.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, keyCode));
+                audio.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, keyCode));
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nMedia command sent: " + action.target
+                        + ".\n\nIt was delivered to the active media session.");
+            }
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not send the media command.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    private void handleSetVolumeAction(VisionAction action, Runnable onComplete) {
+        try {
+            AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (audio == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nAudio service is not available.");
+            } else if ("mute".equals(action.target)) {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nMedia volume muted.");
+            } else if ("unmute".equals(action.target)) {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nMedia volume unmuted.");
+            } else {
+                int percent = Integer.parseInt(action.target);
+                int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                int index = (int) Math.round(max * percent / 100.0);
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0);
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nMedia volume set to " + percent + "%.");
+            }
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not change the volume.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    private void handleToggleTorchAction(VisionAction action, Runnable onComplete) {
+        boolean turnedOn = false;
+        try {
+            CameraManager cameras = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+            boolean on = "on".equals(action.target);
+            if (cameras != null) {
+                for (String id : cameras.getCameraIdList()) {
+                    Boolean hasFlash = cameras.getCameraCharacteristics(id)
+                            .get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                    if (hasFlash != null && hasFlash) {
+                        cameras.setTorchMode(id, on);
+                        turnedOn = true;
+                        break;
+                    }
+                }
+            }
+            if (turnedOn) {
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("SUCCEEDED\n\nFlashlight turned " + (on ? "on" : "off") + ".");
+            } else {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nNo flashlight is available on this device.");
+            }
+        } catch (CameraAccessException e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not access the flashlight.");
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not toggle the flashlight.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    // ===================== Calendar event creation (Tier CONFIRMED) =====================
+
+    private void handleCreateCalendarEventAction(VisionAction action, Runnable onComplete) {
+        pendingEventWriteAction = null;
+        pendingEventWriteCompletion = null;
+        String when = formatEventTimeForDisplay(action.replyText);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Tony, may I create this event?")
+                .setMessage("I am ready to add this event to your calendar:\n\n\""
+                        + action.target + "\"\n" + when + "\n\nMay I proceed?")
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    action.state = VisionAction.State.DENIED;
+                    activityText.setText("DENIED\n\nEvent \"" + action.target + "\"\n\nVision stopped this action.");
+                })
+                .setPositiveButton("Create event", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    action.state = VisionAction.State.APPROVED;
+                    if (checkSelfPermission(android.Manifest.permission.WRITE_CALENDAR)
+                            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        pendingContactAction = null;
+                        pendingCalendarAction = null;
+                        pendingEventWriteAction = action;
+                        pendingEventWriteCompletion = onComplete;
+                        activityText.setText("CALENDAR PERMISSION NEEDED\n\nVision needs Calendar permission to create events.");
+                        requestPermissions(new String[]{android.Manifest.permission.WRITE_CALENDAR}, REQUEST_CODE_WRITE_CALENDAR);
+                        return;
+                    }
+                    executeCalendarEventInsert(action, onComplete);
+                })
+                .setOnDismissListener(d -> {
+                    if (activeDialog == d) activeDialog = null;
+                    if (action.state == VisionAction.State.PROPOSED) {
+                        action.state = VisionAction.State.DENIED;
+                        if (isFinishing() || isDestroyed()) {
+                            if (onComplete != null) onComplete.run();
+                            return;
+                        }
+                        activityText.setText("CANCELLED\n\nEvent \"" + action.target + "\"\n\nConfirmation was dismissed.");
+                    }
+                    // When the write was deferred to the permission flow, the callback owns
+                    // completion; otherwise this is the single fire-point.
+                    if (pendingEventWriteAction == null && onComplete != null) {
+                        onComplete.run();
+                    }
+                })
+                .create();
+        showManagedDialog(dialog);
+    }
+
+    private void executeCalendarEventInsert(VisionAction action, Runnable onComplete) {
+        action.state = VisionAction.State.RUNNING;
+        try {
+            String calendarId = resolvePrimaryCalendarId();
+            if (calendarId == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nNo writable calendar was found on this device.");
+                if (onComplete != null) onComplete.run();
+                return;
+            }
+            java.time.LocalDateTime when = java.time.LocalDateTime.parse(action.replyText,
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            long start = when.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+            long end = start + 60L * 60L * 1000L; // default 1-hour event
+            ContentValues values = new ContentValues();
+            values.put(CalendarContract.Events.CALENDAR_ID, calendarId);
+            values.put(CalendarContract.Events.TITLE, action.target);
+            values.put(CalendarContract.Events.DTSTART, start);
+            values.put(CalendarContract.Events.DTEND, end);
+            values.put(CalendarContract.Events.EVENT_TIMEZONE,
+                    java.util.TimeZone.getDefault().getID());
+            android.net.Uri inserted = getContentResolver().insert(CalendarContract.Events.CONTENT_URI, values);
+            if (inserted == null) {
+                action.state = VisionAction.State.FAILED;
+                activityText.setText("FAILED\n\nThe calendar rejected the event.");
+            } else {
+                action.state = VisionAction.State.SUCCEEDED;
+                activityText.setText("EVENT CREATED\n\n\"" + action.target + "\" was added for "
+                        + formatEventTimeForDisplay(action.replyText) + ".");
+            }
+        } catch (Exception e) {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nCould not create the event.");
+        }
+        if (onComplete != null) onComplete.run();
+    }
+
+    /** Returns the device's primary (or first visible) calendar id, or null when none is writable. */
+    private String resolvePrimaryCalendarId() {
+        String[] projection = new String[] {
+                CalendarContract.Calendars._ID,
+                CalendarContract.Calendars.IS_PRIMARY,
+                CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL
+        };
+        String fallback = null;
+        try (Cursor cursor = getContentResolver().query(
+                CalendarContract.Calendars.CONTENT_URI, projection, null, null, null)) {
+            while (cursor != null && cursor.moveToNext()) {
+                String id = cursor.getString(0);
+                int isPrimary = cursor.getInt(1);
+                int access = cursor.getInt(2);
+                boolean writable = access >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR;
+                if (!writable) continue;
+                if (isPrimary == 1) return id;
+                if (fallback == null) fallback = id;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        return fallback;
+    }
+
+    private String formatEventTimeForDisplay(String canonicalTime) {
+        try {
+            java.time.LocalDateTime when = java.time.LocalDateTime.parse(canonicalTime,
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            return when.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM 'at' HH:mm", Locale.US));
+        } catch (Exception e) {
+            return canonicalTime;
+        }
+    }
+
     // ===================== Multi-step plan execution =====================
     // Sequential, one step at a time. Every step flows through the same handler and the
     // same risk policy as a single typed command; approval of one step never approves
@@ -499,6 +865,20 @@ public class MainActivity extends Activity {
             handleReadTimeAction(step, advance);
         } else if (step.type == VisionAction.Type.READ_CALENDAR) {
             handleReadCalendarAction(step, advance);
+        } else if (step.type == VisionAction.Type.SET_TIMER) {
+            handleSetTimerAction(step, advance);
+        } else if (step.type == VisionAction.Type.SET_ALARM) {
+            handleSetAlarmAction(step, advance);
+        } else if (step.type == VisionAction.Type.NAVIGATE_TO) {
+            handleNavigateAction(step, advance);
+        } else if (step.type == VisionAction.Type.MEDIA_CONTROL) {
+            handleMediaControlAction(step, advance);
+        } else if (step.type == VisionAction.Type.SET_VOLUME) {
+            handleSetVolumeAction(step, advance);
+        } else if (step.type == VisionAction.Type.TOGGLE_TORCH) {
+            handleToggleTorchAction(step, advance);
+        } else if (step.type == VisionAction.Type.CREATE_CALENDAR_EVENT) {
+            handleCreateCalendarEventAction(step, advance);
         } else {
             step.state = VisionAction.State.FAILED;
             onPlanStepTerminal(input);
@@ -654,6 +1034,24 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_CODE_WRITE_CALENDAR) {
+            VisionAction pending = pendingEventWriteAction;
+            Runnable completion = pendingEventWriteCompletion;
+            pendingEventWriteAction = null;
+            pendingEventWriteCompletion = null;
+            boolean granted = grantResults != null && grantResults.length > 0
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (pending != null && granted && !isFinishing() && !isDestroyed()) {
+                executeCalendarEventInsert(pending, completion);
+            } else {
+                if (pending != null) pending.state = VisionAction.State.FAILED;
+                if (!isFinishing() && !isDestroyed()) {
+                    activityText.setText("FAILED\n\nCalendar permission was denied. Vision cannot create events without permission.");
+                }
+                if (completion != null) completion.run();
+            }
+            return;
+        }
         if (requestCode == REQUEST_CODE_READ_CALENDAR) {
             VisionAction pending = pendingCalendarAction;
             Runnable completion = pendingCalendarCompletion;

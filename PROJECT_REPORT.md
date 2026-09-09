@@ -1,8 +1,8 @@
-# Vision Project Report — Phase 11: More Android Actions (Device Status Reads)
+# Vision Project Report — Phase 12: Daily-Driver Intents
 
 **Date:** 2026-09-09
 **Target Device:** iQOO Z9x I2219 (Android 16 / API 36, arm64-v8a)
-**Current Version:** 0.11.1 (versionCode: 21, compileSdk: 34, targetSdk: 34, minSdk: 26)
+**Current Version:** 0.12.0 (versionCode: 22, compileSdk: 34, targetSdk: 34, minSdk: 26)
 **Prior Commits:** `ddab3ff` (Phase 8 audit record), `9c6e7c9` (Phase 8 remediation), `2c997bd` (Phase 8 contact resolution), `fbe44d0` (Phase 7 composer handoff), `f405967` (Phase 6.2 release docs)
 **APK Output:** `/storage/emulated/0/Download/Vision-debug.apk` *(v0.9.0 Termux artifact; v0.9.2 PC-built artifact: `app/build/outputs/apk/debug/app-debug.apk` — see Section 5)*
 **APK SHA-256:** `fa964021d7275fd5c51ebb126260a77e382e0f0cad62e7da0cf28a1be6982dcc` *(v0.9.0 Termux artifact; v0.9.2: `d31258888717903e3117a2772cc544459cfddda1c039c69acb9aac3dd394e782` — see Section 5)*
@@ -12,6 +12,16 @@
 ---
 
 ## 1. Executive Summary
+
+### Phase 12 Deliverables (Daily-Driver Intents)
+1. **Seven new action types:** `SET_TIMER`, `SET_ALARM`, `NAVIGATE_TO`, `MEDIA_CONTROL`, `SET_VOLUME`, `TOGGLE_TORCH` (all SAFE-tier, auto-execute) and `CREATE_CALENDAR_EVENT` (CONFIRMED-tier, modal Allow/Deny). Dialing was deliberately excluded: the dialer screen would be a weaker duplicate of the composer-handoff confirmation pattern already used for messaging.
+2. **Parser grammar:** duration parsing ("set a timer for 1 hour 30 minutes" → canonical "1h 30m"), clock-time alarms ("wake me up at 8:15 pm" → "20:15"), media transport verbs, volume percent/mute/unmute, torch on/off, navigation destinations ("navigate/take me/directions to X" with original casing preserved), and event creation ("create an event called X tomorrow at 10:30 am" → title + canonical "yyyy-MM-dd HH:mm" time; a today-time already passed shifts to tomorrow). All grammar blocks evaluate after the status reads and before OPEN_APP so no existing command is hijacked.
+3. **Canonical target validation:** every new type emits and accepts only canonical forms — durations "1h 30m"/"10m"/"45s" (1s..24h, over-limit rejected as UNKNOWN), alarm times "HH:mm" 24-hour, volume "0".."100"/"mute"/"unmute", torch "on"/"off", media commands from the five-verb set, place names and event titles restricted to letter/digit/address-safe punctuation (markup like `<script>` is rejected UNKNOWN) — mirrored exactly in `ReasoningProposalValidator` so provider proposals obey the same rules as typed commands.
+4. **Executors:** timer/alarm via `AlarmClock.ACTION_SET_TIMER/SET_ALARM` intents (with a vendor fallback: this device's BBK/vivo clock registers the nonstandard `android.intent.action.SET_TIMER` string — standard action tried first, vendor variant as fallback; `SKIP_UI` deliberately not set because the vivo clock silently rejects it, and the visible clock screen doubles as confirmation); navigation via `geo:0,0?q=` VIEW intent (resolver offers Maps/Uber/Ola); media transport via `AudioManager.dispatchMediaKeyEvent` (no permission); volume via stream adjustment on `STREAM_MUSIC`; torch via `CameraManager.setTorchMode` (first flash-capable camera); event creation via `CalendarContract.Events` insert into the primary writable calendar (1-hour default duration, local timezone).
+5. **New permission:** `com.android.alarm.permission.SET_ALARM` (normal install-time, required by the AlarmClock intents — its absence caused SecurityException on device, root-caused and fixed) plus `WRITE_CALENDAR` runtime permission requested only at event-creation approval time, with the same pending-action lifecycle contract as the Phase 8 contacts / Phase 11 calendar reads (save/restore gated on the completion latch, fail-closed on destroy, symmetric cross-pending clearing).
+6. **Composer hygiene fix:** the input field now clears immediately when a command is submitted (previously it persisted for read/status/intent actions and only cleared on composer handoff).
+7. **Tests:** `test58_dailyDriverIntents` — parser acceptance and canonical targets, bounds rejection (over-24h timers, invalid times, out-of-range volume, markup destinations), precedence (reads not hijacked, "open calendar" still OPEN_APP, messaging with "navigate" in the body still SEND_MESSAGE_DIRECT), risk tiers, validator parity including rejection reasons, coordinator single-action routing, and mixed-type plan composition. One test05 corpus entry updated: "play music" is now a valid MEDIA_CONTROL command (was UNKNOWN). Suite: 58/58 green on the PC JVM.
+8. **Device verification (all on the iQOO Z9x):** timer "2m Running, Vision timer" in the clock app; alarm prefilled 07:00 AM with "Vision alarm" label; flashlight on and off; media volume set to 60%; media pause dispatched; navigation opened the app chooser and Maps showed Connaught Place, New Delhi; event creation showed the Allow/Deny modal, requested WRITE_CALENDAR, inserted the event, and the calendar read displayed it ("Dentist, Thursday 10 September 10:30–11:30"). Test events were cleaned up afterwards.
 
 ### Phase 11 Deliverables (More Android Actions — Device Status Reads)
 1. **Four new SAFE-tier action types:** `READ_BATTERY`, `READ_NETWORK`, `READ_TIME`, `READ_CALENDAR` — all read-only, auto-executing without modal confirmation, per the risk policy's inverted fail-closed model.

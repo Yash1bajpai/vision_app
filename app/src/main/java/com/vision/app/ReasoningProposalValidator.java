@@ -89,6 +89,20 @@ public final class ReasoningProposalValidator {
             case READ_TIME:
             case READ_CALENDAR:
                 return validateStatusRead(type, target, text, channel);
+            case SET_TIMER:
+                return validateTimer(target, text, channel);
+            case SET_ALARM:
+                return validateAlarm(target, text, channel);
+            case NAVIGATE_TO:
+                return validateNavigate(target, text, channel);
+            case MEDIA_CONTROL:
+                return validateMediaCommand(target, text, channel);
+            case SET_VOLUME:
+                return validateVolume(target, text, channel);
+            case TOGGLE_TORCH:
+                return validateTorch(target, text, channel);
+            case CREATE_CALENDAR_EVENT:
+                return validateEventCreate(target, text, channel);
             case OPEN_APP:
                 return validateOpenApp(target, text, channel);
             case REPLY_NOTIFICATION:
@@ -122,6 +136,104 @@ public final class ReasoningProposalValidator {
         if (type == VisionAction.Type.READ_NETWORK) return "network";
         if (type == VisionAction.Type.READ_TIME) return "time";
         return "calendar";
+    }
+
+    // ===================== Daily-driver intent validation =====================
+
+    private static ValidationResult validateTimer(String target, String text, String channel) {
+        if (!VisionActionParser.isValidCanonicalDuration(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.SET_TIMER, target, text, channel);
+    }
+
+    private static ValidationResult validateAlarm(String target, String text, String channel) {
+        if (!VisionActionParser.isValidCanonicalAlarmTime(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.SET_ALARM, target, text, channel);
+    }
+
+    private static ValidationResult validateNavigate(String target, String text, String channel) {
+        if (!VisionActionParser.isValidPlaceName(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.NAVIGATE_TO, target, text, channel);
+    }
+
+    private static ValidationResult validateMediaCommand(String target, String text, String channel) {
+        if (!"play".equals(target) && !"pause".equals(target) && !"next".equals(target)
+                && !"previous".equals(target) && !"stop".equals(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.MEDIA_CONTROL, target, text, channel);
+    }
+
+    private static ValidationResult validateVolume(String target, String text, String channel) {
+        if (!VisionActionParser.isValidCanonicalVolumeTarget(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.SET_VOLUME, target, text, channel);
+    }
+
+    private static ValidationResult validateTorch(String target, String text, String channel) {
+        if (!"on".equals(target) && !"off".equals(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!text.isEmpty()) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.TOGGLE_TORCH, target, text, channel);
+    }
+
+    /**
+     * Event creation carries the title in target and the canonical local event time
+     * ("yyyy-MM-dd HH:mm") in text — the one daily-driver type where text is required.
+     */
+    private static ValidationResult validateEventCreate(String target, String text, String channel) {
+        if (!VisionActionParser.isValidEventTitle(target)) {
+            return rejected(RejectionReason.INVALID_TARGET);
+        }
+        if (!VisionActionParser.isValidCanonicalEventTime(text)) {
+            return rejected(RejectionReason.INVALID_TEXT);
+        }
+        if (!channel.isEmpty()) {
+            return rejected(RejectionReason.INVALID_CHANNEL);
+        }
+        return accepted(VisionAction.Type.CREATE_CALENDAR_EVENT, target, text, channel);
     }
 
     private static ValidationResult validateRead(String target, String text, String channel) {
@@ -222,6 +334,13 @@ public final class ReasoningProposalValidator {
         if ("READ_NETWORK".equals(raw)) return VisionAction.Type.READ_NETWORK;
         if ("READ_TIME".equals(raw)) return VisionAction.Type.READ_TIME;
         if ("READ_CALENDAR".equals(raw)) return VisionAction.Type.READ_CALENDAR;
+        if ("SET_TIMER".equals(raw)) return VisionAction.Type.SET_TIMER;
+        if ("SET_ALARM".equals(raw)) return VisionAction.Type.SET_ALARM;
+        if ("NAVIGATE_TO".equals(raw)) return VisionAction.Type.NAVIGATE_TO;
+        if ("MEDIA_CONTROL".equals(raw)) return VisionAction.Type.MEDIA_CONTROL;
+        if ("SET_VOLUME".equals(raw)) return VisionAction.Type.SET_VOLUME;
+        if ("TOGGLE_TORCH".equals(raw)) return VisionAction.Type.TOGGLE_TORCH;
+        if ("CREATE_CALENDAR_EVENT".equals(raw)) return VisionAction.Type.CREATE_CALENDAR_EVENT;
         return null;
     }
 

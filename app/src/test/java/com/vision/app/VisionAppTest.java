@@ -127,7 +127,7 @@ public class VisionAppTest {
     public void test05_unrecognizedRequests() {
         String[] unknownRequests = {
                 "hello",
-                "play music",
+                "play the guitar",
                 "open random app",
                 "search google",
                 "take a photo",
@@ -2206,6 +2206,156 @@ public class VisionAppTest {
         assertEquals(2, planResult.plan.stepCount());
         assertEquals(VisionAction.Type.READ_BATTERY, planResult.plan.step(0).type);
         assertEquals(VisionAction.Type.READ_TIME, planResult.plan.step(1).type);
+    }
+
+    // Test 58: Phase 12 daily-driver intents (timer, alarm, media, volume, torch, navigation, event creation)
+    @Test
+    public void test58_dailyDriverIntents() {
+        // Parser: timer
+        assertEquals(VisionAction.Type.SET_TIMER, VisionActionParser.parse("set a timer for 10 minutes").type);
+        assertEquals("10m", VisionActionParser.parse("set a timer for 10 minutes").target);
+        assertEquals("1h 30m", VisionActionParser.parse("timer for 1 hour 30 minutes").target);
+        assertEquals("45s", VisionActionParser.parse("set a timer for 45 seconds").target);
+        assertEquals("2h", VisionActionParser.parse("set a timer for 2 hours").target);
+        assertEquals("1h 5m", VisionActionParser.parse("set a timer for 65 minutes").target);
+
+        // Timer bounds: over 24h is rejected (UNKNOWN), not clamped
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set a timer for 30 hours").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set a timer").type);
+
+        // Parser: alarm
+        VisionAction alarm = VisionActionParser.parse("set an alarm for 7:30 am");
+        assertEquals(VisionAction.Type.SET_ALARM, alarm.type);
+        assertEquals("07:30", alarm.target);
+        assertEquals("19:00", VisionActionParser.parse("set alarm at 7 pm").target);
+        assertEquals("20:15", VisionActionParser.parse("wake me up at 8:15 pm").target);
+        assertEquals("06:00", VisionActionParser.parse("set an alarm for 6am").target);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set an alarm for 25:00").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set an alarm").type);
+
+        // Parser: media transport
+        assertEquals(VisionAction.Type.MEDIA_CONTROL, VisionActionParser.parse("pause the music").type);
+        assertEquals("pause", VisionActionParser.parse("pause the music").target);
+        assertEquals("play", VisionActionParser.parse("play some music").target);
+        assertEquals("next", VisionActionParser.parse("skip this song").target);
+        assertEquals("previous", VisionActionParser.parse("previous track please").target);
+        assertEquals("stop", VisionActionParser.parse("stop the music").target);
+
+        // Parser: volume
+        assertEquals(VisionAction.Type.SET_VOLUME, VisionActionParser.parse("set volume to 50").type);
+        assertEquals("50", VisionActionParser.parse("set volume to 50").target);
+        assertEquals("0", VisionActionParser.parse("set volume to 0 percent").target);
+        assertEquals("100", VisionActionParser.parse("volume 100").target);
+        assertEquals("mute", VisionActionParser.parse("mute the volume").target);
+        assertEquals("unmute", VisionActionParser.parse("unmute the volume").target);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set volume to 150").type);
+
+        // Parser: torch
+        assertEquals(VisionAction.Type.TOGGLE_TORCH, VisionActionParser.parse("turn on the flashlight").type);
+        assertEquals("on", VisionActionParser.parse("turn on the flashlight").target);
+        assertEquals("off", VisionActionParser.parse("turn off the torch").target);
+        assertEquals("on", VisionActionParser.parse("flashlight on").type == VisionAction.Type.TOGGLE_TORCH
+                ? VisionActionParser.parse("flashlight on").target : "missed");
+
+        // Parser: navigation
+        VisionAction nav = VisionActionParser.parse("navigate to Connaught Place Delhi");
+        assertEquals(VisionAction.Type.NAVIGATE_TO, nav.type);
+        assertEquals("Connaught Place Delhi", nav.target);
+        assertEquals(VisionAction.Type.NAVIGATE_TO, VisionActionParser.parse("directions to Mumbai Airport").type);
+        assertEquals(VisionAction.Type.NAVIGATE_TO, VisionActionParser.parse("take me to Sector 18 Noida").type);
+        assertEquals(VisionAction.Type.NAVIGATE_TO, VisionActionParser.parse("navigate home").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("navigate to <script>alert(1)</script>").type);
+
+        // Parser: calendar event creation (title, optional day, time)
+        VisionAction event = VisionActionParser.parse("create an event called Dentist tomorrow at 10:30 am");
+        assertEquals(VisionAction.Type.CREATE_CALENDAR_EVENT, event.type);
+        assertEquals("Dentist", event.target);
+        assertTrue("event time is canonical", VisionActionParser.isValidCanonicalEventTime(event.replyText));
+        assertEquals(VisionAction.Type.CREATE_CALENDAR_EVENT,
+                VisionActionParser.parse("schedule an event Team Sync at 3 pm").type);
+        assertEquals(VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("create an event called X tomorrow at 25:00").type);
+        assertEquals(VisionAction.Type.UNKNOWN,
+                VisionActionParser.parse("create an event tomorrow").type);
+
+        // Precedence: reads are not hijacked by the new grammars
+        assertEquals(VisionAction.Type.READ_CALENDAR, VisionActionParser.parse("whats my next event").type);
+        assertEquals(VisionAction.Type.READ_TIME, VisionActionParser.parse("what time is it").type);
+        assertEquals(VisionAction.Type.READ_BATTERY, VisionActionParser.parse("check my battery").type);
+        // 'open calendar' still reaches OPEN_APP
+        assertEquals(VisionAction.Type.OPEN_APP, VisionActionParser.parse("open calendar").type);
+        // A messaging command is not hijacked by navigation ('to' with colon form)
+        assertEquals(VisionAction.Type.SEND_MESSAGE_DIRECT,
+                VisionActionParser.parse("send a message to Alice: navigate to the office").type);
+
+        // Risk tiers: the six new reads/intents are SAFE; event creation is CONFIRMED
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.SET_TIMER));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.SET_ALARM));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.NAVIGATE_TO));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.MEDIA_CONTROL));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.SET_VOLUME));
+        assertEquals(VisionRiskPolicy.RiskTier.SAFE, VisionRiskPolicy.getRiskTier(VisionAction.Type.TOGGLE_TORCH));
+        assertEquals(VisionRiskPolicy.RiskTier.CONFIRMED, VisionRiskPolicy.getRiskTier(VisionAction.Type.CREATE_CALENDAR_EVENT));
+
+        // Validator parity: canonical targets only, no text, no channel (except event time in text)
+        assertAccepted(proposal("SET_TIMER", "10m", "", ""));
+        assertAccepted(proposal("SET_TIMER", "1h 30m", "", ""));
+        assertRejected("timer bad target",
+                proposal("SET_TIMER", "a while", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertRejected("timer over 24h",
+                proposal("SET_TIMER", "30h", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertAccepted(proposal("SET_ALARM", "07:30", "", ""));
+        assertRejected("alarm bad time",
+                proposal("SET_ALARM", "7:30", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertAccepted(proposal("NAVIGATE_TO", "Connaught Place Delhi", "", ""));
+        assertRejected("navigate bad place",
+                proposal("NAVIGATE_TO", "nowhere<script>", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertAccepted(proposal("MEDIA_CONTROL", "next", "", ""));
+        assertRejected("media bad command",
+                proposal("MEDIA_CONTROL", "rewind", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertAccepted(proposal("SET_VOLUME", "50", "", ""));
+        assertAccepted(proposal("SET_VOLUME", "mute", "", ""));
+        assertRejected("volume out of range",
+                proposal("SET_VOLUME", "150", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertAccepted(proposal("TOGGLE_TORCH", "on", "", ""));
+        assertRejected("torch bad target",
+                proposal("TOGGLE_TORCH", "strobe", "", ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        assertRejected("timer text forbidden",
+                proposal("SET_TIMER", "10m", "x", ""), ReasoningProposalValidator.RejectionReason.INVALID_TEXT);
+        assertRejected("timer channel forbidden",
+                proposal("SET_TIMER", "10m", "", "sms"), ReasoningProposalValidator.RejectionReason.INVALID_CHANNEL);
+
+        // Event creation: title in target, canonical time in text, channel forbidden
+        java.time.LocalDate tomorrow = java.time.LocalDate.now().plusDays(1);
+        String canonicalTime = String.format("%04d-%02d-%02d 09:30",
+                tomorrow.getYear(), tomorrow.getMonthValue(), tomorrow.getDayOfMonth());
+        VisionAction acceptedEvent = assertAccepted(proposal("CREATE_CALENDAR_EVENT", "Gym", canonicalTime, ""));
+        assertEquals("Gym", acceptedEvent.target);
+        assertEquals(canonicalTime, acceptedEvent.replyText);
+        assertRejected("event bad time",
+                proposal("CREATE_CALENDAR_EVENT", "Gym", "tomorrow morning", ""), ReasoningProposalValidator.RejectionReason.INVALID_TEXT);
+        assertRejected("event bad title",
+                proposal("CREATE_CALENDAR_EVENT", "<b>Title</b>", canonicalTime, ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+
+        // Coordinator routes a valid new-type proposal through the single-action path
+        ReasoningCoordinator.CoordinationResult routed = ReasoningCoordinator.coordinateFull(
+                "quick kitchen timer",
+                new MockReasoningProvider("{\"type\":\"SET_TIMER\",\"target\":\"5m\",\"text\":\"\",\"channel\":\"\"}"));
+        assertEquals(VisionAction.Type.SET_TIMER, routed.action.type);
+        assertEquals("5m", routed.action.target);
+        assertNull(routed.plan);
+
+        // And a valid plan mixes new SAFE types with a read
+        ReasoningCoordinator.CoordinationResult planResult = ReasoningCoordinator.coordinateFull(
+                "evening routine",
+                new MockReasoningProvider("[{\"type\":\"SET_TIMER\",\"target\":\"10m\",\"text\":\"\",\"channel\":\"\"},"
+                        + "{\"type\":\"MEDIA_CONTROL\",\"target\":\"play\",\"text\":\"\",\"channel\":\"\"},"
+                        + "{\"type\":\"READ_BATTERY\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}]"));
+        assertNotNull(planResult.plan);
+        assertEquals(3, planResult.plan.stepCount());
+        assertEquals(VisionAction.Type.SET_TIMER, planResult.plan.step(0).type);
+        assertEquals(VisionAction.Type.MEDIA_CONTROL, planResult.plan.step(1).type);
+        assertEquals(VisionAction.Type.READ_BATTERY, planResult.plan.step(2).type);
     }
 
     private static void assertReply(String command, String expectedTarget, String expectedText) {
