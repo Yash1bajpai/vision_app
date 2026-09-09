@@ -718,16 +718,21 @@ public class MainActivity extends Activity {
                     if (isFinishing() || isDestroyed()) return;
                     action.state = VisionAction.State.APPROVED;
                     if (checkSelfPermission(android.Manifest.permission.WRITE_CALENDAR)
+                            != android.content.pm.PackageManager.PERMISSION_GRANTED
+                            || checkSelfPermission(android.Manifest.permission.READ_CALENDAR)
                             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        // Resolving the target calendar id queries the calendars provider,
+                        // which needs READ_CALENDAR as well; request both together.
                         pendingContactAction = null;
                         pendingCalendarAction = null;
                         pendingEventWriteAction = action;
                         pendingEventWriteCompletion = onComplete;
                         activityText.setText("CALENDAR PERMISSION NEEDED\n\nVision needs Calendar permission to create events.");
-                        requestPermissions(new String[]{android.Manifest.permission.WRITE_CALENDAR}, REQUEST_CODE_WRITE_CALENDAR);
+                        requestPermissions(new String[]{android.Manifest.permission.WRITE_CALENDAR,
+                                android.Manifest.permission.READ_CALENDAR}, REQUEST_CODE_WRITE_CALENDAR);
                         return;
                     }
-                    executeCalendarEventInsert(action, onComplete);
+                    executeCalendarEventInsert(action, null);
                 })
                 .setOnDismissListener(d -> {
                     if (activeDialog == d) activeDialog = null;
@@ -749,6 +754,11 @@ public class MainActivity extends Activity {
         showManagedDialog(dialog);
     }
 
+    /**
+     * Inserts the approved event. Completion is owned by the caller: the dismiss
+     * listener when reached via the modal button, the permission callback when
+     * reached via the deferred permission flow — never both, never here.
+     */
     private void executeCalendarEventInsert(VisionAction action, Runnable onComplete) {
         action.state = VisionAction.State.RUNNING;
         try {
@@ -756,7 +766,6 @@ public class MainActivity extends Activity {
             if (calendarId == null) {
                 action.state = VisionAction.State.FAILED;
                 activityText.setText("FAILED\n\nNo writable calendar was found on this device.");
-                if (onComplete != null) onComplete.run();
                 return;
             }
             java.time.LocalDateTime when = java.time.LocalDateTime.parse(action.replyText,
@@ -1040,7 +1049,9 @@ public class MainActivity extends Activity {
             pendingEventWriteAction = null;
             pendingEventWriteCompletion = null;
             boolean granted = grantResults != null && grantResults.length > 0
-                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    && grantResults.length > 1
+                    && grantResults[1] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             if (pending != null && granted && !isFinishing() && !isDestroyed()) {
                 executeCalendarEventInsert(pending, completion);
             } else {
@@ -1057,6 +1068,8 @@ public class MainActivity extends Activity {
             Runnable completion = pendingCalendarCompletion;
             pendingCalendarAction = null;
             pendingCalendarCompletion = null;
+            pendingEventWriteAction = null;
+            pendingEventWriteCompletion = null;
             boolean granted = grantResults != null && grantResults.length > 0
                     && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             if (pending != null && granted && !isFinishing() && !isDestroyed()) {
@@ -1076,6 +1089,8 @@ public class MainActivity extends Activity {
             Runnable completion = pendingStepCompletion;
             pendingContactAction = null;
             pendingStepCompletion = null;
+            pendingEventWriteAction = null;
+            pendingEventWriteCompletion = null;
             if (grantResults != null && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 if (pending != null && !isFinishing() && !isDestroyed()) {
                     handleContactDirectMessageAction(pending, input, completion);

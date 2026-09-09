@@ -42,7 +42,7 @@ public final class VisionActionParser {
     );
 
     private static final Pattern DURATION_PART_PATTERN = Pattern.compile(
-            "(\\d+)\\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\\b"
+            "(\\d{1,6})\\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\\b"
     );
 
     private static final Pattern ALARM_TIME_PATTERN = Pattern.compile(
@@ -184,7 +184,9 @@ public final class VisionActionParser {
         Matcher navigateBareMatcher = NAVIGATE_BARE_PATTERN.matcher(trimmed);
         if (navigateBareMatcher.matches()) {
             String place = stripTrailingPunctuation(navigateBareMatcher.group(1).trim());
-            if (isValidPlaceName(place)) {
+            // 'navigate to' with no destination leaves the bare preposition; a dangling
+            // 'to' must not dispatch a maps search for the literal word.
+            if (isValidPlaceName(place) && !"to".equalsIgnoreCase(place)) {
                 return new VisionAction(VisionAction.Type.NAVIGATE_TO, request, place);
             }
         }
@@ -235,19 +237,22 @@ public final class VisionActionParser {
 
     // ===================== Daily-driver intent helpers =====================
 
-    /** Sums every '&lt;n&gt; &lt;unit&gt;' pair in the phrase; 0 when none is present. */
+    /** Sums every '&lt;n&gt; &lt;unit&gt;' pair in the phrase; 0 when none is present or a part overflows. */
     private static long parseDurationSeconds(String normalized) {
         long total = 0;
         Matcher m = DURATION_PART_PATTERN.matcher(normalized);
         while (m.find()) {
-            long n = Long.parseLong(m.group(1));
-            String unit = m.group(2);
-            if (unit.startsWith("h")) {
-                total += n * 3600;
-            } else if (unit.startsWith("m")) {
-                total += n * 60;
-            } else {
-                total += n;
+            try {
+                long n = Long.parseLong(m.group(1));
+                String unit = m.group(2);
+                long scaled = unit.startsWith("h") ? n * 3600
+                        : unit.startsWith("m") ? n * 60 : n;
+                if (scaled < 0 || total > Long.MAX_VALUE - scaled) {
+                    return 0; // overflow: fail closed to UNKNOWN, never crash
+                }
+                total += scaled;
+            } catch (NumberFormatException e) {
+                return 0;
             }
         }
         return total;
@@ -382,11 +387,12 @@ public final class VisionActionParser {
         return value.matches("[\\p{L}\\p{N} .,'\\-()&+]+");
     }
 
-    /** True for canonical event times ("2026-09-10 09:30", local time). */
+    /** True for canonical event times ("2026-09-10 09:30", local time); impossible dates are rejected. */
     public static boolean isValidCanonicalEventTime(String value) {
         if (value == null || !value.matches("^\\d{4}-\\d{2}-\\d{2} ([01]\\d|2[0-3]):[0-5]\\d$")) return false;
         try {
-            java.time.LocalDateTime.parse(value, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            java.time.LocalDateTime.parse(value, java.time.format.DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm")
+                    .withResolverStyle(java.time.format.ResolverStyle.STRICT));
             return true;
         } catch (Exception e) {
             return false;

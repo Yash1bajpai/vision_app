@@ -2222,6 +2222,9 @@ public class VisionAppTest {
         // Timer bounds: over 24h is rejected (UNKNOWN), not clamped
         assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set a timer for 30 hours").type);
         assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set a timer").type);
+        // Huge digit strings and overflow fail closed to UNKNOWN, never throw
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set a timer for 99999999999999999999 hours").type);
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("set a timer for 999999 hours 999999 minutes").type);
 
         // Parser: alarm
         VisionAction alarm = VisionActionParser.parse("set an alarm for 7:30 am");
@@ -2265,6 +2268,8 @@ public class VisionAppTest {
         assertEquals(VisionAction.Type.NAVIGATE_TO, VisionActionParser.parse("take me to Sector 18 Noida").type);
         assertEquals(VisionAction.Type.NAVIGATE_TO, VisionActionParser.parse("navigate home").type);
         assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("navigate to <script>alert(1)</script>").type);
+        // Dangling 'navigate to' must not search for the literal word "to"
+        assertEquals(VisionAction.Type.UNKNOWN, VisionActionParser.parse("navigate to").type);
 
         // Parser: calendar event creation (title, optional day, time)
         VisionAction event = VisionActionParser.parse("create an event called Dentist tomorrow at 10:30 am");
@@ -2336,6 +2341,9 @@ public class VisionAppTest {
                 proposal("CREATE_CALENDAR_EVENT", "Gym", "tomorrow morning", ""), ReasoningProposalValidator.RejectionReason.INVALID_TEXT);
         assertRejected("event bad title",
                 proposal("CREATE_CALENDAR_EVENT", "<b>Title</b>", canonicalTime, ""), ReasoningProposalValidator.RejectionReason.INVALID_TARGET);
+        // Impossible dates are rejected (no SMART resolution to a different day)
+        assertRejected("event impossible date",
+                proposal("CREATE_CALENDAR_EVENT", "Gym", "2026-02-30 10:00", ""), ReasoningProposalValidator.RejectionReason.INVALID_TEXT);
 
         // Coordinator routes a valid new-type proposal through the single-action path
         ReasoningCoordinator.CoordinationResult routed = ReasoningCoordinator.coordinateFull(
