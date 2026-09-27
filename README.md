@@ -3,11 +3,12 @@
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**
+> **Current release: `v0.12.0`** — Phase 11 added device-status reads (battery, network, time, calendar) and Phase 12 added daily-driver intents (timers, alarms, navigation, media, volume, torch, calendar events); the full phase-by-phase record is in `PROJECT_REPORT.md`.
 > Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 10 adds only trusted-boundary plumbing for a future model — bounded multi-step plan proposals on top of the Phase 9 single-proposal boundary (grammar + validation + sequential per-action execution policy only; still no model, no network, no embeddings). Phase 9 added the `ReasoningProvider` interface plus strict fail-closed proposal validation. Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
 
 ---
 
-## Phase 10 Architecture: Bounded Multi-Step Plans (v0.10.0)
+## Trusted Plan Boundary: Bounded Multi-Step Plans (Phase 10, still the live boundary in v0.12.0)
 
 Phase 10 extends the trusted proposal boundary from a single action to a bounded plan, following the same fail-closed philosophy. Production behavior is **identical to v0.9.3** (the `NoOpReasoningProvider` never proposes anything); the plan path exists only for a future model and is fully covered by tests.
 
@@ -33,7 +34,7 @@ Parser-first, unchanged: the deterministic parser is always consulted first; the
 `MainActivity` still wires `NoOpReasoningProvider`; with no provider output there are no plans, and the v0.9.3 command corpus behaves identically through `coordinateFull` (regression-tested, `test56`).
 
 ### 6. Zero New Attack Surface
-No new permissions, no network, no disk persistence, no new dependencies. Provider output is never logged. The evaluation suite covers: array grammar acceptance/malformed rejection (`test50`), plan validation and bounds (`test51`), plan immutability (`test52`), coordinator routing and parser-first guarantees (`test53`), step-advance/halt policy and per-step risk tiers (`test54`), prompt-injection payload semantics and plan-level smuggling rejection (`test55`), and the v0.9.x regression corpus (`test56`) — 56/56 test groups.
+No new permissions, no network, no disk persistence, no new dependencies. Provider output is never logged. The evaluation suite covers: array grammar acceptance/malformed rejection (`test50`), plan validation and bounds (`test51`), plan immutability (`test52`), coordinator routing and parser-first guarantees (`test53`), step-advance/halt policy and per-step risk tiers (`test54`), prompt-injection payload semantics and plan-level smuggling rejection (`test55`), and the v0.9.x regression corpus (`test56`) — **58/58 test groups** once Phase 11 device-status reads (`test57`) and Phase 12 daily-driver intents (`test58`) landed.
 
 ---
 
