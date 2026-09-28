@@ -9,3 +9,8 @@ captures/
 .cxx/
 .audit_diff_*.txt
 .audit_ui*
+
+# internal strategy / tooling docs — kept local, never published
+CAPABILITY_ROADMAP.md
+auditreport.md
+.opencode.json
