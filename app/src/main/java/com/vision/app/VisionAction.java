@@ -3,6 +3,7 @@ package com.vision.app;
 /** A deterministic, confirmation-gated action produced from a typed request. */
 public final class VisionAction {
     public enum Type {
+        SHOW_HELP,
         READ_NOTIFICATION,
         REPLY_NOTIFICATION,
         SEND_MESSAGE_DIRECT,
@@ -96,6 +97,7 @@ public final class VisionAction {
     }
 
     public String label() {
+        if (type == Type.SHOW_HELP) return "Show supported commands";
         if (type == Type.READ_NOTIFICATION) return "Read the latest supported notification";
         if (type == Type.REPLY_NOTIFICATION) {
             String dest = target.isEmpty() || "latest notification".equalsIgnoreCase(target)

@@ -208,10 +208,11 @@ public class VisionNotificationListener extends NotificationListenerService {
             }
             title = value(titleCs);
 
-            // 1. Check MessagingStyle messages
+            // 1. API 30+ MessagingStyle helper; older devices use the text fallbacks below.
             try {
                 Parcelable[] msgBundles = extras.getParcelableArray(Notification.EXTRA_MESSAGES);
-                if (msgBundles != null && msgBundles.length > 0) {
+                if (android.os.Build.VERSION.SDK_INT >= 30
+                        && msgBundles != null && msgBundles.length > 0) {
                     List<Notification.MessagingStyle.Message> messages =
                             Notification.MessagingStyle.Message.getMessagesFromBundleArray(msgBundles);
                     if (messages != null && !messages.isEmpty()) {

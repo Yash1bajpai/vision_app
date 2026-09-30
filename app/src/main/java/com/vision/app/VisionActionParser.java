@@ -107,6 +107,10 @@ public final class VisionActionParser {
 
         String normalized = trimmed.replaceAll("\\s+", " ").toLowerCase(Locale.US);
 
+        if (normalized.matches("(?:help|commands|show commands|show capabilities|what can you do)[?!.]?")) {
+            return new VisionAction(VisionAction.Type.SHOW_HELP, request, "capabilities");
+        }
+
         // 2. READ_NOTIFICATION evaluated before OPEN_APP to handle gerunds like 'start reading my messages'
         if (normalized.matches(".*\\b(read|reading|show|check|checking|get|see)\\b.*\\b(notification|notifications|message|messages)\\b.*")) {
             return new VisionAction(VisionAction.Type.READ_NOTIFICATION, request, "latest notification");
@@ -309,8 +313,9 @@ public final class VisionActionParser {
         int minute = m.group(2) != null ? Integer.parseInt(m.group(2)) : 0;
         String ampm = m.group(3);
         if (ampm != null) {
-            if ("pm".equals(ampm) && hour < 12) hour += 12;
-            if ("am".equals(ampm) && hour == 12) hour = 0;
+            if (hour < 1 || hour > 12) return null;
+            if ("pm".equalsIgnoreCase(ampm) && hour < 12) hour += 12;
+            if ("am".equalsIgnoreCase(ampm) && hour == 12) hour = 0;
         }
         if (hour > 23 || minute > 59) return null;
         return String.format(Locale.US, "%02d:%02d", hour, minute);
@@ -361,14 +366,15 @@ public final class VisionActionParser {
         int minute = m.group(4) != null ? Integer.parseInt(m.group(4)) : 0;
         String ampm = m.group(5);
         if (ampm != null) {
-            if ("pm".equals(ampm) && hour < 12) hour += 12;
-            if ("am".equals(ampm) && hour == 12) hour = 0;
+            if (hour < 1 || hour > 12) return null;
+            if ("pm".equalsIgnoreCase(ampm) && hour < 12) hour += 12;
+            if ("am".equalsIgnoreCase(ampm) && hour == 12) hour = 0;
         }
         if (hour > 23 || minute > 59) return null;
         if (title.isEmpty() || title.length() > 70 || !isValidEventTitle(title)) return null;
 
         java.time.LocalDate date = java.time.LocalDate.now();
-        if ("tomorrow".equals(day)) {
+        if ("tomorrow".equalsIgnoreCase(day)) {
             date = date.plusDays(1);
         } else {
             java.time.LocalDateTime when = date.atTime(hour, minute);

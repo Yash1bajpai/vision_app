@@ -1,3 +1,38 @@
+## Pending feature branch: offline capabilities and media reliability
+
+This branch adds `help`, `commands`, `show commands`, `show capabilities` and
+`what can you do?`. Help comes from `VisionToolRegistry`, a read-only list of
+supported actions, examples, input rules and confirmation requirements.
+`VisionToolRegistry.toJson()` exports versioned static metadata for a future
+model adapter. It does not connect CodeForge, load a model, execute tools or
+approve actions. The existing four-field proposal validator remains mandatory.
+
+Play and pause now send separate Android media keys instead of a play/pause
+toggle. Dispatch is not proof that a media app changed playback. Calendar event
+parsing also handles uppercase TODAY/TOMORROW and AM/PM consistently and rejects
+invalid twelve-hour times.
+
+Notification MessagingStyle decoding is gated to API 30+. Android 26-29 keeps
+using existing big-text, text-line and standard-text fallbacks. The three bold
+text styles use named `Typeface.BOLD` constants. No new permissions or persistent
+storage were added.
+
+Local verification: **71 JUnit tests passed** (58 existing + 13 regression tests),
+debug APK assembly passed, lint passed with **0 errors and 50 existing warnings**,
+and APK ZIP/signature checks passed. These are build/JVM checks, not physical-device
+tests. An emulator could not launch in the available memory, so help-screen layout,
+actual media behavior and notification compatibility still need device testing.
+
+Build on a standard Android SDK installation without changing the repository's
+Termux AAPT2 setting:
+
+```sh
+gradle -Pandroid.aapt2FromMavenOverride="$ANDROID_HOME/build-tools/34.0.0/aapt2" \
+  :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+```
+
+The historical release notes below describe earlier releases.
+
 # Vision
 
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.

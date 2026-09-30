@@ -232,12 +232,12 @@ public class MainActivity extends Activity {
         LinearLayout header = row();
         TextView mark = label("V", 18, MINT);
         mark.setGravity(Gravity.CENTER);
-        mark.setTypeface(null, 1);
+        mark.setTypeface(null, android.graphics.Typeface.BOLD);
         mark.setBackground(round(MINT, 18));
         header.addView(mark, new LinearLayout.LayoutParams(dp(38), dp(38)));
         LinearLayout titleBox = column();
         TextView title = label("Vision", 22, TEXT);
-        title.setTypeface(null, 1);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
         titleBox.addView(title);
         titleBox.addView(label("Your private intelligence layer", 12, MUTED));
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, -2, 1);
@@ -249,7 +249,7 @@ public class MainActivity extends Activity {
         root.addView(header);
 
         TextView greeting = label("Good evening, Yash", 28, TEXT);
-        greeting.setTypeface(null, 1);
+        greeting.setTypeface(null, android.graphics.Typeface.BOLD);
         LinearLayout.LayoutParams greetingParams = new LinearLayout.LayoutParams(-1, -2);
         greetingParams.setMargins(0, dp(38), 0, dp(4));
         root.addView(greeting, greetingParams);
@@ -334,10 +334,12 @@ public class MainActivity extends Activity {
                 }
                 VisionAction action = coordination.action;
                 if (action.type == VisionAction.Type.UNKNOWN) {
-                    activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Try:\n\nRead my latest notification\nReply I'll be there soon\nOpen WhatsApp");
+                    activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
                     return;
                 }
-                if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
+                if (action.type == VisionAction.Type.SHOW_HELP) {
+                    handleHelpAction(action, null);
+                } else if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
                     handleReplyAction(action, command, input, null);
                 } else if (action.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
                     handleDirectMessageAction(action, input, null);
@@ -376,6 +378,12 @@ public class MainActivity extends Activity {
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    private void handleHelpAction(VisionAction action, Runnable onComplete) {
+        activityText.setText(VisionToolRegistry.helpText());
+        action.state = VisionAction.State.SUCCEEDED;
+        if (onComplete != null) onComplete.run();
     }
 
     // ===================== Device status reads (Tier SAFE) =====================
@@ -611,16 +619,7 @@ public class MainActivity extends Activity {
 
     private void handleMediaControlAction(VisionAction action, Runnable onComplete) {
         try {
-            int keyCode;
-            if ("next".equals(action.target)) {
-                keyCode = KeyEvent.KEYCODE_MEDIA_NEXT;
-            } else if ("previous".equals(action.target)) {
-                keyCode = KeyEvent.KEYCODE_MEDIA_PREVIOUS;
-            } else if ("stop".equals(action.target)) {
-                keyCode = KeyEvent.KEYCODE_MEDIA_STOP;
-            } else {
-                keyCode = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
-            }
+            int keyCode = VisionMediaCommand.keyCode(action.target);
             AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (audio == null) {
                 action.state = VisionAction.State.FAILED;
@@ -630,7 +629,7 @@ public class MainActivity extends Activity {
                 audio.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, keyCode));
                 action.state = VisionAction.State.SUCCEEDED;
                 activityText.setText("SUCCEEDED\n\nMedia command sent: " + action.target
-                        + ".\n\nIt was delivered to the active media session.");
+                        + ".\n\nPlayback was not verified; the media app may ignore this command.");
             }
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
@@ -859,7 +858,9 @@ public class MainActivity extends Activity {
             advanced[0] = true;
             onPlanStepTerminal(input);
         };
-        if (step.type == VisionAction.Type.READ_NOTIFICATION) {
+        if (step.type == VisionAction.Type.SHOW_HELP) {
+            handleHelpAction(step, advance);
+        } else if (step.type == VisionAction.Type.READ_NOTIFICATION) {
             handleReadAction(step, step.request, input, advance);
         } else if (step.type == VisionAction.Type.OPEN_APP) {
             handleOpenAppAction(step, step.request, input, advance);

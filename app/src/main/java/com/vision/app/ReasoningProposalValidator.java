@@ -82,6 +82,8 @@ public final class ReasoningProposalValidator {
         String text = fields.get("text").trim();
         String channel = fields.get("channel").trim();
         switch (type) {
+            case SHOW_HELP:
+                return validateStatusRead(type, target, text, channel);
             case READ_NOTIFICATION:
                 return validateRead(target, text, channel);
             case READ_BATTERY:
@@ -132,6 +134,7 @@ public final class ReasoningProposalValidator {
     }
 
     private static String canonicalStatusTarget(VisionAction.Type type) {
+        if (type == VisionAction.Type.SHOW_HELP) return "capabilities";
         if (type == VisionAction.Type.READ_BATTERY) return "battery";
         if (type == VisionAction.Type.READ_NETWORK) return "network";
         if (type == VisionAction.Type.READ_TIME) return "time";
@@ -326,21 +329,8 @@ public final class ReasoningProposalValidator {
     }
 
     private static VisionAction.Type parseType(String raw) {
-        if ("READ_NOTIFICATION".equals(raw)) return VisionAction.Type.READ_NOTIFICATION;
-        if ("REPLY_NOTIFICATION".equals(raw)) return VisionAction.Type.REPLY_NOTIFICATION;
-        if ("SEND_MESSAGE_DIRECT".equals(raw)) return VisionAction.Type.SEND_MESSAGE_DIRECT;
-        if ("OPEN_APP".equals(raw)) return VisionAction.Type.OPEN_APP;
-        if ("READ_BATTERY".equals(raw)) return VisionAction.Type.READ_BATTERY;
-        if ("READ_NETWORK".equals(raw)) return VisionAction.Type.READ_NETWORK;
-        if ("READ_TIME".equals(raw)) return VisionAction.Type.READ_TIME;
-        if ("READ_CALENDAR".equals(raw)) return VisionAction.Type.READ_CALENDAR;
-        if ("SET_TIMER".equals(raw)) return VisionAction.Type.SET_TIMER;
-        if ("SET_ALARM".equals(raw)) return VisionAction.Type.SET_ALARM;
-        if ("NAVIGATE_TO".equals(raw)) return VisionAction.Type.NAVIGATE_TO;
-        if ("MEDIA_CONTROL".equals(raw)) return VisionAction.Type.MEDIA_CONTROL;
-        if ("SET_VOLUME".equals(raw)) return VisionAction.Type.SET_VOLUME;
-        if ("TOGGLE_TORCH".equals(raw)) return VisionAction.Type.TOGGLE_TORCH;
-        if ("CREATE_CALENDAR_EVENT".equals(raw)) return VisionAction.Type.CREATE_CALENDAR_EVENT;
+        VisionToolRegistry.Tool tool = VisionToolRegistry.find(raw);
+        if (tool != null) return tool.type;
         return null;
     }
 
