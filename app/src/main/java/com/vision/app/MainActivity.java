@@ -852,12 +852,8 @@ public class MainActivity extends Activity {
         VisionAction step = pendingPlan.step(planStepIndex);
         // One-shot latch: dialog buttons and the dismiss listener may both fire completion
         // for the same step; only the first advances the plan.
-        final boolean[] advanced = new boolean[1];
-        Runnable advance = () -> {
-            if (advanced[0]) return;
-            advanced[0] = true;
-            onPlanStepTerminal(input);
-        };
+        final VisionCompletionGate stepGate = new VisionCompletionGate();
+        Runnable advance = () -> stepGate.fireOnce(() -> onPlanStepTerminal(input));
         if (step.type == VisionAction.Type.SHOW_HELP) {
             handleHelpAction(step, advance);
         } else if (step.type == VisionAction.Type.READ_NOTIFICATION) {

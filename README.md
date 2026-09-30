@@ -1,3 +1,27 @@
+## Pending feature branch: Android test harness (help rendering and dialog cancellation)
+
+This branch adds the first on-device instrumented test suite plus JVM coverage for help
+rendering and dialog cancellation.
+
+- `app/src/androidTest`: ActivityScenario-based tests that launch the real `MainActivity`,
+  type real commands through the composer and tap the send arrow. Help tests assert the
+  rendered help text equals `VisionToolRegistry.helpText()` exactly, for `help` and alias
+  forms. Dialog tests use a fictional 555-prefix number: Deny stops the message, dismissal
+  (Back / outside-tap path) cancels it, the managed dialog slot clears, and activity
+  recreation during a confirmation never reports a send. The app stays usable after every
+  cancelled flow.
+- New JVM tests cover the help-text contract (header, one entry per registry tool in order,
+  `[Confirm]` markers matching `VisionRiskPolicy` exactly, deterministic output, JSON export
+  contract) and the new `VisionCompletionGate`.
+- `VisionCompletionGate` is a small pure-JVM one-shot latch. The plan-step completion path
+  in `MainActivity` now uses it instead of an inline boolean array; behavior is unchanged
+  and the latch is directly unit-tested (first fire runs, later fires are ignored, null-safe,
+  stays latched on failure).
+
+Run on a connected device or emulator with `gradle connectedDebugAndroidTest`. The dialog
+tests need an SMS-capable composer app installed. No new permissions or persistent storage
+were added.
+
 ## Pending feature branch: offline capabilities and media reliability
 
 This branch adds `help`, `commands`, `show commands`, `show capabilities` and
