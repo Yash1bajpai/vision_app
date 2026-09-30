@@ -6,6 +6,10 @@ android {
     namespace "com.vision.app"
     compileSdk 34
 
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
+
     defaultConfig {
         applicationId "com.vision.app"
         minSdk 26
@@ -18,6 +22,7 @@ android {
 
 dependencies {
     testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.13"
     androidTestImplementation "androidx.test:core:1.5.0"
     androidTestImplementation "androidx.test.ext:junit:1.1.5"
     androidTestImplementation "androidx.test:runner:1.5.2"
