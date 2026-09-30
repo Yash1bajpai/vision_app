@@ -1,3 +1,30 @@
+## Pending feature branch: notification safety and Android-framework tests
+
+Stacked on the Android test harness branch. No model, new permission or storage.
+
+- Listener disconnect/destruction drops cached notification text and reply capabilities.
+- Posted reply capabilities must match both the notification key and source package.
+- A successful Android dispatch consumes the bound capability, preventing a second send
+  with the same confirmation. A new notification creates a new capability and needs a
+  new confirmation. Replaced/removed capabilities remain fail-closed.
+- The UI says `REPLY REQUESTED`: Android accepting a PendingIntent is not proof of
+  message delivery.
+- 12 new regression tests: 7 lifecycle/identity checks and 5 Robolectric Android-framework
+  tests for exact RemoteInput text, one-use dispatch, cancellation, replacement and service
+  cleanup. Synthetic app-scoped broadcasts only; no real messaging apps or recipients.
+
+Verification: **91 tests pass** (79 inherited + 12 new). Debug and instrumentation APKs
+build; lint passes with 0 errors. Robolectric simulates Android APIs, not a phone. Real
+notification callbacks, third-party messaging behavior and UI appearance still need
+on-device verification. No physical-device/instrumentation run is claimed.
+
+Standard SDK build (JDK 17, Gradle 8.7, Android SDK 34):
+
+```sh
+gradle -Pandroid.aapt2FromMavenOverride="$ANDROID_HOME/build-tools/34.0.0/aapt2" \
+  testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug
+```
+
 ## Pending feature branch: Android test harness (help rendering and dialog cancellation)
 
 This branch adds the first on-device instrumented test suite plus JVM coverage for help
