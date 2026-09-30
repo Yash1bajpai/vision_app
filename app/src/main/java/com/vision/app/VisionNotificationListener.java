@@ -337,6 +337,19 @@ public class VisionNotificationListener extends NotificationListenerService {
         processPostedNotification(key, sbn.getPackageName(), title, text, sbn.getPostTime(), notification.flags, replyCap);
     }
 
+    /** A disconnected listener cannot prove a cached destination is still active. */
+    @Override
+    public void onListenerDisconnected() {
+        clearLatestNotification();
+        super.onListenerDisconnected();
+    }
+
+    @Override
+    public void onDestroy() {
+        clearLatestNotification();
+        super.onDestroy();
+    }
+
     @Override
     public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
@@ -362,6 +375,11 @@ public class VisionNotificationListener extends NotificationListenerService {
             return false;
         }
         String safeKey = (key != null && !key.isEmpty()) ? key : (packageName + ":0");
+        // Fail closed if a capability is attached to a different notification or app.
+        if (replyCap != null && (!safeKey.equals(replyCap.key)
+                || !packageName.equals(replyCap.packageName))) {
+            return false;
+        }
         synchronized (VisionNotificationListener.class) {
             if (shouldIgnoreNotification(flags, replyCap != null)) {
                 return false;
@@ -527,6 +545,13 @@ public class VisionNotificationListener extends NotificationListenerService {
                 // Atomic validation-to-dispatch is required for this in-memory capability model to prevent
                 // a stale-dispatch window if onNotificationRemoved concurrently clears or replaces the capability.
                 boundCapability.pendingIntent.send(context, 0, fillInIntent);
+                // A confirmation authorizes one dispatch, not repeated use of this capability.
+                // Android accepted the intent; this does not prove message delivery.
+                latestReplyCapability = null;
+                sequenceCounter++;
+                currentListenerState = new ListenerState(currentListenerState.status,
+                        currentListenerState.key, currentListenerState.packageName,
+                        currentListenerState.postTime, false, sequenceCounter);
                 return ReplyResult.SUCCESS;
             } catch (PendingIntent.CanceledException e) {
                 return ReplyResult.FAILED_INTENT;
