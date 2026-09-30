@@ -1236,7 +1236,7 @@ public class MainActivity extends Activity {
         VisionNotificationListener.ReplyResult result = VisionNotificationListener.sendBoundReply(this, boundCap, action.replyText);
         if (result == VisionNotificationListener.ReplyResult.SUCCESS) {
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nReplied to " + destDisplay + ":\n\n\"" + action.replyText + "\"");
+            activityText.setText("REPLY REQUESTED\n\nAndroid accepted the reply request to " + destDisplay + ":\n\n\"" + action.replyText + "\"");
         } else if (result == VisionNotificationListener.ReplyResult.STALE_OR_REMOVED) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nThe notification was dismissed, replaced, or expired before the reply could be sent. Please make a new request.");
@@ -1478,4 +1478,4 @@ public class MainActivity extends Activity {
     private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private GradientDrawable round(int color, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius)); return d; }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + 0.5f); }
-}
+    }
