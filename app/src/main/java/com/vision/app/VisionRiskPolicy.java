@@ -12,6 +12,7 @@ import java.util.Set;
  * defaults to requiring modal confirmation (Tier CONFIRMED).
  *
  * Tier SAFE (auto-execute immediately, NO modal dialog):
+ * - SHOW_HELP (static capability metadata only)
  * - OPEN_APP
  * - READ_NOTIFICATION
  * - READ_BATTERY
@@ -45,6 +46,7 @@ public final class VisionRiskPolicy {
     }
 
     private static final Set<VisionAction.Type> SAFE_TYPES = EnumSet.of(
+            VisionAction.Type.SHOW_HELP,
             VisionAction.Type.OPEN_APP,
             VisionAction.Type.READ_NOTIFICATION,
             VisionAction.Type.READ_BATTERY,
