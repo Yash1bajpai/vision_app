@@ -1,85 +1,46 @@
-## Pending feature branch: notification safety and Android-framework tests
+## Recently merged: offline capabilities, test harness, notification safety
 
-Stacked on the Android test harness branch. No model, new permission or storage.
+Three feature branches merged 2026-10-01. No model, new permission or persistent storage.
 
-- Listener disconnect/destruction drops cached notification text and reply capabilities.
-- Posted reply capabilities must match both the notification key and source package.
-- A successful Android dispatch consumes the bound capability, preventing a second send
-  with the same confirmation. A new notification creates a new capability and needs a
-  new confirmation. Replaced/removed capabilities remain fail-closed.
-- The UI says `REPLY REQUESTED`: Android accepting a PendingIntent is not proof of
-  message delivery.
-- 12 new regression tests: 7 lifecycle/identity checks and 5 Robolectric Android-framework
-  tests for exact RemoteInput text, one-use dispatch, cancellation, replacement and service
-  cleanup. Synthetic app-scoped broadcasts only; no real messaging apps or recipients.
+**Offline capability registry.** `help`, `commands`, `show commands`, `show capabilities` and
+`what can you do?` render `VisionToolRegistry` - a read-only list of supported actions,
+examples, input rules and confirmation requirements. `VisionToolRegistry.toJson()` exports
+versioned static metadata for a future model adapter; it does not connect a model, execute
+tools or approve actions, and the four-field proposal validator remains mandatory. Play and
+pause now send separate Android media keys instead of a play/pause toggle; dispatch is not
+proof that a media app changed playback. Calendar event parsing handles uppercase
+TODAY/TOMORROW and AM/PM and rejects invalid twelve-hour times. MessagingStyle decoding is
+gated to API 30+; Android 26-29 keeps the big-text, text-line and standard-text fallbacks.
 
-Verification: **91 tests pass** (79 inherited + 12 new). Debug and instrumentation APKs
-build; lint passes with 0 errors. Robolectric simulates Android APIs, not a phone. Real
-notification callbacks, third-party messaging behavior and UI appearance still need
-on-device verification. No physical-device/instrumentation run is claimed.
+**Android test harness.** `app/src/androidTest` launches the real `MainActivity` and drives
+the composer: help renders `VisionToolRegistry.helpText()` exactly (including aliases), and
+dialog cancellation is covered for Deny, dismissal and activity recreation. The instrumented
+dialog tests wait for the main looper before asserting, because button clicks and dismissal
+callbacks are posted messages. JVM tests cover the help-text contract and
+`VisionCompletionGate`, a one-shot latch now used by the plan-step completion path.
+Run with `gradle connectedDebugAndroidTest`; the dialog tests need an SMS-capable composer app.
+
+**Notification safety.** Listener disconnect/destruction drops cached notification text and
+reply capabilities; posted reply capabilities must match the notification key and source
+package; a successful dispatch consumes the bound capability so one confirmation cannot send
+twice; and the UI reports `REPLY REQUESTED` rather than claiming delivery. Covered by 7
+lifecycle/identity regressions and 5 Robolectric Android-framework tests that use synthetic
+app-scoped broadcasts only.
+
+Verification (2026-10-01, iQOO Z9x / Android 16, JDK 17, Gradle 8.7, Android SDK 34):
+**91/91 JVM tests**, **5/5 on-device instrumentation tests**, debug and androidTest APKs
+build, lint **0 errors / 53 warnings**. Device smoke: `help` rendered the registry text,
+`check battery` reported the live battery state, `pause music` dispatched the explicit
+`KEYCODE_MEDIA_PAUSE`, and with the listener enabled via adb the app reported
+"Notifications connected" and ignored an unsupported-package notification. Robolectric
+simulates Android APIs, not a phone, so a live reply to a real third-party messaging
+notification still requires an actual incoming message.
 
 Standard SDK build (JDK 17, Gradle 8.7, Android SDK 34):
 
 ```sh
 gradle -Pandroid.aapt2FromMavenOverride="$ANDROID_HOME/build-tools/34.0.0/aapt2" \
   testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug
-```
-
-## Pending feature branch: Android test harness (help rendering and dialog cancellation)
-
-This branch adds the first on-device instrumented test suite plus JVM coverage for help
-rendering and dialog cancellation.
-
-- `app/src/androidTest`: ActivityScenario-based tests that launch the real `MainActivity`,
-  type real commands through the composer and tap the send arrow. Help tests assert the
-  rendered help text equals `VisionToolRegistry.helpText()` exactly, for `help` and alias
-  forms. Dialog tests use a fictional 555-prefix number: Deny stops the message, dismissal
-  (Back / outside-tap path) cancels it, the managed dialog slot clears, and activity
-  recreation during a confirmation never reports a send. The app stays usable after every
-  cancelled flow.
-- New JVM tests cover the help-text contract (header, one entry per registry tool in order,
-  `[Confirm]` markers matching `VisionRiskPolicy` exactly, deterministic output, JSON export
-  contract) and the new `VisionCompletionGate`.
-- `VisionCompletionGate` is a small pure-JVM one-shot latch. The plan-step completion path
-  in `MainActivity` now uses it instead of an inline boolean array; behavior is unchanged
-  and the latch is directly unit-tested (first fire runs, later fires are ignored, null-safe,
-  stays latched on failure).
-
-Run on a connected device or emulator with `gradle connectedDebugAndroidTest`. The dialog
-tests need an SMS-capable composer app installed. No new permissions or persistent storage
-were added.
-
-## Pending feature branch: offline capabilities and media reliability
-
-This branch adds `help`, `commands`, `show commands`, `show capabilities` and
-`what can you do?`. Help comes from `VisionToolRegistry`, a read-only list of
-supported actions, examples, input rules and confirmation requirements.
-`VisionToolRegistry.toJson()` exports versioned static metadata for a future
-model adapter. It does not connect CodeForge, load a model, execute tools or
-approve actions. The existing four-field proposal validator remains mandatory.
-
-Play and pause now send separate Android media keys instead of a play/pause
-toggle. Dispatch is not proof that a media app changed playback. Calendar event
-parsing also handles uppercase TODAY/TOMORROW and AM/PM consistently and rejects
-invalid twelve-hour times.
-
-Notification MessagingStyle decoding is gated to API 30+. Android 26-29 keeps
-using existing big-text, text-line and standard-text fallbacks. The three bold
-text styles use named `Typeface.BOLD` constants. No new permissions or persistent
-storage were added.
-
-Local verification: **71 JUnit tests passed** (58 existing + 13 regression tests),
-debug APK assembly passed, lint passed with **0 errors and 50 existing warnings**,
-and APK ZIP/signature checks passed. These are build/JVM checks, not physical-device
-tests. An emulator could not launch in the available memory, so help-screen layout,
-actual media behavior and notification compatibility still need device testing.
-
-Build on a standard Android SDK installation without changing the repository's
-Termux AAPT2 setting:
-
-```sh
-gradle -Pandroid.aapt2FromMavenOverride="$ANDROID_HOME/build-tools/34.0.0/aapt2" \
-  :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 ```
 
 The historical release notes below describe earlier releases.
