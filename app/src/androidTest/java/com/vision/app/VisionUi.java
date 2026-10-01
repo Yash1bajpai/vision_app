@@ -6,6 +6,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import androidx.test.platform.app.InstrumentationRegistry;
 import java.lang.reflect.Field;
 
 /**
@@ -53,5 +54,14 @@ final class VisionUi {
     static void typeAndSend(MainActivity activity, String command) {
         inputField(activity).setText(command);
         sendButton(activity).performClick();
+    }
+
+    /**
+     * Blocks until the main looper has drained. Dialog button clicks and dismiss callbacks
+     * are posted messages, so state they own (the managed dialog slot, the status text) is
+     * only observable after the looper runs. Must not be called from the main thread.
+     */
+    static void settle() {
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 }
