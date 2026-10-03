@@ -1,3 +1,35 @@
+## Prepared next batch: plan lifetime and short-lived context
+
+Local branch `feature/plan-lifetime-context`, not pushed or merged yet.
+
+- Plans have a 60-second total budget measured with Android's monotonic clock.
+  Each step, confirmation and permission result checks the deadline before doing work.
+- `cancel plan`, Back, backgrounding and activity destruction stop the remaining steps.
+  Pending confirmations and permission callbacks are cleared. Stale callbacks cannot
+  advance a replacement plan. Cancellation cannot undo actions already dispatched.
+- Session context holds at most two prior typed requests, up to 512 characters each,
+  for 60 seconds after the last request. Oversized requests are omitted, not truncated.
+  `forget context`, plan cancellation/timeout, backgrounding and destruction clear it.
+  No notification text, contact records, tool results, approvals or reply capabilities
+  are added to context; typed requests themselves can contain private information.
+- Context is an untrusted hint to an optional provider, never permission or remembered
+  recipients. Parser-first routing, strict proposal validation and per-step confirmation
+  remain unchanged. The production provider is still `NoOpReasoningProvider`, so no
+  model, automatic follow-up resolution, network or disk storage is introduced.
+- Going to another app stops any plan still pending when Vision reaches `onStop`.
+  Runtime permission dialogs normally pause without stopping the Activity; if an OEM
+  stops it, the plan is cancelled and the user must make the request again.
+
+Verification (2026-10-03, Linux / JDK 17 / Gradle 8.7 / Android SDK 34):
+111 JVM tests pass (91 baseline + 20 new), including Robolectric Android lifecycle,
+permission and dialog tests. Debug and androidTest APKs build; debug APK v2 signature
+verifies. Lint: 0 errors, 58 warnings (53 baseline; new warnings are UI text/i18n).
+The cancellation screen was rendered and visually inspected with Robolectric native
+Android graphics, not an emulator or phone. No new on-device instrumentation run was
+performed. Real permission-dialog/OEM lifecycle behavior, background transitions and
+third-party incoming notification replies still need a phone test. The plan path is
+injected only in tests until a real provider is attached.
+
 ## Recently merged: offline capabilities, test harness, notification safety
 
 Three feature branches merged 2026-10-01. No model, new permission or persistent storage.

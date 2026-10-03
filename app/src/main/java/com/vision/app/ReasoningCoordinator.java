@@ -40,6 +40,11 @@ public final class ReasoningCoordinator {
 
     /** Full coordination: parser-first, then a single proposal or a bounded plan. */
     public static CoordinationResult coordinateFull(String request, ReasoningProvider provider) {
+        return coordinateFull(request, provider, java.util.Collections.emptyList());
+    }
+
+    public static CoordinationResult coordinateFull(String request, ReasoningProvider provider,
+                                                     java.util.List<String> recentRequests) {
         VisionAction parsed = VisionActionParser.parse(request);
         if (parsed.type != VisionAction.Type.UNKNOWN) {
             return new CoordinationResult(parsed, null);
@@ -47,7 +52,9 @@ public final class ReasoningCoordinator {
         if (provider == null) {
             return unknown(request);
         }
-        String raw = provider.propose(request);
+        String raw = provider.propose(request, recentRequests == null
+                ? java.util.Collections.emptyList()
+                : java.util.Collections.unmodifiableList(new java.util.ArrayList<>(recentRequests)));
         if (raw == null || raw.trim().isEmpty()) {
             return unknown(request);
         }
