@@ -15,6 +15,9 @@ import android.hardware.camera2.CameraManager;
 import android.media.AudioManager;
 import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.AlarmClock;
 import android.provider.CalendarContract;
 import android.provider.Settings;
@@ -70,6 +73,16 @@ public class MainActivity extends Activity {
     // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
     private VisionPlan pendingPlan;
     private int planStepIndex = 0;
+    private final VisionPlanLifetime planLifetime = new VisionPlanLifetime();
+    private final VisionSessionContext sessionContext = new VisionSessionContext();
+    private final Handler planHandler = new Handler(Looper.getMainLooper());
+    private Runnable planTimeout;
+    private long planToken;
+    private Runnable contextExpiry;
+    private static final java.util.concurrent.atomic.AtomicInteger NEXT_PLAN_PERMISSION_CODE =
+            new java.util.concurrent.atomic.AtomicInteger(1000);
+    private int activePlanPermissionCode;
+    private int activePlanPermissionKind;
     private Runnable pendingStepCompletion;
 
     // Pending calendar read across the runtime permission dialog (in-memory only)
@@ -131,7 +144,7 @@ public class MainActivity extends Activity {
                     outState.putString(STATE_PENDING_EVENT_WRITE_STATE, pendingEventWriteAction.state.name());
                 }
             }
-            if (activityText != null && activityText.getText() != null) {
+            if (pendingPlan == null && activityText != null && activityText.getText() != null) {
                 outState.putCharSequence(STATE_ACTIVITY_TEXT, activityText.getText());
             }
         }
@@ -196,6 +209,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopPlan("PLAN CANCELLED", false);
+        clearSessionContext();
         super.onDestroy();
         if (activeDialog != null) {
             if (activeDialog.isShowing()) {
@@ -322,12 +337,27 @@ public class MainActivity extends Activity {
                 // The command is captured; clear the composer so every action type and
                 // error surface starts from an empty field (send is final regardless of outcome).
                 input.setText("");
+                if (command.equalsIgnoreCase("cancel plan")) {
+                    if (pendingPlan != null) stopPlan("PLAN CANCELLED", true);
+                    else activityText.setText("NO ACTIVE PLAN");
+                    return;
+                }
+                if (command.equalsIgnoreCase("forget context")) {
+                    clearSessionContext();
+                    activityText.setText("CONTEXT CLEARED");
+                    return;
+                }
                 if (pendingPlan != null) {
-                    activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Wait for it to finish before starting a new request.");
+                    activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Type cancel plan to stop it before starting a new request.");
                     return;
                 }
                 ReasoningCoordinator.CoordinationResult coordination =
-                        ReasoningCoordinator.coordinateFull(command, reasoningProvider);
+                        ReasoningCoordinator.coordinateFull(command, reasoningProvider,
+                                sessionContext.snapshot(SystemClock.elapsedRealtime()));
+                sessionContext.remember(command, SystemClock.elapsedRealtime());
+                if (contextExpiry != null) planHandler.removeCallbacks(contextExpiry);
+                contextExpiry = this::clearSessionContext;
+                planHandler.postDelayed(contextExpiry, VisionSessionContext.TTL_MILLIS);
                 if (coordination.plan != null) {
                     startPlan(coordination.plan, input);
                     return;
@@ -469,7 +499,7 @@ public class MainActivity extends Activity {
             pendingCalendarAction = action;
             pendingCalendarCompletion = onComplete;
             activityText.setText("CALENDAR PERMISSION NEEDED\n\nVision needs Calendar permission to read your next appointment.");
-            requestPermissions(new String[]{android.Manifest.permission.READ_CALENDAR}, REQUEST_CODE_READ_CALENDAR);
+            requestActionPermissions(new String[]{android.Manifest.permission.READ_CALENDAR}, REQUEST_CODE_READ_CALENDAR);
             return;
         }
         executeCalendarRead(action, onComplete);
@@ -703,6 +733,7 @@ public class MainActivity extends Activity {
     // ===================== Calendar event creation (Tier CONFIRMED) =====================
 
     private void handleCreateCalendarEventAction(VisionAction action, Runnable onComplete) {
+        final long actionPlanToken = pendingPlan != null ? planToken : 0;
         pendingEventWriteAction = null;
         pendingEventWriteCompletion = null;
         String when = formatEventTimeForDisplay(action.replyText);
@@ -711,12 +742,12 @@ public class MainActivity extends Activity {
                 .setMessage("I am ready to add this event to your calendar:\n\n\""
                         + action.target + "\"\n" + when + "\n\nMay I proceed?")
                 .setNegativeButton("Deny", (d, which) -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nEvent \"" + action.target + "\"\n\nVision stopped this action.");
                 })
                 .setPositiveButton("Create event", (d, which) -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
                     action.state = VisionAction.State.APPROVED;
                     if (checkSelfPermission(android.Manifest.permission.WRITE_CALENDAR)
                             != android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -729,13 +760,14 @@ public class MainActivity extends Activity {
                         pendingEventWriteAction = action;
                         pendingEventWriteCompletion = onComplete;
                         activityText.setText("CALENDAR PERMISSION NEEDED\n\nVision needs Calendar permission to create events.");
-                        requestPermissions(new String[]{android.Manifest.permission.WRITE_CALENDAR,
+                        requestActionPermissions(new String[]{android.Manifest.permission.WRITE_CALENDAR,
                                 android.Manifest.permission.READ_CALENDAR}, REQUEST_CODE_WRITE_CALENDAR);
                         return;
                     }
                     executeCalendarEventInsert(action);
                 })
                 .setOnDismissListener(d -> {
+                    if (actionPlanToken != 0 && (pendingPlan == null || actionPlanToken != planToken)) return;
                     if (activeDialog == d) activeDialog = null;
                     if (action.state == VisionAction.State.PROPOSED) {
                         action.state = VisionAction.State.DENIED;
@@ -836,7 +868,14 @@ public class MainActivity extends Activity {
     // the next; a DENIED or FAILED step halts the plan and remaining steps never run.
 
     private void startPlan(VisionPlan plan, EditText input) {
+        if (pendingPlan != null || plan == null || plan.stepCount() == 0) return;
         pendingPlan = plan;
+        planToken = planLifetime.start(SystemClock.elapsedRealtime());
+        final long token = planToken;
+        planTimeout = () -> {
+            if (pendingPlan != null && token == planToken) stopPlan("PLAN TIMED OUT", true);
+        };
+        planHandler.postDelayed(planTimeout, VisionPlanLifetime.TIMEOUT_MILLIS);
         planStepIndex = 0;
         pendingStepCompletion = null;
         activityText.setText("PLAN STARTED\n\n" + plan.stepCount() + " steps proposed. Step 1 of " + plan.stepCount() + " is starting.");
@@ -845,6 +884,10 @@ public class MainActivity extends Activity {
 
     private void executeNextPlanStep(final EditText input) {
         if (pendingPlan == null) return;
+        if (!planLifetime.isCurrent(planToken, SystemClock.elapsedRealtime())) {
+            stopPlan("PLAN TIMED OUT", true);
+            return;
+        }
         if (planStepIndex >= pendingPlan.stepCount()) {
             finishPlan(input, true);
             return;
@@ -853,7 +896,15 @@ public class MainActivity extends Activity {
         // One-shot latch: dialog buttons and the dismiss listener may both fire completion
         // for the same step; only the first advances the plan.
         final VisionCompletionGate stepGate = new VisionCompletionGate();
-        Runnable advance = () -> stepGate.fireOnce(() -> onPlanStepTerminal(input));
+        final long token = planToken;
+        Runnable advance = () -> stepGate.fireOnce(() -> {
+            if (pendingPlan == null || token != planToken) return;
+            if (!planLifetime.isCurrent(token, SystemClock.elapsedRealtime())) {
+                stopPlan("PLAN TIMED OUT", true);
+                return;
+            }
+            onPlanStepTerminal(input);
+        });
         if (step.type == VisionAction.Type.SHOW_HELP) {
             handleHelpAction(step, advance);
         } else if (step.type == VisionAction.Type.READ_NOTIFICATION) {
@@ -914,15 +965,90 @@ public class MainActivity extends Activity {
         String body = completed
                 ? "All " + total + " steps finished."
                 : succeeded + " of " + total + " steps finished. The remaining steps were not executed.";
-        pendingPlan = null;
-        planStepIndex = 0;
-        pendingStepCompletion = null;
+        clearPlanState();
         if (isFinishing() || isDestroyed()) return;
         activityText.setText(headline + "\n\n" + body);
         if (input != null) {
             input.setText("");
             hideKeyboard(input);
         }
+    }
+
+    private void clearSessionContext() {
+        if (contextExpiry != null) planHandler.removeCallbacks(contextExpiry);
+        contextExpiry = null;
+        sessionContext.clear();
+    }
+
+    private void requestActionPermissions(String[] permissions, int kind) {
+        if (pendingPlan == null) { requestPermissions(permissions, kind); return; }
+        // Each plan permission prompt has a unique ID: a late result cannot resume
+        // the same permission kind in a replacement plan. Never recycle an ID.
+        int code = NEXT_PLAN_PERMISSION_CODE.getAndIncrement();
+        if (code > 65535) { stopPlan("PLAN STOPPED", true); return; }
+        activePlanPermissionKind = kind;
+        activePlanPermissionCode = code;
+        requestPermissions(permissions, activePlanPermissionCode);
+    }
+
+    private boolean mayExecutePendingAction() {
+        return mayExecutePendingAction(pendingPlan != null ? planToken : 0);
+    }
+
+    private boolean mayExecutePendingAction(long token) {
+        if (token != 0 && (pendingPlan == null || token != planToken)) return false;
+        if (pendingPlan == null) return true;
+        if (planLifetime.isCurrent(planToken, SystemClock.elapsedRealtime())) return true;
+        stopPlan("PLAN TIMED OUT", true);
+        return false;
+    }
+
+    private void clearPlanState() {
+        planLifetime.stop();
+        if (planTimeout != null) planHandler.removeCallbacks(planTimeout);
+        planTimeout = null;
+        activePlanPermissionCode = 0;
+        pendingPlan = null;
+        planStepIndex = 0;
+        pendingStepCompletion = null;
+        pendingContactAction = null;
+        pendingCalendarAction = null;
+        pendingCalendarCompletion = null;
+        pendingEventWriteAction = null;
+        pendingEventWriteCompletion = null;
+    }
+
+    private void stopPlan(String headline, boolean report) {
+        if (pendingPlan == null) return;
+        int total = pendingPlan.stepCount();
+        int finished = planStepIndex;
+        VisionAction step = pendingPlan.step(Math.min(planStepIndex, total - 1));
+        if (!VisionPlanExecutor.isStepTerminal(step.state)) step.state = VisionAction.State.DENIED;
+        // Invalidate all callbacks BEFORE dismissal can try to advance the plan.
+        clearPlanState();
+        clearSessionContext();
+        if (activeDialog != null) {
+            AlertDialog dialog = activeDialog;
+            activeDialog = null;
+            dialog.dismiss();
+        }
+        if (report && !isFinishing() && !isDestroyed() && activityText != null) {
+            activityText.setText(headline + "\n\n" + finished + " of " + total
+                    + " steps finished. No remaining steps will run. Already dispatched actions cannot be undone.");
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        stopPlan("PLAN CANCELLED", true);
+        clearSessionContext();
+        super.onStop();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (pendingPlan != null) stopPlan("PLAN CANCELLED", true);
+        else super.onBackPressed();
     }
 
     // Tier CONFIRMED: opening an external composer is not proof that a message was sent.
@@ -943,7 +1069,7 @@ public class MainActivity extends Activity {
             pendingContactAction = action;
             pendingStepCompletion = onComplete;
             activityText.setText("CONTACTS PERMISSION NEEDED\n\nVision needs Contacts permission to resolve \"" + action.target + "\".");
-            requestPermissions(new String[]{android.Manifest.permission.READ_CONTACTS}, REQUEST_CODE_READ_CONTACTS);
+            requestActionPermissions(new String[]{android.Manifest.permission.READ_CONTACTS}, REQUEST_CODE_READ_CONTACTS);
             return;
         }
 
@@ -985,6 +1111,7 @@ public class MainActivity extends Activity {
     }
 
     private void handleExplicitDirectMessageAction(VisionAction action, EditText input, String destDisplay, String targetName, Runnable onComplete) {
+        final long actionPlanToken = pendingPlan != null ? planToken : 0;
         Intent compose = DirectMessageIntentFactory.create(action);
         if (compose == null || compose.resolveActivity(getPackageManager()) == null) {
             action.state = VisionAction.State.FAILED;
@@ -1001,12 +1128,12 @@ public class MainActivity extends Activity {
                 .setTitle("Tony, may I prepare this message?")
                 .setMessage(confirmation)
                 .setNegativeButton("Deny", (d, which) -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nMessage to " + destDisplay + "\n\nVision stopped this action.");
                 })
                 .setPositiveButton("Open composer", (d, which) -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
                     action.state = VisionAction.State.APPROVED;
                     action.state = VisionAction.State.RUNNING;
                     try {
@@ -1024,6 +1151,7 @@ public class MainActivity extends Activity {
                     }
                 })
                 .setOnDismissListener(d -> {
+                    if (actionPlanToken != 0 && (pendingPlan == null || actionPlanToken != planToken)) return;
                     if (activeDialog == d) activeDialog = null;
                     if (action.state == VisionAction.State.PROPOSED) {
                         action.state = VisionAction.State.DENIED;
@@ -1044,6 +1172,14 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode >= 1000) {
+            if (requestCode != activePlanPermissionCode || pendingPlan == null) return;
+            requestCode = activePlanPermissionKind;
+            activePlanPermissionCode = 0;
+        }
+        if (pendingPlan != null && !mayExecutePendingAction()) return;
+        if (pendingContactAction == null && pendingCalendarAction == null
+                && pendingEventWriteAction == null) return;
         if (requestCode == REQUEST_CODE_WRITE_CALENDAR) {
             VisionAction pending = pendingEventWriteAction;
             Runnable completion = pendingEventWriteCompletion;
@@ -1139,6 +1275,7 @@ public class MainActivity extends Activity {
 
     // Tier CONFIRMED: modal Allow/Deny confirmation required before sending replies
     private void handleReplyAction(VisionAction action, String command, EditText input, Runnable onComplete) {
+        final long actionPlanToken = pendingPlan != null ? planToken : 0;
         if (!isNotificationAccessEnabled()) {
             action.state = VisionAction.State.FAILED;
             AlertDialog dialog = new AlertDialog.Builder(this)
@@ -1200,18 +1337,19 @@ public class MainActivity extends Activity {
                 .setTitle(dialogTitle)
                 .setMessage(dialogMessage)
                 .setNegativeButton("Deny", (d, which) -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
                     action.state = VisionAction.State.DENIED;
                     activityText.setText("DENIED\n\nReply to " + destDisplay + "\n\nVision stopped this action.");
                 })
                 .setPositiveButton("Allow", (d, which) -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
                     action.state = VisionAction.State.APPROVED;
                     executeBoundNotificationReply(action, boundCap, destDisplay);
                     input.setText("");
                     hideKeyboard(input);
                 })
                 .setOnDismissListener(d -> {
+                    if (actionPlanToken != 0 && (pendingPlan == null || actionPlanToken != planToken)) return;
                     if (activeDialog == d) {
                         activeDialog = null;
                     }
@@ -1328,7 +1466,7 @@ public class MainActivity extends Activity {
 
     private void onReadNotificationButtonClicked(Runnable onComplete) {
         if (pendingPlan != null) {
-            activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Wait for it to finish before starting a new request.");
+            activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Type cancel plan to stop it before starting a new request.");
             return;
         }
         if (!isNotificationAccessEnabled()) {

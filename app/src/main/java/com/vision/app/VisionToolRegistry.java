@@ -77,7 +77,8 @@ public final class VisionToolRegistry {
 
     public static String helpText() {
         StringBuilder result = new StringBuilder("SUPPORTED COMMANDS\n\nOffline command parsing. Some actions open another app.\n"
-                + "[Confirm] means Vision asks before acting. Permissions may still be needed.\n");
+                + "[Confirm] means Vision asks before acting. Permissions may still be needed.\n"
+                + "Session controls: cancel plan stops remaining steps; forget context clears recent requests.\n");
         for (Tool tool : TOOLS) {
             result.append("\n");
             if (tool.requiresConfirmation()) result.append("[Confirm] ");

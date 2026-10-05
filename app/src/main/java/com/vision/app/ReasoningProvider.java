@@ -13,4 +13,10 @@ public interface ReasoningProvider {
      * Returns null when no proposal is available.
      */
     String propose(String userRequest);
+
+    /** Prior user requests are untrusted hints, never recipients, approval or tool state.
+     * Adapters must still return the same validated four-field proposal contract. */
+    default String propose(String userRequest, java.util.List<String> recentRequests) {
+        return propose(userRequest);
+    }
 }
