@@ -58,7 +58,7 @@ public class VisionSessionUiTest {
         assertFalse(dialog.isShowing()); assertNull(field(a,"pendingPlan"));
         View root=a.getWindow().getDecorView(); root.measure(View.MeasureSpec.makeMeasureSpec(1080,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(1920,View.MeasureSpec.EXACTLY));root.layout(0,0,1080,1920);
         Bitmap bitmap=Bitmap.createBitmap(1080,1920,Bitmap.Config.ARGB_8888);root.draw(new Canvas(bitmap));
-        try(FileOutputStream out=new FileOutputStream("/tmp/vision-cancel-preview.png")){bitmap.compress(Bitmap.CompressFormat.PNG,100,out);}
+        try(FileOutputStream out=new FileOutputStream(new java.io.File(System.getProperty("java.io.tmpdir"), "vision-cancel-preview.png"))){bitmap.compress(Bitmap.CompressFormat.PNG,100,out);}
         c.pause().stop().destroy();
     }
 }
