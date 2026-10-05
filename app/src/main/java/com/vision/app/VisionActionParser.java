@@ -66,6 +66,11 @@ public final class VisionActionParser {
             return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
         }
 
+        Matcher dial = Pattern.compile("^(?:call|dial)\\s+(\\+[0-9]{8,15})$", Pattern.CASE_INSENSITIVE).matcher(trimmed);
+        if (dial.matches()) return new VisionAction(VisionAction.Type.OPEN_DIALER, request, dial.group(1));
+        // Call-like requests that do not match must not fall through into unrelated actions.
+        if (trimmed.matches("(?is)^(?:call|dial)\\b.*")) return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
+
         Matcher directMatcher = DIRECT_MESSAGE_PATTERN.matcher(trimmed);
         if (directMatcher.matches()) {
             String requestedChannel = directMatcher.group(1);
