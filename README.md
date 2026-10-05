@@ -344,3 +344,11 @@ Requires JDK 17, Gradle 8.7, Android SDK platform 34 + build-tools 34.0.0, and a
 ## Resource Guardrails
 
 The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the deterministic integration phase.
+
+## Labeled clock reminder handoff
+
+`remind me Drink Water at 7 pm` asks for confirmation and opens a labeled clock
+alarm UI. This is not an internal dated-reminder scheduler. Dates, relative days,
+recurrence and relative durations are rejected. Check the next occurrence and
+saved alarm in Clock. Vision reports CLOCK OPENED, never that a reminder was saved.
+No new permission or storage. Device/OEM clock behavior needs phone verification.

@@ -14,6 +14,7 @@ public final class VisionAction {
         READ_CALENDAR,
         SET_TIMER,
         SET_ALARM,
+        SET_REMINDER,
         NAVIGATE_TO,
         MEDIA_CONTROL,
         SET_VOLUME,
@@ -112,6 +113,7 @@ public final class VisionAction {
         if (type == Type.READ_TIME) return "Read the current time";
         if (type == Type.READ_CALENDAR) return "Read the next calendar appointment";
         if (type == Type.SET_TIMER) return "Set a timer for " + target;
+        if (type == Type.SET_REMINDER) return "Review reminder in clock app";
         if (type == Type.SET_ALARM) return "Set an alarm";
         if (type == Type.NAVIGATE_TO) return "Navigate to " + target;
         if (type == Type.MEDIA_CONTROL) return "Media: " + target;

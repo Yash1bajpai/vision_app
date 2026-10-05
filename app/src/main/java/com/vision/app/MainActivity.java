@@ -387,6 +387,8 @@ public class MainActivity extends Activity {
                     handleReadCalendarAction(action, null);
                 } else if (action.type == VisionAction.Type.SET_TIMER) {
                     handleSetTimerAction(action, null);
+                } else if (action.type == VisionAction.Type.SET_REMINDER) {
+                    handleReminderAction(action, null);
                 } else if (action.type == VisionAction.Type.SET_ALARM) {
                     handleSetAlarmAction(action, null);
                 } else if (action.type == VisionAction.Type.NAVIGATE_TO) {
@@ -592,6 +594,44 @@ public class MainActivity extends Activity {
             activityText.setText("FAILED\n\nCould not set the timer.");
         }
         if (onComplete != null) onComplete.run();
+    }
+
+    private void handleReminderAction(VisionAction action, Runnable onComplete) {
+        final long token = pendingPlan != null ? planToken : 0;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Review clock reminder?")
+                .setMessage(action.replyText + "\nTime: " + action.target
+                        + "\n\nClock alarm, not a dated reminder. Check the next date and saved alarm in Clock. Saving is not verified.")
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (!mayExecutePendingAction(token)) return;
+                    action.state = VisionAction.State.DENIED;
+                    activityText.setText("DENIED\n\nClock was not opened.");
+                })
+                .setPositiveButton("Open clock", (d, which) -> {
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(token)) return;
+                    try {
+                        Intent intent = ReminderIntentFactory.create(action.target, action.replyText);
+                        if (intent.resolveActivity(getPackageManager()) == null) {
+                            intent.setAction("android.intent.action.SET_ALARM");
+                        }
+                        if (intent.resolveActivity(getPackageManager()) == null) throw new android.content.ActivityNotFoundException();
+                        startActivity(intent);
+                        action.state = VisionAction.State.COMPOSER_OPENED;
+                        activityText.setText("CLOCK OPENED\n\nCheck the date and saved alarm in the clock app. Vision has not verified a reminder was saved.");
+                    } catch (Exception e) {
+                        action.state = VisionAction.State.FAILED;
+                        activityText.setText("FAILED\n\nNo compatible clock was opened.");
+                    }
+                })
+                .setOnDismissListener(d -> {
+                    if (token != 0 && (pendingPlan == null || token != planToken)) return;
+                    if (activeDialog == d) activeDialog = null;
+                    if (action.state == VisionAction.State.PROPOSED) action.state = VisionAction.State.DENIED;
+                    if (onComplete != null) onComplete.run();
+                }).create();
+        showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23,99,74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23,99,74));
     }
 
     private void handleSetAlarmAction(VisionAction action, Runnable onComplete) {
@@ -925,6 +965,8 @@ public class MainActivity extends Activity {
             handleReadCalendarAction(step, advance);
         } else if (step.type == VisionAction.Type.SET_TIMER) {
             handleSetTimerAction(step, advance);
+        } else if (step.type == VisionAction.Type.SET_REMINDER) {
+            handleReminderAction(step, advance);
         } else if (step.type == VisionAction.Type.SET_ALARM) {
             handleSetAlarmAction(step, advance);
         } else if (step.type == VisionAction.Type.NAVIGATE_TO) {

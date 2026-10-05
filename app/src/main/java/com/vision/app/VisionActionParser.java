@@ -66,6 +66,18 @@ public final class VisionActionParser {
             return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
         }
 
+        Matcher reminder = Pattern.compile("^remind me (.{1,70}?) at (\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?$", Pattern.CASE_INSENSITIVE).matcher(trimmed);
+        if (reminder.matches()) {
+            String label = reminder.group(1).trim();
+            String time = extractAlarmTime("alarm at " + reminder.group(2)
+                    + (reminder.group(3) != null ? ":" + reminder.group(3) : "")
+                    + (reminder.group(4) != null ? " " + reminder.group(4) : ""));
+            // Dates, relative days and recurrence require a different reminder implementation.
+            if (time != null && isReminderLabel(label))
+                return new VisionAction(VisionAction.Type.SET_REMINDER, request, time, label);
+        }
+        if (trimmed.matches("(?is)^remind\\b.*")) return new VisionAction(VisionAction.Type.UNKNOWN, request, "");
+
         Matcher directMatcher = DIRECT_MESSAGE_PATTERN.matcher(trimmed);
         if (directMatcher.matches()) {
             String requestedChannel = directMatcher.group(1);
@@ -242,6 +254,12 @@ public final class VisionActionParser {
     // ===================== Daily-driver intent helpers =====================
 
     /** Sums every '&lt;n&gt; &lt;unit&gt;' pair in the phrase; 0 when none is present or a part overflows. */
+    public static boolean isReminderLabel(String label) {
+        return label != null && !label.trim().isEmpty() && label.length() <= 70
+                && !label.matches("(?s).*\\p{Cntrl}.*")
+                && !label.toLowerCase(Locale.US).matches(".*\\b(today|tomorrow|tonight|daily|every|weekly|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b.*");
+    }
+
     private static long parseDurationSeconds(String normalized) {
         long total = 0;
         Matcher m = DURATION_PART_PATTERN.matcher(normalized);

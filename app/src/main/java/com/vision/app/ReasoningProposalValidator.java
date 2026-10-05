@@ -93,6 +93,11 @@ public final class ReasoningProposalValidator {
                 return validateStatusRead(type, target, text, channel);
             case SET_TIMER:
                 return validateTimer(target, text, channel);
+            case SET_REMINDER:
+                if (!target.matches("(?:[01][0-9]|2[0-3]):[0-5][0-9]")) return rejected(RejectionReason.INVALID_TARGET);
+                if (!VisionActionParser.isReminderLabel(text)) return rejected(RejectionReason.INVALID_TEXT);
+                if (!channel.isEmpty()) return rejected(RejectionReason.INVALID_CHANNEL);
+                return accepted(type, target, text, "");
             case SET_ALARM:
                 return validateAlarm(target, text, channel);
             case NAVIGATE_TO:
