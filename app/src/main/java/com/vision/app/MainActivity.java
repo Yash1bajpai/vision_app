@@ -27,6 +27,7 @@ import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.MotionEvent;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
@@ -63,6 +64,11 @@ public class MainActivity extends Activity {
     private static final String STATE_PENDING_EVENT_WRITE_STATE = "pending_event_write_state";
     private static final String STATE_ACTIVITY_TEXT = "activity_text";
 
+    private OfflineVoiceInput voiceInput = new OfflineVoiceInput();
+    private final VisionVoiceSession voiceSession = new VisionVoiceSession();
+    private Button voiceButton;
+    private Runnable voiceTimeout;
+    private static final int REQUEST_CODE_MIC = 104;
     private TextView activityText;
     private TextView statusText;
     private AlertDialog activeDialog;
@@ -209,6 +215,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        cancelVoice();
         stopPlan("PLAN CANCELLED", false);
         clearSessionContext();
         super.onDestroy();
@@ -332,6 +339,7 @@ public class MainActivity extends Activity {
         sendParams.setMargins(dp(4), 0, 0, dp(2));
         composer.addView(send, sendParams);
         send.setOnClickListener(v -> {
+            cancelVoice();
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
                 // The command is captured; clear the composer so every action type and
@@ -405,9 +413,70 @@ public class MainActivity extends Activity {
                 }
             }
         });
+        voiceButton = actionButton("Hold to talk");
+        voiceButton.setTextSize(12);
+        voiceButton.setContentDescription("Hold to talk offline; release for a draft, then tap Send");
+        voiceButton.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) { beginVoice(); return true; }
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                try { voiceInput.stop(); } catch (Exception e) { cancelVoice(); }
+                voiceButton.setText("Hold to talk");v.performClick();return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_CANCEL) { cancelVoice();return true; }
+            return true;
+        });
+        voiceButton.setOnClickListener(v -> { });
+        root.addView(voiceButton, new LinearLayout.LayoutParams(-1, dp(44)));
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    private void beginVoice() {
+        cancelVoice();
+        if (pendingPlan != null || (activeDialog != null && activeDialog.isShowing())) {
+            activityText.setText("VOICE UNAVAILABLE\n\nFinish or cancel the current confirmation or plan first.");return;
+        }
+        if (!voiceInput.available(this)) {
+            activityText.setText("OFFLINE VOICE UNAVAILABLE\n\nAndroid 12+ and an installed on-device speech service are required. Type your request instead. No online fallback is used.");return;
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            activityText.setText("MICROPHONE PERMISSION NEEDED\n\nAllow microphone access, then hold to talk again. Voice only fills a draft.");
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQUEST_CODE_MIC);return;
+        }
+        final long token=voiceSession.start(inputField.getText().toString());
+        voiceButton.setText("Release to finish");
+        activityText.setText("LISTENING OFFLINE\n\nRelease to finish. Review the draft, then tap Send. Voice never submits a command.");
+        voiceTimeout=() -> {
+            cancelVoice();
+            if (activityText!=null) activityText.setText("VOICE TIMED OUT\n\nNo command ran. Try again or type your request.");
+        };planHandler.postDelayed(voiceTimeout,30_000);
+        try {
+            voiceInput.start(this,new OfflineVoiceInput.Callback() {
+                public void result(String text) {
+                    if (isFinishing() || isDestroyed() || inputField==null) return;
+                    boolean accepted=voiceSession.accepts(token,inputField.getText().toString(),text);
+                    if (!accepted) {
+                        if (voiceSession.isCurrent(token)) cancelVoice();
+                        return;
+                    }
+                    cancelVoice();inputField.setText(text.trim());inputField.setSelection(inputField.length());
+                    activityText.setText("VOICE DRAFT READY\n\nCheck the text, then tap Send. Nothing has run.");
+                }
+                public void error() {
+                    if (inputField==null || !voiceSession.isCurrent(token)) return;
+                    cancelVoice();activityText.setText("VOICE STOPPED\n\nNo voice draft was accepted. Try again or type your request.");
+                }
+            });
+        } catch (Exception e) { cancelVoice();activityText.setText("VOICE UNAVAILABLE\n\nCould not start offline recognition. Type your request instead."); }
+    }
+
+    private void cancelVoice() {
+        voiceSession.cancel();
+        if (voiceTimeout!=null) planHandler.removeCallbacks(voiceTimeout);
+        voiceTimeout=null;
+        try { voiceInput.cancel(); } catch (Exception ignored) { }
+        if (voiceButton!=null) voiceButton.setText("Hold to talk");
     }
 
     private void handleHelpAction(VisionAction action, Runnable onComplete) {
@@ -1040,6 +1109,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
+        cancelVoice();
         stopPlan("PLAN CANCELLED", true);
         clearSessionContext();
         super.onStop();
