@@ -474,13 +474,12 @@ public class MainActivity extends Activity {
                     }
                 })
                 .setOnDismissListener(d -> {
-                    if (token != 0 && (pendingPlan == null || token != planToken)) return;
                     if (activeDialog == d) activeDialog = null;
+                    if (token != 0 && (pendingPlan == null || token != planToken)) return;
                     if (action.state == VisionAction.State.PROPOSED) action.state = VisionAction.State.DENIED;
                     if (onComplete != null) onComplete.run();
                 }).create();
-        activeDialog = dialog;
-        dialog.show();
+        showManagedDialog(dialog);
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
         dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }

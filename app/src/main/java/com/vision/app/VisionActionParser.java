@@ -257,13 +257,15 @@ public final class VisionActionParser {
 
     // ===================== Daily-driver intent helpers =====================
 
-    /** Sums every '&lt;n&gt; &lt;unit&gt;' pair in the phrase; 0 when none is present or a part overflows. */
+    /** Valid labeled-clock-reminder text: non-blank, <=70 chars, no control characters and
+     * no date or recurrence words, which need a different reminder implementation. */
     public static boolean isReminderLabel(String label) {
         return label != null && !label.trim().isEmpty() && label.length() <= 70
                 && !label.matches("(?s).*\\p{Cntrl}.*")
                 && !label.toLowerCase(Locale.US).matches(".*\\b(today|tomorrow|tonight|daily|every|weekly|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b.*");
     }
 
+    /** Sums every '&lt;n&gt; &lt;unit&gt;' pair in the phrase; 0 when none is present or a part overflows. */
     private static long parseDurationSeconds(String normalized) {
         long total = 0;
         Matcher m = DURATION_PART_PATTERN.matcher(normalized);
