@@ -81,10 +81,12 @@ public class MainActivity extends Activity {
     private int planStepIndex = 0;
     private final VisionPlanLifetime planLifetime = new VisionPlanLifetime();
     private final VisionSessionContext sessionContext = new VisionSessionContext();
+    private final VisionPreferenceControls preferenceControls = new VisionPreferenceControls();
     private final Handler planHandler = new Handler(Looper.getMainLooper());
     private Runnable planTimeout;
     private long planToken;
     private Runnable contextExpiry;
+    private Runnable preferenceExpiry;
     private static final java.util.concurrent.atomic.AtomicInteger NEXT_PLAN_PERMISSION_CODE =
             new java.util.concurrent.atomic.AtomicInteger(1000);
     private int activePlanPermissionCode;
@@ -218,6 +220,7 @@ public class MainActivity extends Activity {
         cancelVoice();
         stopPlan("PLAN CANCELLED", false);
         clearSessionContext();
+        clearPreferenceMemory();
         super.onDestroy();
         if (activeDialog != null) {
             if (activeDialog.isShowing()) {
@@ -357,6 +360,19 @@ public class MainActivity extends Activity {
                 }
                 if (pendingPlan != null) {
                     activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Type cancel plan to stop it before starting a new request.");
+                    return;
+                }
+                String preferenceResult = preferenceControls.handle(command, SystemClock.elapsedRealtime());
+                if (preferenceResult != null) {
+                    if (preferenceResult.startsWith("PREFERENCE SAVED")) {
+                        if (preferenceExpiry != null) planHandler.removeCallbacks(preferenceExpiry);
+                        preferenceExpiry = () -> {
+                            preferenceControls.expire(SystemClock.elapsedRealtime());
+                            preferenceExpiry = null;
+                        };
+                        planHandler.postDelayed(preferenceExpiry, VisionPreferenceControls.TTL_MILLIS);
+                    }
+                    activityText.setText(preferenceResult);
                     return;
                 }
                 ReasoningCoordinator.CoordinationResult coordination =
@@ -516,6 +532,12 @@ public class MainActivity extends Activity {
         if (voiceButton!=null) voiceButton.setText("Hold to talk");
     }
 
+    private void clearPreferenceMemory() {
+        if (preferenceExpiry != null) planHandler.removeCallbacks(preferenceExpiry);
+        preferenceExpiry = null;
+        preferenceControls.reset();
+    }
+
     private void handleHelpAction(VisionAction action, Runnable onComplete) {
         activityText.setText(VisionToolRegistry.helpText());
         action.state = VisionAction.State.SUCCEEDED;
@@ -540,8 +562,10 @@ public class MainActivity extends Activity {
             boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
                     || status == BatteryManager.BATTERY_STATUS_FULL;
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nBattery is at " + percent + "%"
-                    + (charging ? " and charging." : " and not charging."));
+            activityText.setText(preferenceControls.statusResponse(
+                    "Battery is at " + percent + "%" + (charging ? " and charging." : " and not charging."),
+                    "Battery: " + percent + "% (" + (charging ? "charging" : "not charging") + ").",
+                    SystemClock.elapsedRealtime()));
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the battery status.");
@@ -573,8 +597,10 @@ public class MainActivity extends Activity {
                 }
             }
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nThe device is "
-                    + (online ? "online via " + kind + "." : "offline."));
+            activityText.setText(preferenceControls.statusResponse(
+                    "The device is " + (online ? "online via " + kind + "." : "offline."),
+                    "Network: " + (online ? "online via " + kind + "." : "offline."),
+                    SystemClock.elapsedRealtime()));
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the network status.");
@@ -588,8 +614,10 @@ public class MainActivity extends Activity {
             SimpleDateFormat timeFormat = new SimpleDateFormat("h:mm a", Locale.US);
             Date now = new Date();
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nIt is " + timeFormat.format(now)
-                    + " on " + dayFormat.format(now) + ".");
+            activityText.setText(preferenceControls.statusResponse(
+                    "It is " + timeFormat.format(now) + " on " + dayFormat.format(now) + ".",
+                    "Time: " + timeFormat.format(now) + "; " + dayFormat.format(now) + ".",
+                    SystemClock.elapsedRealtime()));
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the current time.");
@@ -1191,6 +1219,7 @@ public class MainActivity extends Activity {
         cancelVoice();
         stopPlan("PLAN CANCELLED", true);
         clearSessionContext();
+        clearPreferenceMemory();
         super.onStop();
     }
 
