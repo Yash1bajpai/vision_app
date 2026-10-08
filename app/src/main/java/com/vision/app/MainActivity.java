@@ -367,7 +367,9 @@ public class MainActivity extends Activity {
                     activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
                     return;
                 }
-                if (action.type == VisionAction.Type.SHOW_HELP) {
+                if (action.type == VisionAction.Type.OPEN_DIALER) {
+                    handleDialerAction(action, null);
+                } else if (action.type == VisionAction.Type.SHOW_HELP) {
                     handleHelpAction(action, null);
                 } else if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
                     handleReplyAction(action, command, input, null);
@@ -408,6 +410,39 @@ public class MainActivity extends Activity {
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    private void handleDialerAction(VisionAction action, Runnable onComplete) {
+        final long token = pendingPlan != null ? planToken : 0;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Open phone dialer?")
+                .setMessage("Number: " + action.target + "\n\nVision only opens the dialer. You must tap Call in the phone app.")
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (!mayExecutePendingAction(token)) return;
+                    action.state = VisionAction.State.DENIED;
+                    activityText.setText("DENIED\n\nDialer was not opened.");
+                })
+                .setPositiveButton("Open dialer", (d, which) -> {
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(token)) return;
+                    try {
+                        startActivity(DialerIntentFactory.create(action.target));
+                        action.state = VisionAction.State.COMPOSER_OPENED;
+                        activityText.setText("DIALER OPENED\n\nNo call was placed by Vision.");
+                    } catch (Exception e) {
+                        action.state = VisionAction.State.FAILED;
+                        activityText.setText("FAILED\n\nNo compatible dialer was opened.");
+                    }
+                })
+                .setOnDismissListener(d -> {
+                    if (token != 0 && (pendingPlan == null || token != planToken)) return;
+                    if (activeDialog == d) activeDialog = null;
+                    if (action.state == VisionAction.State.PROPOSED) action.state = VisionAction.State.DENIED;
+                    if (onComplete != null) onComplete.run();
+                }).create();
+        activeDialog = dialog;
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }
 
     private void handleHelpAction(VisionAction action, Runnable onComplete) {
@@ -905,7 +940,9 @@ public class MainActivity extends Activity {
             }
             onPlanStepTerminal(input);
         });
-        if (step.type == VisionAction.Type.SHOW_HELP) {
+        if (step.type == VisionAction.Type.OPEN_DIALER) {
+            handleDialerAction(step, advance);
+        } else if (step.type == VisionAction.Type.SHOW_HELP) {
             handleHelpAction(step, advance);
         } else if (step.type == VisionAction.Type.READ_NOTIFICATION) {
             handleReadAction(step, step.request, input, advance);

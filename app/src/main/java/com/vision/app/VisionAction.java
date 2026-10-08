@@ -7,6 +7,7 @@ public final class VisionAction {
         READ_NOTIFICATION,
         REPLY_NOTIFICATION,
         SEND_MESSAGE_DIRECT,
+        OPEN_DIALER,
         OPEN_APP,
         READ_BATTERY,
         READ_NETWORK,
@@ -97,6 +98,7 @@ public final class VisionAction {
     }
 
     public String label() {
+        if (type == Type.OPEN_DIALER) return "Open phone dialer";
         if (type == Type.SHOW_HELP) return "Show supported commands";
         if (type == Type.READ_NOTIFICATION) return "Read the latest supported notification";
         if (type == Type.REPLY_NOTIFICATION) {

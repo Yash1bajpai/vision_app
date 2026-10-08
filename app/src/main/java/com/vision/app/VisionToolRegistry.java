@@ -29,6 +29,8 @@ public final class VisionToolRegistry {
     private static final List<Tool> TOOLS;
     static {
         List<Tool> tools = new ArrayList<>();
+        tools.add(new Tool(VisionAction.Type.OPEN_DIALER,
+                "Open phone dialer", "call +15555550123", "+ followed by 8..15 digits", "empty", "empty", "Confirmation required; final call stays in phone app; no contact lookup"));
         tools.add(new Tool(VisionAction.Type.SHOW_HELP,
                 "Show supported commands", "help", "capabilities", "empty", "empty", "No permission needed"));
         tools.add(new Tool(VisionAction.Type.READ_NOTIFICATION,

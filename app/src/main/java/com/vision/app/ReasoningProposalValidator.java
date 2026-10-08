@@ -82,6 +82,11 @@ public final class ReasoningProposalValidator {
         String text = fields.get("text").trim();
         String channel = fields.get("channel").trim();
         switch (type) {
+            case OPEN_DIALER:
+                if (!target.matches("\\+[0-9]{8,15}")) return rejected(RejectionReason.INVALID_TARGET);
+                if (!text.isEmpty()) return rejected(RejectionReason.INVALID_TEXT);
+                if (!channel.isEmpty()) return rejected(RejectionReason.INVALID_CHANNEL);
+                return accepted(type, target, "", "");
             case SHOW_HELP:
                 return validateStatusRead(type, target, text, channel);
             case READ_NOTIFICATION:

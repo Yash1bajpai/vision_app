@@ -344,3 +344,11 @@ Requires JDK 17, Gradle 8.7, Android SDK platform 34 + build-tools 34.0.0, and a
 ## Resource Guardrails
 
 The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the deterministic integration phase.
+
+## Numeric dialer handoff
+
+`call +15555550123` or `dial +15555550123` asks for confirmation with the exact
+international number, then uses ACTION_DIAL. Vision does not place the call.
+The final Call tap stays in the phone app. No CALL_PHONE permission or contact
+lookup. Short/local numbers, extensions, USSD and trailing instructions fail closed.
+Device/OEM dialer behavior needs phone verification.
