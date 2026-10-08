@@ -27,6 +27,7 @@ import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.MotionEvent;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
@@ -63,6 +64,11 @@ public class MainActivity extends Activity {
     private static final String STATE_PENDING_EVENT_WRITE_STATE = "pending_event_write_state";
     private static final String STATE_ACTIVITY_TEXT = "activity_text";
 
+    private OfflineVoiceInput voiceInput = new OfflineVoiceInput();
+    private final VisionVoiceSession voiceSession = new VisionVoiceSession();
+    private Button voiceButton;
+    private Runnable voiceTimeout;
+    private static final int REQUEST_CODE_MIC = 104;
     private TextView activityText;
     private TextView statusText;
     private AlertDialog activeDialog;
@@ -75,10 +81,12 @@ public class MainActivity extends Activity {
     private int planStepIndex = 0;
     private final VisionPlanLifetime planLifetime = new VisionPlanLifetime();
     private final VisionSessionContext sessionContext = new VisionSessionContext();
+    private final VisionPreferenceControls preferenceControls = new VisionPreferenceControls();
     private final Handler planHandler = new Handler(Looper.getMainLooper());
     private Runnable planTimeout;
     private long planToken;
     private Runnable contextExpiry;
+    private Runnable preferenceExpiry;
     private static final java.util.concurrent.atomic.AtomicInteger NEXT_PLAN_PERMISSION_CODE =
             new java.util.concurrent.atomic.AtomicInteger(1000);
     private int activePlanPermissionCode;
@@ -209,8 +217,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        cancelVoice();
         stopPlan("PLAN CANCELLED", false);
         clearSessionContext();
+        clearPreferenceMemory();
         super.onDestroy();
         if (activeDialog != null) {
             if (activeDialog.isShowing()) {
@@ -332,6 +342,7 @@ public class MainActivity extends Activity {
         sendParams.setMargins(dp(4), 0, 0, dp(2));
         composer.addView(send, sendParams);
         send.setOnClickListener(v -> {
+            cancelVoice();
             String command = input.getText().toString().trim();
             if (!command.isEmpty()) {
                 // The command is captured; clear the composer so every action type and
@@ -351,6 +362,19 @@ public class MainActivity extends Activity {
                     activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Type cancel plan to stop it before starting a new request.");
                     return;
                 }
+                String preferenceResult = preferenceControls.handle(command, SystemClock.elapsedRealtime());
+                if (preferenceResult != null) {
+                    if (preferenceResult.startsWith("PREFERENCE SAVED")) {
+                        if (preferenceExpiry != null) planHandler.removeCallbacks(preferenceExpiry);
+                        preferenceExpiry = () -> {
+                            preferenceControls.expire(SystemClock.elapsedRealtime());
+                            preferenceExpiry = null;
+                        };
+                        planHandler.postDelayed(preferenceExpiry, VisionPreferenceControls.TTL_MILLIS);
+                    }
+                    activityText.setText(preferenceResult);
+                    return;
+                }
                 ReasoningCoordinator.CoordinationResult coordination =
                         ReasoningCoordinator.coordinateFull(command, reasoningProvider,
                                 sessionContext.snapshot(SystemClock.elapsedRealtime()));
@@ -367,7 +391,9 @@ public class MainActivity extends Activity {
                     activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
                     return;
                 }
-                if (action.type == VisionAction.Type.SHOW_HELP) {
+                if (action.type == VisionAction.Type.OPEN_DIALER) {
+                    handleDialerAction(action, null);
+                } else if (action.type == VisionAction.Type.SHOW_HELP) {
                     handleHelpAction(action, null);
                 } else if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
                     handleReplyAction(action, command, input, null);
@@ -387,6 +413,8 @@ public class MainActivity extends Activity {
                     handleReadCalendarAction(action, null);
                 } else if (action.type == VisionAction.Type.SET_TIMER) {
                     handleSetTimerAction(action, null);
+                } else if (action.type == VisionAction.Type.SET_REMINDER) {
+                    handleReminderAction(action, null);
                 } else if (action.type == VisionAction.Type.SET_ALARM) {
                     handleSetAlarmAction(action, null);
                 } else if (action.type == VisionAction.Type.NAVIGATE_TO) {
@@ -405,9 +433,108 @@ public class MainActivity extends Activity {
                 }
             }
         });
+        voiceButton = actionButton("Hold to talk");
+        voiceButton.setTextSize(12);
+        voiceButton.setContentDescription("Hold to talk offline; release for a draft, then tap Send");
+        voiceButton.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) { beginVoice(); return true; }
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                try { voiceInput.stop(); } catch (Exception e) { cancelVoice(); }
+                voiceButton.setText("Hold to talk");v.performClick();return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_CANCEL) { cancelVoice();return true; }
+            return true;
+        });
+        voiceButton.setOnClickListener(v -> { });
+        root.addView(voiceButton, new LinearLayout.LayoutParams(-1, dp(44)));
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    private void handleDialerAction(VisionAction action, Runnable onComplete) {
+        final long token = pendingPlan != null ? planToken : 0;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Open phone dialer?")
+                .setMessage("Number: " + action.target + "\n\nVision only opens the dialer. You must tap Call in the phone app.")
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (!mayExecutePendingAction(token)) return;
+                    action.state = VisionAction.State.DENIED;
+                    activityText.setText("DENIED\n\nDialer was not opened.");
+                })
+                .setPositiveButton("Open dialer", (d, which) -> {
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(token)) return;
+                    try {
+                        startActivity(DialerIntentFactory.create(action.target));
+                        action.state = VisionAction.State.COMPOSER_OPENED;
+                        activityText.setText("DIALER OPENED\n\nNo call was placed by Vision.");
+                    } catch (Exception e) {
+                        action.state = VisionAction.State.FAILED;
+                        activityText.setText("FAILED\n\nNo compatible dialer was opened.");
+                    }
+                })
+                .setOnDismissListener(d -> {
+                    if (activeDialog == d) activeDialog = null;
+                    if (token != 0 && (pendingPlan == null || token != planToken)) return;
+                    if (action.state == VisionAction.State.PROPOSED) action.state = VisionAction.State.DENIED;
+                    if (onComplete != null) onComplete.run();
+                }).create();
+        showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
+    }
+
+    private void beginVoice() {
+        cancelVoice();
+        if (pendingPlan != null || (activeDialog != null && activeDialog.isShowing())) {
+            activityText.setText("VOICE UNAVAILABLE\n\nFinish or cancel the current confirmation or plan first.");return;
+        }
+        if (!voiceInput.available(this)) {
+            activityText.setText("OFFLINE VOICE UNAVAILABLE\n\nAndroid 12+ and an installed on-device speech service are required. Type your request instead. No online fallback is used.");return;
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            activityText.setText("MICROPHONE PERMISSION NEEDED\n\nAllow microphone access, then hold to talk again. Voice only fills a draft.");
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQUEST_CODE_MIC);return;
+        }
+        final long token=voiceSession.start(inputField.getText().toString());
+        voiceButton.setText("Release to finish");
+        activityText.setText("LISTENING OFFLINE\n\nRelease to finish. Review the draft, then tap Send. Voice never submits a command.");
+        voiceTimeout=() -> {
+            cancelVoice();
+            if (activityText!=null) activityText.setText("VOICE TIMED OUT\n\nNo command ran. Try again or type your request.");
+        };planHandler.postDelayed(voiceTimeout,30_000);
+        try {
+            voiceInput.start(this,new OfflineVoiceInput.Callback() {
+                public void result(String text) {
+                    if (isFinishing() || isDestroyed() || inputField==null) return;
+                    boolean accepted=voiceSession.accepts(token,inputField.getText().toString(),text);
+                    if (!accepted) {
+                        if (voiceSession.isCurrent(token)) cancelVoice();
+                        return;
+                    }
+                    cancelVoice();inputField.setText(text.trim());inputField.setSelection(inputField.length());
+                    activityText.setText("VOICE DRAFT READY\n\nCheck the text, then tap Send. Nothing has run.");
+                }
+                public void error() {
+                    if (inputField==null || !voiceSession.isCurrent(token)) return;
+                    cancelVoice();activityText.setText("VOICE STOPPED\n\nNo voice draft was accepted. Try again or type your request.");
+                }
+            });
+        } catch (Exception e) { cancelVoice();activityText.setText("VOICE UNAVAILABLE\n\nCould not start offline recognition. Type your request instead."); }
+    }
+
+    private void cancelVoice() {
+        voiceSession.cancel();
+        if (voiceTimeout!=null) planHandler.removeCallbacks(voiceTimeout);
+        voiceTimeout=null;
+        try { voiceInput.cancel(); } catch (Exception ignored) { }
+        if (voiceButton!=null) voiceButton.setText("Hold to talk");
+    }
+
+    private void clearPreferenceMemory() {
+        if (preferenceExpiry != null) planHandler.removeCallbacks(preferenceExpiry);
+        preferenceExpiry = null;
+        preferenceControls.reset();
     }
 
     private void handleHelpAction(VisionAction action, Runnable onComplete) {
@@ -434,8 +561,10 @@ public class MainActivity extends Activity {
             boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
                     || status == BatteryManager.BATTERY_STATUS_FULL;
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nBattery is at " + percent + "%"
-                    + (charging ? " and charging." : " and not charging."));
+            activityText.setText(preferenceControls.statusResponse(
+                    "Battery is at " + percent + "%" + (charging ? " and charging." : " and not charging."),
+                    "Battery: " + percent + "% (" + (charging ? "charging" : "not charging") + ").",
+                    SystemClock.elapsedRealtime()));
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the battery status.");
@@ -467,8 +596,10 @@ public class MainActivity extends Activity {
                 }
             }
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nThe device is "
-                    + (online ? "online via " + kind + "." : "offline."));
+            activityText.setText(preferenceControls.statusResponse(
+                    "The device is " + (online ? "online via " + kind + "." : "offline."),
+                    "Network: " + (online ? "online via " + kind + "." : "offline."),
+                    SystemClock.elapsedRealtime()));
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the network status.");
@@ -482,8 +613,10 @@ public class MainActivity extends Activity {
             SimpleDateFormat timeFormat = new SimpleDateFormat("h:mm a", Locale.US);
             Date now = new Date();
             action.state = VisionAction.State.SUCCEEDED;
-            activityText.setText("SUCCEEDED\n\nIt is " + timeFormat.format(now)
-                    + " on " + dayFormat.format(now) + ".");
+            activityText.setText(preferenceControls.statusResponse(
+                    "It is " + timeFormat.format(now) + " on " + dayFormat.format(now) + ".",
+                    "Time: " + timeFormat.format(now) + "; " + dayFormat.format(now) + ".",
+                    SystemClock.elapsedRealtime()));
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the current time.");
@@ -592,6 +725,44 @@ public class MainActivity extends Activity {
             activityText.setText("FAILED\n\nCould not set the timer.");
         }
         if (onComplete != null) onComplete.run();
+    }
+
+    private void handleReminderAction(VisionAction action, Runnable onComplete) {
+        final long token = pendingPlan != null ? planToken : 0;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Review clock reminder?")
+                .setMessage(action.replyText + "\nTime: " + action.target
+                        + "\n\nClock alarm, not a dated reminder. Check the next date and saved alarm in Clock. Saving is not verified.")
+                .setNegativeButton("Deny", (d, which) -> {
+                    if (!mayExecutePendingAction(token)) return;
+                    action.state = VisionAction.State.DENIED;
+                    activityText.setText("DENIED\n\nClock was not opened.");
+                })
+                .setPositiveButton("Open clock", (d, which) -> {
+                    if (isFinishing() || isDestroyed() || !mayExecutePendingAction(token)) return;
+                    try {
+                        Intent intent = ReminderIntentFactory.create(action.target, action.replyText);
+                        if (intent.resolveActivity(getPackageManager()) == null) {
+                            intent.setAction("android.intent.action.SET_ALARM");
+                        }
+                        if (intent.resolveActivity(getPackageManager()) == null) throw new android.content.ActivityNotFoundException();
+                        startActivity(intent);
+                        action.state = VisionAction.State.COMPOSER_OPENED;
+                        activityText.setText("CLOCK OPENED\n\nCheck the date and saved alarm in the clock app. Vision has not verified a reminder was saved.");
+                    } catch (Exception e) {
+                        action.state = VisionAction.State.FAILED;
+                        activityText.setText("FAILED\n\nNo compatible clock was opened.");
+                    }
+                })
+                .setOnDismissListener(d -> {
+                    if (token != 0 && (pendingPlan == null || token != planToken)) return;
+                    if (activeDialog == d) activeDialog = null;
+                    if (action.state == VisionAction.State.PROPOSED) action.state = VisionAction.State.DENIED;
+                    if (onComplete != null) onComplete.run();
+                }).create();
+        showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23,99,74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23,99,74));
     }
 
     private void handleSetAlarmAction(VisionAction action, Runnable onComplete) {
@@ -905,7 +1076,9 @@ public class MainActivity extends Activity {
             }
             onPlanStepTerminal(input);
         });
-        if (step.type == VisionAction.Type.SHOW_HELP) {
+        if (step.type == VisionAction.Type.OPEN_DIALER) {
+            handleDialerAction(step, advance);
+        } else if (step.type == VisionAction.Type.SHOW_HELP) {
             handleHelpAction(step, advance);
         } else if (step.type == VisionAction.Type.READ_NOTIFICATION) {
             handleReadAction(step, step.request, input, advance);
@@ -925,6 +1098,8 @@ public class MainActivity extends Activity {
             handleReadCalendarAction(step, advance);
         } else if (step.type == VisionAction.Type.SET_TIMER) {
             handleSetTimerAction(step, advance);
+        } else if (step.type == VisionAction.Type.SET_REMINDER) {
+            handleReminderAction(step, advance);
         } else if (step.type == VisionAction.Type.SET_ALARM) {
             handleSetAlarmAction(step, advance);
         } else if (step.type == VisionAction.Type.NAVIGATE_TO) {
@@ -1040,8 +1215,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
+        cancelVoice();
         stopPlan("PLAN CANCELLED", true);
         clearSessionContext();
+        clearPreferenceMemory();
         super.onStop();
     }
 

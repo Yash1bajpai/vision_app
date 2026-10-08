@@ -344,3 +344,41 @@ Requires JDK 17, Gradle 8.7, Android SDK platform 34 + build-tools 34.0.0, and a
 ## Resource Guardrails
 
 The project is configured for a low-memory development device: one Gradle worker, no parallel execution, no daemon, and a 512 MB Gradle heap. Vision does not load or benchmark any language model during the deterministic integration phase.
+
+## Numeric dialer handoff
+
+`call +15555550123` or `dial +15555550123` asks for confirmation with the exact
+international number, then uses ACTION_DIAL. Vision does not place the call.
+The final Call tap stays in the phone app. No CALL_PHONE permission or contact
+lookup. Short/local numbers, extensions, USSD and trailing instructions fail closed.
+Device/OEM dialer behavior needs phone verification.
+
+## Labeled clock reminder handoff
+
+`remind me Drink Water at 7 pm` asks for confirmation and opens a labeled clock
+alarm UI. This is not an internal dated-reminder scheduler. Dates, relative days,
+recurrence and relative durations are rejected. Check the next occurrence and
+saved alarm in Clock. Vision reports CLOCK OPENED, never that a reminder was saved.
+No new permission or storage. Device/OEM clock behavior needs phone verification.
+
+## Local preparation: offline push-to-talk
+
+Hold to talk starts only Android 12+ on-device speech recognition, when the
+installed device speech service reports local recognition available. Release asks
+it to finish. No network recognizer or external voice activity fallback is used.
+This adds RECORD_AUDIO permission and asks for it only on the first voice attempt;
+after permission approval the user must hold again. Older Android or missing local
+speech support keeps typed input available.
+
+Voice fills a draft only. It never taps Send, runs a tool or approves a confirmation.
+The user checks the text and taps Send. Backgrounding, destruction, manual Send,
+replacement recording or 30-second timeout cancels recognition. Late results and
+results after manual draft edits cannot replace the draft. No audio/text persistence
+is added by Vision. Device speech-service behavior is outside this app's control.
+
+Local Linux verification, 2026-10-05: 119 JVM tests pass, debug and androidTest
+APKs build, lint 0 errors / 62 warnings. UI and generation-bound draft behavior
+are covered with a fake voice backend; native Android pixels were inspected.
+Actual microphone audio, on-device speech model availability, recognition accuracy,
+permission dialogs and OEM lifecycle need phone verification. Windows CI has not
+run for this local branch. Not pushed or merged.
