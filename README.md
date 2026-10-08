@@ -1,3 +1,39 @@
+# Vision
+
+Offline-first Android assistant with deterministic commands, per-action confirmation
+and no disk persistence. Production still uses `NoOpReasoningProvider`: no live
+language model is connected. Model integration remains paused.
+
+## Current main status (2026-10-08)
+
+Main `1447ea0` integrates the four feature branches from PRs #6-#9, including
+the follow-up dialog/comment fix:
+
+- Numeric dialer handoff: confirmation opens the dialer, never places a call.
+- Labeled reminder handoff: confirmation opens Clock; the user checks and saves
+  the alarm there. No internal dated-reminder scheduler.
+- Offline push-to-talk: on-device recognition fills a draft for review, never
+  sends or runs an action. Adds `RECORD_AUDIO`; no online recognizer fallback.
+- Opt-in session preferences: `response_style` affects successful battery,
+  network and time wording only. Off by default, 60-second expiry, no disk
+  storage or encryption. See [preference controls](docs/PREFERENCE_CONTROLS_DRAFT.md).
+
+**Verification boundaries:** GitHub Actions on this main commit passed the JVM
+suite, debug and androidTest APK builds, and lint on Linux and Windows. CI does
+not run a phone or emulator. The maintainer's merge record reports 148/148 JVM
+tests, lint 0 errors/58 warnings, 5/5 on-device instrumentation tests and phone
+smoke checks for all four features (dialer Allow/Deny, reminder prefill,
+push-to-talk listening/stop, preference save/concise/expiry/reset). The reported
+phone checks have not been independently rerun for this documentation update.
+
+Still to check on a real phone: an incoming third-party notification reply,
+Deny/stale-reply/timeout behavior, broader microphone permission and OEM lifecycle
+cases, speech accuracy/model availability, and font scaling. Opening the dialer,
+Clock or a composer does not prove a call, saved alarm or delivered message.
+
+The sections below retain dated verification records for earlier batches; their
+test totals describe those snapshots, not the current total.
+
 ## Plan lifetime and short-lived context
 
 Adds bounded plan lifetime and volatile request context.
@@ -78,19 +114,19 @@ gradle -Pandroid.aapt2FromMavenOverride="$ANDROID_HOME/build-tools/34.0.0/aapt2"
 
 The historical release notes below describe earlier releases.
 
-# Vision
+## Historical release architecture
 
 Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
 
 > **Note on Assistant Intelligence Runtime:**
-> **Current release: `v0.12.0`** — Phase 11 added device-status reads (battery, network, time, calendar) and Phase 12 added daily-driver intents (timers, alarms, navigation, media, volume, torch, calendar events); the full phase-by-phase record is in `PROJECT_REPORT.md`.
+> **Historical release baseline: `v0.12.0`** - Phase 11 added device-status reads (battery, network, time, calendar) and Phase 12 added daily-driver intents (timers, alarms, navigation, media, volume, torch, calendar events); the full phase-by-phase record is in `PROJECT_REPORT.md`.
 > Local models, on-device LLM runtimes, network AI, embeddings, and unconstrained action generators are explicitly **excluded and deferred** from this release. Phase 10 adds only trusted-boundary plumbing for a future model — bounded multi-step plan proposals on top of the Phase 9 single-proposal boundary (grammar + validation + sequential per-action execution policy only; still no model, no network, no embeddings). Phase 9 added the `ReasoningProvider` interface plus strict fail-closed proposal validation. Phase 8 adds safe, deterministic in-memory contact name resolution and permission lifecycle recovery for confirmed external-composer handoffs while maintaining strict zero-disk persistence and confirmation safety.
 
 ---
 
 ## Trusted Plan Boundary: Bounded Multi-Step Plans (Phase 10, still the live boundary in v0.12.0)
 
-Phase 10 extends the trusted proposal boundary from a single action to a bounded plan, following the same fail-closed philosophy. Production behavior is **identical to v0.9.3** (the `NoOpReasoningProvider` never proposes anything); the plan path exists only for a future model and is fully covered by tests.
+Phase 10 extends the trusted proposal boundary from a single action to a bounded plan, following the same fail-closed philosophy. Production reasoning remains disabled (the `NoOpReasoningProvider` never proposes anything); the plan path exists only for a future model and is fully covered by tests.
 
 ### 1. Plan Grammar (`StrictJson.parseArray`)
 Providers may return a single flat JSON object (Phase 9 single action) or a single JSON array of flat string-only objects (Phase 10 plan). The array grammar inherits every strictness rule: string-only flat elements, at most 16 keys per element, at most 8 elements, 8192-character cap, duplicate keys, trailing garbage, nesting, and non-string values all rejected. Fail-closed: any violation returns `null`.
@@ -351,7 +387,8 @@ The project is configured for a low-memory development device: one Gradle worker
 international number, then uses ACTION_DIAL. Vision does not place the call.
 The final Call tap stays in the phone app. No CALL_PHONE permission or contact
 lookup. Short/local numbers, extensions, USSD and trailing instructions fail closed.
-Device/OEM dialer behavior needs phone verification.
+The maintainer reports dialer Allow/Deny smoke checks on the merged tree;
+broader device/OEM behavior still needs checking.
 
 ## Labeled clock reminder handoff
 
@@ -359,9 +396,11 @@ Device/OEM dialer behavior needs phone verification.
 alarm UI. This is not an internal dated-reminder scheduler. Dates, relative days,
 recurrence and relative durations are rejected. Check the next occurrence and
 saved alarm in Clock. Vision reports CLOCK OPENED, never that a reminder was saved.
-No new permission or storage. Device/OEM clock behavior needs phone verification.
+No new permission or storage. The maintainer reports reminder-prefill smoke
+checks on the merged tree; final alarm saving and broader OEM behavior remain
+user-verified in Clock.
 
-## Local preparation: offline push-to-talk
+## Merged: offline push-to-talk
 
 Hold to talk starts only Android 12+ on-device speech recognition, when the
 installed device speech service reports local recognition available. Release asks
@@ -376,9 +415,8 @@ replacement recording or 30-second timeout cancels recognition. Late results and
 results after manual draft edits cannot replace the draft. No audio/text persistence
 is added by Vision. Device speech-service behavior is outside this app's control.
 
-Local Linux verification, 2026-10-05: 119 JVM tests pass, debug and androidTest
-APKs build, lint 0 errors / 62 warnings. UI and generation-bound draft behavior
-are covered with a fake voice backend; native Android pixels were inspected.
-Actual microphone audio, on-device speech model availability, recognition accuracy,
-permission dialogs and OEM lifecycle need phone verification. Windows CI has not
-run for this local branch. Not pushed or merged.
+Merged into main `1447ea0` on 2026-10-08. Linux and Windows Android checks
+passed on the merged tree; see the current status above. The maintainer reports
+push-to-talk listening/stop smoke checks. Automated voice tests use a fake backend
+and do not prove microphone accuracy, local speech model availability or every
+permission/OEM lifecycle case. These broader checks remain open.
