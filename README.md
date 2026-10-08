@@ -360,3 +360,25 @@ alarm UI. This is not an internal dated-reminder scheduler. Dates, relative days
 recurrence and relative durations are rejected. Check the next occurrence and
 saved alarm in Clock. Vision reports CLOCK OPENED, never that a reminder was saved.
 No new permission or storage. Device/OEM clock behavior needs phone verification.
+
+## Local preparation: offline push-to-talk
+
+Hold to talk starts only Android 12+ on-device speech recognition, when the
+installed device speech service reports local recognition available. Release asks
+it to finish. No network recognizer or external voice activity fallback is used.
+This adds RECORD_AUDIO permission and asks for it only on the first voice attempt;
+after permission approval the user must hold again. Older Android or missing local
+speech support keeps typed input available.
+
+Voice fills a draft only. It never taps Send, runs a tool or approves a confirmation.
+The user checks the text and taps Send. Backgrounding, destruction, manual Send,
+replacement recording or 30-second timeout cancels recognition. Late results and
+results after manual draft edits cannot replace the draft. No audio/text persistence
+is added by Vision. Device speech-service behavior is outside this app's control.
+
+Local Linux verification, 2026-10-05: 119 JVM tests pass, debug and androidTest
+APKs build, lint 0 errors / 62 warnings. UI and generation-bound draft behavior
+are covered with a fake voice backend; native Android pixels were inspected.
+Actual microphone audio, on-device speech model availability, recognition accuracy,
+permission dialogs and OEM lifecycle need phone verification. Windows CI has not
+run for this local branch. Not pushed or merged.
