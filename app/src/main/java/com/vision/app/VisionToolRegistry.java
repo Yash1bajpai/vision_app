@@ -51,6 +51,8 @@ public final class VisionToolRegistry {
                 "Read next appointment", "show my calendar", "calendar", "empty", "empty", "Calendar read permission needed"));
         tools.add(new Tool(VisionAction.Type.SET_TIMER,
                 "Open clock timer", "set timer for 5 minutes", "1s..24h canonical duration", "empty", "empty", "Clock app needed; final clock state not verified"));
+        tools.add(new Tool(VisionAction.Type.SET_REMINDER,
+                "Review a labeled clock reminder", "remind me drink water at 7 pm", "HH:mm", "label, up to 70 chars; no dates/recurrence", "empty", "Confirmation then clock UI; date and final saved alarm must be checked there"));
         tools.add(new Tool(VisionAction.Type.SET_ALARM,
                 "Open clock alarm", "set alarm for 7 am", "HH:mm", "empty", "empty", "Clock app needed; final clock state not verified"));
         tools.add(new Tool(VisionAction.Type.NAVIGATE_TO,

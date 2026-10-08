@@ -352,3 +352,11 @@ international number, then uses ACTION_DIAL. Vision does not place the call.
 The final Call tap stays in the phone app. No CALL_PHONE permission or contact
 lookup. Short/local numbers, extensions, USSD and trailing instructions fail closed.
 Device/OEM dialer behavior needs phone verification.
+
+## Labeled clock reminder handoff
+
+`remind me Drink Water at 7 pm` asks for confirmation and opens a labeled clock
+alarm UI. This is not an internal dated-reminder scheduler. Dates, relative days,
+recurrence and relative durations are rejected. Check the next occurrence and
+saved alarm in Clock. Vision reports CLOCK OPENED, never that a reminder was saved.
+No new permission or storage. Device/OEM clock behavior needs phone verification.
