@@ -74,7 +74,11 @@ public class MainActivity extends Activity {
     private AlertDialog activeDialog;
     private VisionAction pendingContactAction;
     private EditText inputField;
-    private final ReasoningProvider reasoningProvider = new NoOpReasoningProvider();
+    // Deterministic parsing always runs synchronously with the no-op provider; model routes
+    // run only through the cancellable runner and their output is re-validated.
+    private final ProviderSelector providerSelector = new ProviderSelector();
+    private final AsyncReasoningRunner providerRunner = new AsyncReasoningRunner(15_000L, 500, 4_000);
+    private long providerRequestId;
 
     // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
     private VisionPlan pendingPlan;
@@ -218,6 +222,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         cancelVoice();
+        cancelProviderRequest();
+        providerRunner.shutdown();
         stopPlan("PLAN CANCELLED", false);
         clearSessionContext();
         clearPreferenceMemory();
@@ -353,6 +359,18 @@ public class MainActivity extends Activity {
                     else activityText.setText("NO ACTIVE PLAN");
                     return;
                 }
+                if (command.equalsIgnoreCase("cancel request")) {
+                    boolean active = providerRequestId != 0;
+                    cancelProviderRequest();
+                    activityText.setText(active ? "REQUEST CANCELLED" : "NO ACTIVE REQUEST");
+                    return;
+                }
+                cancelProviderRequest();
+                String providerResult = ProviderCommands.handle(command, providerSelector);
+                if (providerResult != null) {
+                    activityText.setText(providerResult);
+                    return;
+                }
                 if (command.equalsIgnoreCase("forget context")) {
                     clearSessionContext();
                     activityText.setText("CONTEXT CLEARED");
@@ -375,62 +393,20 @@ public class MainActivity extends Activity {
                     activityText.setText(preferenceResult);
                     return;
                 }
-                ReasoningCoordinator.CoordinationResult coordination =
-                        ReasoningCoordinator.coordinateFull(command, reasoningProvider,
-                                sessionContext.snapshot(SystemClock.elapsedRealtime()));
+                java.util.List<String> hints = sessionContext.snapshot(SystemClock.elapsedRealtime());
+                boolean modelRoute = providerSelector.mode() != ProviderMode.DETERMINISTIC_ONLY
+                        && VisionActionParser.parse(command).type == VisionAction.Type.UNKNOWN;
                 sessionContext.remember(command, SystemClock.elapsedRealtime());
                 if (contextExpiry != null) planHandler.removeCallbacks(contextExpiry);
                 contextExpiry = this::clearSessionContext;
                 planHandler.postDelayed(contextExpiry, VisionSessionContext.TTL_MILLIS);
-                if (coordination.plan != null) {
-                    startPlan(coordination.plan, input);
+                if (modelRoute) {
+                    startProviderRequest(command, input, hints);
                     return;
                 }
-                VisionAction action = coordination.action;
-                if (action.type == VisionAction.Type.UNKNOWN) {
-                    activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
-                    return;
-                }
-                if (action.type == VisionAction.Type.OPEN_DIALER) {
-                    handleDialerAction(action, null);
-                } else if (action.type == VisionAction.Type.SHOW_HELP) {
-                    handleHelpAction(action, null);
-                } else if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
-                    handleReplyAction(action, command, input, null);
-                } else if (action.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
-                    handleDirectMessageAction(action, input, null);
-                } else if (action.type == VisionAction.Type.READ_NOTIFICATION) {
-                    handleReadAction(action, command, input, null);
-                } else if (action.type == VisionAction.Type.OPEN_APP) {
-                    handleOpenAppAction(action, command, input, null);
-                } else if (action.type == VisionAction.Type.READ_BATTERY) {
-                    handleReadBatteryAction(action, null);
-                } else if (action.type == VisionAction.Type.READ_NETWORK) {
-                    handleReadNetworkAction(action, null);
-                } else if (action.type == VisionAction.Type.READ_TIME) {
-                    handleReadTimeAction(action, null);
-                } else if (action.type == VisionAction.Type.READ_CALENDAR) {
-                    handleReadCalendarAction(action, null);
-                } else if (action.type == VisionAction.Type.SET_TIMER) {
-                    handleSetTimerAction(action, null);
-                } else if (action.type == VisionAction.Type.SET_REMINDER) {
-                    handleReminderAction(action, null);
-                } else if (action.type == VisionAction.Type.SET_ALARM) {
-                    handleSetAlarmAction(action, null);
-                } else if (action.type == VisionAction.Type.NAVIGATE_TO) {
-                    handleNavigateAction(action, null);
-                } else if (action.type == VisionAction.Type.MEDIA_CONTROL) {
-                    handleMediaControlAction(action, null);
-                } else if (action.type == VisionAction.Type.SET_VOLUME) {
-                    handleSetVolumeAction(action, null);
-                } else if (action.type == VisionAction.Type.TOGGLE_TORCH) {
-                    handleToggleTorchAction(action, null);
-                } else if (action.type == VisionAction.Type.CREATE_CALENDAR_EVENT) {
-                    handleCreateCalendarEventAction(action, null);
-                } else {
-                    action.state = VisionAction.State.FAILED;
-                    activityText.setText("FAILED\n\nVision could not process this request.");
-                }
+                ReasoningCoordinator.CoordinationResult coordination =
+                        ReasoningCoordinator.coordinateFull(command, new NoOpReasoningProvider(), hints);
+                dispatchCoordination(command, input, coordination);
             }
         });
         voiceButton = actionButton("Hold to talk");
@@ -1213,9 +1189,97 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void dispatchCoordination(String command, EditText input,
+                                      ReasoningCoordinator.CoordinationResult coordination) {
+        if (coordination.plan != null) {
+            startPlan(coordination.plan, input);
+            return;
+        }
+        VisionAction action = coordination.action;
+        if (action.type == VisionAction.Type.UNKNOWN) {
+            activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
+            return;
+        }
+        if (action.type == VisionAction.Type.OPEN_DIALER) {
+            handleDialerAction(action, null);
+        } else if (action.type == VisionAction.Type.SHOW_HELP) {
+            handleHelpAction(action, null);
+        } else if (action.type == VisionAction.Type.REPLY_NOTIFICATION) {
+            handleReplyAction(action, command, input, null);
+        } else if (action.type == VisionAction.Type.SEND_MESSAGE_DIRECT) {
+            handleDirectMessageAction(action, input, null);
+        } else if (action.type == VisionAction.Type.READ_NOTIFICATION) {
+            handleReadAction(action, command, input, null);
+        } else if (action.type == VisionAction.Type.OPEN_APP) {
+            handleOpenAppAction(action, command, input, null);
+        } else if (action.type == VisionAction.Type.READ_BATTERY) {
+            handleReadBatteryAction(action, null);
+        } else if (action.type == VisionAction.Type.READ_NETWORK) {
+            handleReadNetworkAction(action, null);
+        } else if (action.type == VisionAction.Type.READ_TIME) {
+            handleReadTimeAction(action, null);
+        } else if (action.type == VisionAction.Type.READ_CALENDAR) {
+            handleReadCalendarAction(action, null);
+        } else if (action.type == VisionAction.Type.SET_TIMER) {
+            handleSetTimerAction(action, null);
+        } else if (action.type == VisionAction.Type.SET_REMINDER) {
+            handleReminderAction(action, null);
+        } else if (action.type == VisionAction.Type.SET_ALARM) {
+            handleSetAlarmAction(action, null);
+        } else if (action.type == VisionAction.Type.NAVIGATE_TO) {
+            handleNavigateAction(action, null);
+        } else if (action.type == VisionAction.Type.MEDIA_CONTROL) {
+            handleMediaControlAction(action, null);
+        } else if (action.type == VisionAction.Type.SET_VOLUME) {
+            handleSetVolumeAction(action, null);
+        } else if (action.type == VisionAction.Type.TOGGLE_TORCH) {
+            handleToggleTorchAction(action, null);
+        } else if (action.type == VisionAction.Type.CREATE_CALENDAR_EVENT) {
+            handleCreateCalendarEventAction(action, null);
+        } else {
+            action.state = VisionAction.State.FAILED;
+            activityText.setText("FAILED\n\nVision could not process this request.");
+        }
+    }
+
+    private void startProviderRequest(String command, EditText input, java.util.List<String> hints) {
+        activityText.setText("THINKING\n\nWaiting for the selected model. Type cancel request to stop. Nothing runs without your confirmation.");
+        providerRequestId = providerRunner.submit(providerSelector.active(), command, hints,
+                (requestId, outcome) -> planHandler.post(() -> onProviderOutcome(requestId, outcome, command, input)));
+    }
+
+    private void cancelProviderRequest() {
+        providerRequestId = 0;
+        providerRunner.cancel();
+    }
+
+    private void onProviderOutcome(long requestId, ProviderOutcome outcome, String command, EditText input) {
+        if (requestId != providerRequestId || isFinishing() || isDestroyed()) {
+            return; // cancelled, superseded or screen gone: discard
+        }
+        providerRequestId = 0;
+        if (outcome.status == ProviderOutcome.Status.PROPOSAL) {
+            final String raw = outcome.raw;
+            ReasoningCoordinator.CoordinationResult coordination = ReasoningCoordinator.coordinateFull(
+                    command, new ReasoningProvider() {
+                        @Override public String propose(String userRequest) { return raw; }
+                    }, java.util.Collections.emptyList());
+            dispatchCoordination(command, input, coordination);
+        } else if (outcome.status == ProviderOutcome.Status.NO_PROPOSAL) {
+            activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
+        } else if (outcome.status == ProviderOutcome.Status.TIMED_OUT) {
+            activityText.setText("MODEL TIMED OUT\n\nVision did not perform anything. No retry was made.");
+        } else if (outcome.status == ProviderOutcome.Status.CANCELLED) {
+            activityText.setText("REQUEST CANCELLED\n\nVision did not perform anything.");
+        } else {
+            activityText.setText("MODEL UNAVAILABLE\n\nVision did not perform anything. No other model was tried.");
+        }
+    }
+
     @Override
     protected void onStop() {
         cancelVoice();
+        cancelProviderRequest();
         stopPlan("PLAN CANCELLED", true);
         clearSessionContext();
         clearPreferenceMemory();
