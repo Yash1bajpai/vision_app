@@ -4,6 +4,25 @@ Offline-first Android assistant with deterministic commands, per-action confirma
 and no disk persistence. Production still uses `NoOpReasoningProvider`: no live
 language model is connected. Model integration remains paused.
 
+## Update (2026-10-10): provider foundation merged
+
+Main now also includes PRs #11-#13 (merged 2026-10-10):
+
+- **#11 fail-closed provider failures:** an ordinary exception from an optional
+  reasoning provider returns `UNKNOWN` with no plan. Adds boundary tests for
+  malformed and adversarial model output.
+- **#12 provider selector and cancellable runner:** the selector defaults to
+  deterministic-only; a bounded async runner can be cancelled. Fake providers only.
+- **#13 app wiring:** new commands `provider status`, `provider use
+  deterministic|on-device|cloud` and `cancel request`. On-device and cloud report
+  "not available in this build" because no real provider exists.
+
+Still true: no live language model, no API key, no `INTERNET` permission, nothing
+stored on disk. Verification: GitHub Actions (JVM tests, debug and androidTest APK
+build, lint) passed on Linux and Windows for each PR and for main after #11 and #12.
+The PRs report 160, 169 and 176 JVM tests. These changes have not been run on a
+phone or emulator.
+
 ## Current main status (2026-10-08)
 
 Main `1447ea0` integrates the four feature branches from PRs #6-#9, including
