@@ -52,9 +52,16 @@ public final class ReasoningCoordinator {
         if (provider == null) {
             return unknown(request);
         }
-        String raw = provider.propose(request, recentRequests == null
-                ? java.util.Collections.emptyList()
-                : java.util.Collections.unmodifiableList(new java.util.ArrayList<>(recentRequests)));
+        String raw;
+        try {
+            raw = provider.propose(request, recentRequests == null
+                    ? java.util.Collections.emptyList()
+                    : java.util.Collections.unmodifiableList(new java.util.ArrayList<>(recentRequests)));
+        } catch (RuntimeException providerFailure) {
+            // Adapter failures are not proposals. Do not log provider output or context.
+            // Fatal VM errors deliberately propagate rather than pretending recovery.
+            return unknown(request);
+        }
         if (raw == null || raw.trim().isEmpty()) {
             return unknown(request);
         }
