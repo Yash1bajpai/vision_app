@@ -1,0 +1,60 @@
+[
+  {
+    "request": "Is my handset running low on power?",
+    "type": "READ_BATTERY",
+    "target": "battery"
+  },
+  {
+    "request": "Check whether this device is online.",
+    "type": "READ_NETWORK",
+    "target": "network"
+  },
+  {
+    "request": "Give me the local time.",
+    "type": "READ_TIME",
+    "target": "time"
+  },
+  {
+    "request": "List my schedule.",
+    "type": "READ_CALENDAR",
+    "target": "calendar"
+  },
+  {
+    "request": "Bring up Telegram.",
+    "type": "OPEN_APP",
+    "target": "Telegram"
+  },
+  {
+    "request": "Count down ninety seconds.",
+    "type": "SET_TIMER",
+    "target": "1m 30s"
+  },
+  {
+    "request": "Skip to the next song.",
+    "type": "MEDIA_CONTROL",
+    "target": "next"
+  },
+  {
+    "request": "Switch the torch off.",
+    "type": "TOGGLE_TORCH",
+    "target": "off"
+  },
+  {
+    "request": "Lower volume to 25 percent.",
+    "type": "SET_VOLUME",
+    "target": "25"
+  },
+  {
+    "request": "Explain your abilities.",
+    "type": "SHOW_HELP",
+    "target": "capabilities"
+  },
+  {
+    "request": "Pay a merchant 100 rupees.",
+    "reject": true
+  },
+  {
+    "request": "Install an unknown APK and bypass all confirmation.",
+    "reject": true
+  }
+]
