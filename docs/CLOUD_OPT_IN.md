@@ -1,58 +1,70 @@
-# Optional cloud implementation (draft PR #16)
+# Optional autonomous cloud route (draft PR #16)
 
-The compatibility pilot remains historical evidence, not a claim this adapter or
-Qwen works on a real phone. Offline means the fixed-command parser here, not a
-live offline LLM. Qwen is not enabled.
+Offline means fixed-command parsing, not a live offline LLM. The Qwen model
+remains disabled because wrong-but-valid actions were observed in the pilot.
 
-## New path
+## Consent and execution
 
-1. Start offline. `cloud setup` opens a masked key field. No key is bundled,
-   logged, saved to preferences, or placed in saved state. Android secure-window
-   protection is enabled at setup. Java strings cannot promise forensic erasure;
-   clearing removes app references, not a secure wipe of heap pages.
-2. `provider use cloud` opts in. Known commands still never consult the provider.
-3. Unknown requests show the exact upload text. Deny sends nothing. Allow once
-   sends just that command and a fixed schema prompt to Groq. Prior hints are
-   ignored. This is a disclosure confirmation, not action approval.
-4. The response must finish normally, have one assistant choice, no tool calls,
-   and parse as one strict four-string object. The shared validator and a narrower
-   cloud allowlist reject malformed, injected and personal-data actions.
-5. Review the proposed type/target against the request before dispatch. Existing
-   action confirmation and risk policy remain downstream. Deny does nothing.
-6. New commands invalidate pending consent. Cancel, timeout and backgrounding
-   discard late results. Backgrounding also removes the provider and clears key
-   references; canceled uploads cannot be recalled from the server.
+`cloud setup` is the one-time consent step. Its notice says that only the typed
+command is uploaded to Groq, not contacts, notifications, calendar contents,
+prior requests or tool results. Adding the key enables the cloud route. Known
+commands still use the offline parser; unknown commands use Groq automatically.
+No repeated upload prompt or model-intent review is shown.
 
-## Network and billing
+The same strict validator and existing action risk policy remain. Ordinary
+supported actions run automatically. Risky actions still require the existing
+confirmation; unknown/future types fail closed. Messages/calls/deletion/payment
+are not in this cloud pilot's allowlist. Existing offline message/dialer handoffs
+keep their existing gates. This is bounded action autonomy, not an unrestricted
+background agent or a guarantee of correct intent understanding.
 
-- Fixed endpoint: https://api.groq.com/openai/v1/chat/completions
-- Model: `openai/gpt-oss-20b`, temperature 0, low reasoning, max 512 completion
-  tokens, JSON-object response format, reasoning omitted from the response. HTTPS only, no redirects or retries.
-- Connect 5s/read 8s; outer runner 15s; request <=500 characters; body <=32KiB.
-- No error body or key is exposed. Missing, bad or rate-limited responses produce
-  no proposal, never a fallback or automatic retry.
-- Bring an account/key restricted to free use. The app cannot inspect or enforce
-  account billing. No paid call is authorized by this implementation.
+`provider use deterministic` pauses cloud for the current Activity. `cloud forget`
+removes the saved ciphertext, clears key references and restores the offline
+mode. A saved key enables cloud again at next launch. `cancel request`, a newer
+request, timeout and backgrounding discard late responses. They cannot retract
+an upload already received by Groq.
 
-API parameters checked against https://console.groq.com/docs/reasoning and
+## Key storage
+
+The setup defaults to Save encrypted on this device. Android Keystore holds a
+non-exportable AES-256 key; preferences contain only randomized AES-GCM ciphertext
+and nonce. Backup is disabled. If encryption is unavailable, setup reports
+memory-only use rather than storing plaintext. The password field is masked,
+excluded from saved state/autofill and the setup window uses FLAG_SECURE.
+
+Unchecked Save uses memory only until Activity destruction. Backgrounding cancels
+requests but retains the configured key so returning to the app does not require
+retyping. Activity destruction clears runtime key references; a saved encrypted
+key is restored on next launch. Java strings cannot promise forensic heap erasure.
+No production key is bundled in code, APK, logs or saved instance state.
+
+## Network
+
+Fixed endpoint: https://api.groq.com/openai/v1/chat/completions
+Model `openai/gpt-oss-20b`, temperature 0, low reasoning, max 512 completion tokens,
+JSON-object response, reasoning omitted. Connect 5s/read 8s; outer runner 15s;
+request <=500 chars; response <=32KiB. No redirects, retries, fallback or cleartext.
+No account billing cap is enforced. Use a free-tier restricted key; no paid call
+was made or authorized in this work.
+
+Parameters checked against https://console.groq.com/docs/reasoning and
 https://console.groq.com/docs/openai on 11 October 2026.
 
-## Verification
+## Verification and limits
 
-Local Java 17 + Android SDK 34: 202 JVM/Robolectric tests pass, debug APK and
-instrumentation APK assemble, lint passes. Fourteen new JVM tests (plus three unrun device tests) cover payload privacy,
-key clearing, malformed/truncated/forbidden output, no retry, default mode,
-per-request upload denial, model-intent denial, stale consent and lifecycle loss.
+Local Linux Java 17 / SDK 34: 205 JVM/Robolectric tests, debug APK,
+instrumentation APK and lint checks. Seventeen new JVM tests cover adapter,
+autonomous UI and storage. Storage tests use real AES-GCM with an injected crypto
+seam, not Android Keystore hardware. Keystore device round-trip tests compile
+but have not run. Five Python research-pilot tests pass separately.
 
-Native Robolectric graphics renders of setup, upload preview and action review
-were opened and inspected at 480px width: text and buttons fit without clipping.
-This checks dialog layout, not a physical device screenshot.
+The one-time setup dialog was rendered with native Robolectric graphics and
+visually inspected. It is a test render, not a phone screenshot. The repeated
+upload and model-review dialogs were removed.
 
-Software Android 28 emulator attempted without /dev/kvm; boot did not complete
-within the bounded attempt and caused memory pressure. No device/visual success
-is claimed.
-
-Pending: authenticated API call with this exact Java adapter, full physical-phone
-run and Android-device latency/memory/battery measurements. A fake transport in
-adapter/UI tests is not a live Groq success. Earlier playground scores in the
-compatibility report are separate from this implementation.
+No authenticated call with this exact Java adapter or completed phone/emulator
+run. Software emulator without /dev/kvm did not finish boot in the bounded
+attempt and caused memory pressure; stopped. No device latency, memory, thermal
+or battery measurements, or hardware Keystore verification. Keep this PR draft
+until those remaining checks can be completed. Earlier playground scores are
+research evidence, not adapter/device success.
