@@ -1,6 +1,6 @@
 > Branch update (11 October 2026): this report records the original research
 > pilot. The same draft PR now includes the optional Android Groq adapter,
-> deterministic offline default and request/intent consent gates. See
+> deterministic offline default and one-time setup consent and existing action-risk gates. See
 > [CLOUD_OPT_IN.md](CLOUD_OPT_IN.md) for implementation checks and remaining limits.
 > The Qwen offline adapter remains disabled. The measurements below have not
 > been relabeled as Java API or phone results.
