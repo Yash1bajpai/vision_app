@@ -13,7 +13,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 /** Persists only AES-GCM ciphertext. The non-exportable key belongs to Android Keystore. */
 public final class CloudKeyStore {
-    private static final String ALIAS = "vision.groq.key.v1";
+    private static final String ALIAS = "vision.cloud.config.v2";
     interface Crypto { byte[] encrypt(byte[] plain) throws Exception; byte[] decrypt(byte[] packed) throws Exception; }
     private final SharedPreferences prefs;
     private final Crypto crypto;
@@ -53,7 +53,7 @@ public final class CloudKeyStore {
             byte[] result=new byte[12+body.length];System.arraycopy(iv,0,result,0,12);System.arraycopy(body,0,result,12,body.length);return result;
         }
         @Override public byte[] decrypt(byte[] packed) throws Exception {
-            if(packed.length<28||packed.length>1024)throw new java.security.GeneralSecurityException("Size");
+            if(packed.length<28||packed.length>8192)throw new java.security.GeneralSecurityException("Size");
             Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,key(false),new GCMParameterSpec(128,packed,0,12));
             return c.doFinal(packed,12,packed.length-12);
         }

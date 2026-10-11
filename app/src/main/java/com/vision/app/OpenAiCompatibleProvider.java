@@ -16,7 +16,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 /** Session-only, bounded cloud adapter. No retries, redirects, logs or history upload. */
-public final class GroqReasoningProvider implements ReasoningProvider {
+public final class OpenAiCompatibleProvider implements ReasoningProvider {
     public static final String ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
     public static final String MODEL = "openai/gpt-oss-20b";
     private static final int MAX_RESPONSE_BYTES = 32768;
@@ -33,11 +33,15 @@ public final class GroqReasoningProvider implements ReasoningProvider {
 
     public interface Transport { String complete(String key, String payload); }
     private final Transport transport;
+    final CloudProviderConfig config;
     private volatile String apiKey;
 
-    public GroqReasoningProvider(String key) { this(key, new HttpsTransport()); }
-    GroqReasoningProvider(String key, Transport transport) {
-        if (key == null || !key.trim().matches("[A-Za-z0-9_-]{20,256}") || transport == null) {
+    public OpenAiCompatibleProvider(String key) { this(new CloudProviderConfig("Groq", null, MODEL), key); }
+    public OpenAiCompatibleProvider(CloudProviderConfig config, String key) { this(config, key, new HttpsTransport(config.endpoint)); }
+    OpenAiCompatibleProvider(String key, Transport transport) { this(new CloudProviderConfig("Groq", null, MODEL), key, transport); }
+    OpenAiCompatibleProvider(CloudProviderConfig config, String key, Transport transport) {
+        this.config = config;
+        if (key == null || !key.trim().matches("[\\x21-\\x7E]{20,256}") || transport == null) {
             throw new IllegalArgumentException("Invalid session key");
         }
         this.apiKey = key.trim();
@@ -50,7 +54,7 @@ public final class GroqReasoningProvider implements ReasoningProvider {
         String key = apiKey;
         if (key == null || request == null || request.trim().isEmpty() || request.length() > 500) return null;
         try {
-            String response = transport.complete(key, payload(request));
+            String response = transport.complete(key, payload(request, config));
             if (Thread.currentThread().isInterrupted() || response == null || response.length() > MAX_RESPONSE_BYTES) return null;
             JSONObject root = new JSONObject(response);
             JSONArray choices = root.getJSONArray("choices");
@@ -71,20 +75,27 @@ public final class GroqReasoningProvider implements ReasoningProvider {
     @Override public String propose(String request, List<String> recentRequests) {
         return propose(request); // Deliberately never send session hints.
     }
-    static String payload(String request) throws JSONException {
+    static String payload(String request) throws JSONException { return payload(request, new CloudProviderConfig("Groq", null, MODEL)); }
+    static String payload(String request, CloudProviderConfig config) throws JSONException {
         JSONArray messages = new JSONArray();
         messages.put(new JSONObject().put("role", "system").put("content", PROMPT));
         messages.put(new JSONObject().put("role", "user").put("content", request));
-        return new JSONObject().put("model", MODEL).put("messages", messages)
-                .put("temperature", 0).put("max_completion_tokens", 512)
-                .put("reasoning_effort", "low").put("include_reasoning", false)
-                .put("response_format", new JSONObject().put("type", "json_object")).toString();
+        JSONObject body = new JSONObject().put("model", config.model).put("messages", messages)
+                .put("temperature", 0).put("response_format", new JSONObject().put("type", "json_object"));
+        if (config.name.equals("Groq")) {
+            body.put("max_completion_tokens", 512);
+            if(config.model.startsWith("openai/gpt-oss-")) body.put("reasoning_effort", "low").put("include_reasoning", false);
+        } else if(config.name.equals("OpenAI")) body.put("max_completion_tokens",512);
+        else body.put("max_tokens",512);
+        return body.toString();
     }
     private static final class HttpsTransport implements Transport {
+        private final String endpoint;
+        HttpsTransport(String endpoint) { this.endpoint=endpoint; }
         @Override public String complete(String key, String payload) {
             HttpURLConnection c = null;
             try {
-                c = (HttpURLConnection) new URL(ENDPOINT).openConnection();
+                c = (HttpURLConnection) new URL(endpoint).openConnection();
                 c.setInstanceFollowRedirects(false);
                 c.setConnectTimeout(5000); c.setReadTimeout(8000);
                 c.setRequestMethod("POST"); c.setDoOutput(true);

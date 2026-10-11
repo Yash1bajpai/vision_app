@@ -79,7 +79,7 @@ public class MainActivity extends Activity {
     private final ProviderSelector providerSelector = new ProviderSelector();
     private final AsyncReasoningRunner providerRunner = new AsyncReasoningRunner(15_000L, 500, 4_000);
     private long providerRequestId;
-    private GroqReasoningProvider cloudProvider;
+    private OpenAiCompatibleProvider cloudProvider;
     private CloudKeyStore cloudKeyStore;
 
     // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
@@ -1254,7 +1254,7 @@ public class MainActivity extends Activity {
 
     private void showCloudSetup() {
         final EditText key = new EditText(this);
-        key.setHint("Groq API key");
+        key.setHint("Selected provider API key");
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         key.setSaveEnabled(false);
         key.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
@@ -1263,24 +1263,42 @@ public class MainActivity extends Activity {
         remember.setText("Save encrypted on this device");
         remember.setChecked(true);
         LinearLayout fields = new LinearLayout(this);fields.setOrientation(LinearLayout.VERTICAL);
-        fields.addView(key);fields.addView(remember);
-        activeDialog = new AlertDialog.Builder(this).setTitle("Enable optional Groq cloud")
-                .setMessage("Adding a key enables Groq for commands the offline parser does not understand, without asking again for each request. Only your typed command is sent, never contacts, notifications, calendar contents or history. Normal validated actions run automatically; existing risky-action confirmations remain. Models can misunderstand. Use a free-tier key; Vision cannot enforce account billing. Save on this device uses Android Keystore encryption; cloud forget removes it.")
-                .setView(fields).setNegativeButton("Cancel", (d, w) -> key.setText(""))
+        android.widget.Spinner picker = new android.widget.Spinner(this);
+        picker.setAdapter(new android.widget.ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, CloudProviderConfig.NAMES));
+        EditText model = new EditText(this);model.setHint("Model ID (required)");model.setText(OpenAiCompatibleProvider.MODEL);
+        EditText endpoint = new EditText(this);endpoint.setHint("https://provider.example/v1/chat/completions");endpoint.setVisibility(View.GONE);
+        TextView endpointLabel = new TextView(this);endpointLabel.setText("Custom HTTPS chat-completions endpoint");endpointLabel.setVisibility(View.GONE);
+        picker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                endpoint.setVisibility(position==4 ? View.VISIBLE : View.GONE);
+                endpointLabel.setVisibility(position==4 ? View.VISIBLE : View.GONE);
+                model.setText(position==0 ? OpenAiCompatibleProvider.MODEL : "");
+                key.setText("");
+            }
+        });
+        TextView modelLabel = new TextView(this);modelLabel.setText("Model ID (required)");
+        TextView keyLabel = new TextView(this);keyLabel.setText("API key for the selected provider");
+        fields.addView(picker);fields.addView(endpointLabel);fields.addView(endpoint);fields.addView(modelLabel);fields.addView(model);fields.addView(keyLabel);fields.addView(key);fields.addView(remember);
+        android.widget.ScrollView formScroll = new android.widget.ScrollView(this);formScroll.addView(fields);
+        activeDialog = new AlertDialog.Builder(this).setTitle("Enable optional cloud provider")
+                .setMessage("Adding a key enables the selected provider for commands the offline parser does not understand, without asking again for each request. Only your typed command is sent, never contacts, notifications, calendar contents or history. Normal validated actions run automatically; existing risky-action confirmations remain. Models can misunderstand. Your provider may charge per request; Vision cannot enforce account billing. Save on this device uses Android Keystore encryption; cloud forget removes it.")
+                .setView(formScroll).setNegativeButton("Cancel", (d, w) -> key.setText(""))
                 .setPositiveButton("Enable cloud", (d, w) -> {
                     try {
                         String entered = key.getText().toString();
-                        GroqReasoningProvider configured = new GroqReasoningProvider(entered);
+                        CloudProviderConfig config = new CloudProviderConfig(picker.getSelectedItem().toString(), endpoint.getText().toString(), model.getText().toString());
+                        OpenAiCompatibleProvider configured = new OpenAiCompatibleProvider(config, entered);
                         forgetCloud();
-                        boolean saved = remember.isChecked() && cloudKeyStore.save(entered);
+                        boolean saved = remember.isChecked() && cloudKeyStore.save(config.serialize(entered));
                         cloudProvider = configured;
                         providerSelector.register(ProviderMode.CLOUD, cloudProvider);
                         providerSelector.select(ProviderMode.CLOUD);
-                        activityText.setText("CLOUD ENABLED\n\nKnown commands stay offline. Unknown typed commands use Groq automatically. "
+                        activityText.setText("CLOUD ENABLED\n\nKnown commands stay offline. Unknown typed commands use " + config.name + " automatically. "
                                 + (saved ? "Key saved encrypted on this device." : "Key held in memory only; encrypted save unavailable or not selected.")
                                 + " Type provider use deterministic to pause cloud or cloud forget to remove the key.");
                     } catch (IllegalArgumentException e) {
-                        activityText.setText("INVALID KEY\n\nNo key saved. Offline default stays active.");
+                        activityText.setText("SETUP NOT CHANGED\n\nCheck provider, HTTPS endpoint, model and key. Existing configuration is unchanged.");
                     } finally { key.setText(""); }
                 }).create();
         activeDialog.setOnDismissListener(d -> key.setText(""));
@@ -1301,10 +1319,11 @@ public class MainActivity extends Activity {
         String saved = cloudKeyStore.load();
         if (saved == null) return;
         try {
-            cloudProvider = new GroqReasoningProvider(saved);
+            org.json.JSONObject config = new org.json.JSONObject(saved);
+            cloudProvider = new OpenAiCompatibleProvider(CloudProviderConfig.fromJson(config), config.getString("key"));
             providerSelector.register(ProviderMode.CLOUD, cloudProvider);
             providerSelector.select(ProviderMode.CLOUD);
-        } catch (IllegalArgumentException e) { cloudKeyStore.clear(); }
+        } catch (IllegalArgumentException | org.json.JSONException e) { cloudKeyStore.clear(); }
     }
 
     private static void styleCloudButtons(AlertDialog dialog) {

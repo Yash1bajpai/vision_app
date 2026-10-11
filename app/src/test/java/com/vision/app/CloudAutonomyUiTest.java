@@ -30,7 +30,7 @@ public class CloudAutonomyUiTest {
     static String text(MainActivity a)throws Exception{return ((TextView)field(a,"activityText")).getText().toString();}
     static void settle()throws Exception{for(int i=0;i<80;i++){shadowOf(Looper.getMainLooper()).idle();Thread.sleep(10);}}
     static void configure(MainActivity a,int[] calls)throws Exception{
-        GroqReasoningProvider p=new GroqReasoningProvider("synthetic_session_key_123456789",(k,b)->{calls[0]++;return GroqReasoningProviderTest.response("{\"type\":\"READ_TIME\",\"target\":\"time\",\"text\":\"\",\"channel\":\"\"}");});
+        OpenAiCompatibleProvider p=new OpenAiCompatibleProvider("synthetic_session_key_123456789",(k,b)->{calls[0]++;return OpenAiCompatibleProviderTest.response("{\"type\":\"READ_TIME\",\"target\":\"time\",\"text\":\"\",\"channel\":\"\"}");});
         set(a,"cloudProvider",p);selector(a).register(ProviderMode.CLOUD,p);selector(a).select(ProviderMode.CLOUD);
     }
     @Test public void noKeyIsOfflineAndCloudUnavailable()throws Exception{
@@ -48,7 +48,7 @@ public class CloudAutonomyUiTest {
     }
     @Test public void backgroundCancelsButDoesNotRevokeConfiguredCloud()throws Exception{
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();configure(a,new int[]{0});
-        GroqReasoningProvider p=(GroqReasoningProvider)field(a,"cloudProvider");c.pause().stop();assertTrue(p.configured());assertEquals(0L,field(a,"providerRequestId"));c.destroy();assertFalse(p.configured());
+        OpenAiCompatibleProvider p=(OpenAiCompatibleProvider)field(a,"cloudProvider");c.pause().stop();assertTrue(p.configured());assertEquals(0L,field(a,"providerRequestId"));c.destroy();assertFalse(p.configured());
     }
     @Test public void deterministicPauseAndForgetStopCloud()throws Exception{
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();int[] n={0};configure(a,n);
@@ -57,7 +57,7 @@ public class CloudAutonomyUiTest {
     }
     @Test public void setupEnablesCloudWithoutSavedStateOrPlaintextStorage()throws Exception{
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();command(a,"cloud setup");
-        AlertDialog d=(AlertDialog)field(a,"activeDialog");EditText key=find(d.getWindow().getDecorView(),EditText.class,null);assertFalse(key.isSaveEnabled());
+        AlertDialog d=(AlertDialog)field(a,"activeDialog");EditText key=findKey(d.getWindow().getDecorView());assertFalse(key.isSaveEnabled());
         find(d.getWindow().getDecorView(),android.widget.CheckBox.class,null).setChecked(false);
         key.setText("synthetic_session_key_123456789");d.getButton(AlertDialog.BUTTON_POSITIVE).performClick();shadowOf(Looper.getMainLooper()).idle();
         assertEquals(ProviderMode.CLOUD,selector(a).mode());assertEquals("",key.getText().toString());
@@ -75,6 +75,26 @@ public class CloudAutonomyUiTest {
         v.measure(View.MeasureSpec.makeMeasureSpec(480,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(960,View.MeasureSpec.AT_MOST));v.layout(0,0,480,v.getMeasuredHeight());disable(v);
         android.graphics.Bitmap b=android.graphics.Bitmap.createBitmap(480,v.getHeight(),android.graphics.Bitmap.Config.ARGB_8888);v.draw(new android.graphics.Canvas(b));
         java.io.File dir=new java.io.File("build/visual-checks");dir.mkdirs();try(java.io.FileOutputStream f=new java.io.FileOutputStream(new java.io.File(dir,"cloud-autonomous-setup.png"))){b.compress(android.graphics.Bitmap.CompressFormat.PNG,100,f);}c.pause().stop().destroy();
+    }
+    static EditText findKey(View v){
+        if(v instanceof EditText && ((EditText)v).getHint()!=null && ((EditText)v).getHint().toString().contains("API key"))return (EditText)v;
+        if(v instanceof android.view.ViewGroup){android.view.ViewGroup g=(android.view.ViewGroup)v;for(int i=0;i<g.getChildCount();i++){EditText t=findKey(g.getChildAt(i));if(t!=null)return t;}}return null;
+    }
+    @Test public void providerPickerListsAllAndCustomRequiresEndpointAndModel()throws Exception{
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();command(a,"cloud setup");
+        AlertDialog d=(AlertDialog)field(a,"activeDialog");android.widget.Spinner p=find(d.getWindow().getDecorView(),android.widget.Spinner.class,null);
+        assertEquals(5,p.getCount());p.setSelection(4);shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("Custom",p.getSelectedItem());EditText key=findKey(d.getWindow().getDecorView());key.setText("synthetic_session_key_123456789");
+        d.getButton(AlertDialog.BUTTON_POSITIVE).performClick();shadowOf(Looper.getMainLooper()).idle();assertEquals(ProviderMode.DETERMINISTIC_ONLY,selector(a).mode());
+        assertTrue(text(a).startsWith("SETUP NOT CHANGED"));c.pause().stop().destroy();
+    }
+    @Test @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    public void renderCustomProviderSetup()throws Exception{
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();command(a,"cloud setup");
+        AlertDialog d=(AlertDialog)field(a,"activeDialog");find(d.getWindow().getDecorView(),android.widget.Spinner.class,null).setSelection(4);shadowOf(Looper.getMainLooper()).idle();
+        View v=d.getWindow().getDecorView();v.measure(View.MeasureSpec.makeMeasureSpec(480,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(960,View.MeasureSpec.AT_MOST));v.layout(0,0,480,v.getMeasuredHeight());disable(v);
+        android.graphics.Bitmap b=android.graphics.Bitmap.createBitmap(480,v.getHeight(),android.graphics.Bitmap.Config.ARGB_8888);v.draw(new android.graphics.Canvas(b));
+        java.io.File dir=new java.io.File("build/visual-checks");dir.mkdirs();try(java.io.FileOutputStream f=new java.io.FileOutputStream(new java.io.File(dir,"cloud-custom-setup.png"))){b.compress(android.graphics.Bitmap.CompressFormat.PNG,100,f);}c.pause().stop().destroy();
     }
     static void disable(View v){v.setScrollIndicators(0);if(v instanceof android.view.ViewGroup){android.view.ViewGroup g=(android.view.ViewGroup)v;for(int i=0;i<g.getChildCount();i++)disable(g.getChildAt(i));}}
 }

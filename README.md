@@ -7,9 +7,10 @@ language model is connected. Model integration remains paused.
 ## Draft autonomous cloud route (2026-10-11, PR #16, not merged)
 
 Fixed commands stay offline. The tested Qwen LLM remains disabled because it
-sometimes produced wrong-but-valid actions. `cloud setup` adds an optional Groq
-GPT-OSS 20B key and shows one notice: only typed commands are sent, never
-contacts, notifications, calendar contents or history. Adding the key enables
+sometimes produced wrong-but-valid actions. `cloud setup` adds an optional cloud
+provider key (Groq, OpenRouter, OpenAI, Gemini, or Custom OpenAI-compatible) and shows one notice: only typed commands are sent, never
+contacts, notifications, calendar contents or history. Choose the provider and
+model; Custom requires a full HTTPS chat-completions endpoint. Adding the key enables
 cloud automatically for unknown commands, with no repeated upload or proposal
 review prompts. Normal validated actions run automatically. Existing risky-action
 confirmation and strict validation remain. This is bounded command autonomy,
