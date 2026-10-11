@@ -4,6 +4,35 @@ Offline-first Android assistant with deterministic commands, per-action confirma
 and no disk persistence. Production still uses `NoOpReasoningProvider`: no live
 language model is connected. Model integration remains paused.
 
+## Draft cloud pilot (2026-10-11, PR #16, not merged)
+
+Offline fixed-command parsing remains the default. The tested Qwen model stays
+**disabled** because it sometimes produced wrong-but-valid actions. This branch
+adds an optional Groq GPT-OSS 20B route:
+
+- `cloud setup`: enter a Groq key in a masked, non-saved field. It lives only in
+  this Activity's memory, not preferences, saved state, files or the APK.
+- `provider use cloud`: opt in for unknown commands. Known commands still run
+  through the offline parser without a network call.
+- Before each upload, review the exact typed command and choose **Allow once**
+  or **Deny**. Only that command leaves the device. No session history, contacts,
+  notifications, calendar contents or tool results are uploaded.
+- Review the model's action type and target before continuing. Existing strict
+  JSON validation, risk policy and action confirmations still apply. Models can
+  misunderstand intent even when JSON is valid.
+- `cloud forget`, backgrounding, screen recreation or process loss clear the key
+  and restore the offline default. `cancel request` discards late results but
+  cannot retract a request already received by Groq.
+- The app now declares INTERNET permission, with cleartext traffic disabled.
+  The adapter uses one fixed HTTPS endpoint, no redirects or retries, bounded
+  request/response sizes and timeouts. No automatic cloud fallback.
+- This pilot excludes model-proposed messages, dialer, notification reads/replies,
+  calendar reads/writes, navigation, alarms and reminders. Use existing offline
+  commands for those actions. Free-tier use depends on the key/account; Vision
+  does not enforce a provider-side spending cap.
+
+Verification and remaining limits: [cloud implementation checks](docs/CLOUD_OPT_IN.md).
+
 ## Update (2026-10-10): provider foundation merged
 
 Main now also includes PRs #11-#13 (merged 2026-10-10):
@@ -135,7 +164,7 @@ The historical release notes below describe earlier releases.
 
 ## Historical release architecture
 
-Vision is an offline-first Android assistant for the iQOO Z9x. The application is designed around deterministic execution, explicit user authorization, zero disk persistence, and risk-tiered execution safety.
+Vision is an offline-first Android assistant for the iQOO Z9x, with an optional cloud route on this draft branch. It uses deterministic execution, explicit authorization and risk-tiered safety. Cloud keys are session-only; some existing pending offline actions can be saved in Android instance state, so this is not a blanket zero-disk-persistence claim.
 
 > **Note on Assistant Intelligence Runtime:**
 > **Historical release baseline: `v0.12.0`** - Phase 11 added device-status reads (battery, network, time, calendar) and Phase 12 added daily-driver intents (timers, alarms, navigation, media, volume, torch, calendar events); the full phase-by-phase record is in `PROJECT_REPORT.md`.

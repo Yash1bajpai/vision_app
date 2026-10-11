@@ -64,8 +64,9 @@ public class ProviderSelectorTest {
         assertEquals(ProviderMode.DETERMINISTIC_ONLY, ProviderMode.fromName(null));
     }
 
-    @Test public void appManifestStillHasNoInternetPermission() throws Exception {
+    @Test public void appManifestAllowsOnlySecureOptInCloud() throws Exception {
         String manifest = new String(Files.readAllBytes(Paths.get("src/main/AndroidManifest.xml")), StandardCharsets.UTF_8);
-        assertFalse(manifest.contains("android.permission.INTERNET"));
+        assertTrue(manifest.contains("android.permission.INTERNET"));
+        assertTrue(manifest.contains("android:usesCleartextTraffic=\"false\""));
     }
 }
