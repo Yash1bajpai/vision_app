@@ -24,6 +24,13 @@ public final class ProviderSelector {
         providers.put(routeMode, provider);
     }
 
+    /** Remove a session-only route and reset to the offline default if selected. */
+    public synchronized void unregister(ProviderMode routeMode) {
+        if (routeMode == ProviderMode.DETERMINISTIC_ONLY) return;
+        providers.remove(routeMode);
+        if (mode == routeMode) mode = ProviderMode.DETERMINISTIC_ONLY;
+    }
+
     public synchronized boolean isAvailable(ProviderMode candidate) {
         return candidate != null && providers.containsKey(candidate);
     }

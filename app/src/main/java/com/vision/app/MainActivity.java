@@ -79,6 +79,8 @@ public class MainActivity extends Activity {
     private final ProviderSelector providerSelector = new ProviderSelector();
     private final AsyncReasoningRunner providerRunner = new AsyncReasoningRunner(15_000L, 500, 4_000);
     private long providerRequestId;
+    private GroqReasoningProvider cloudProvider;
+    private long cloudConsentToken;
 
     // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
     private VisionPlan pendingPlan;
@@ -366,6 +368,10 @@ public class MainActivity extends Activity {
                     return;
                 }
                 cancelProviderRequest();
+                if (command.equalsIgnoreCase("cloud setup")) { showCloudSetup(); return; }
+                if (command.equalsIgnoreCase("cloud forget")) {
+                    forgetCloud(); activityText.setText("CLOUD CLEARED\n\nOffline default restored. No key saved."); return;
+                }
                 String providerResult = ProviderCommands.handle(command, providerSelector);
                 if (providerResult != null) {
                     activityText.setText(providerResult);
@@ -401,7 +407,8 @@ public class MainActivity extends Activity {
                 contextExpiry = this::clearSessionContext;
                 planHandler.postDelayed(contextExpiry, VisionSessionContext.TTL_MILLIS);
                 if (modelRoute) {
-                    startProviderRequest(command, input, hints);
+                    if (providerSelector.mode() == ProviderMode.CLOUD) confirmCloudRequest(command, input);
+                    else startProviderRequest(command, input, hints);
                     return;
                 }
                 ReasoningCoordinator.CoordinationResult coordination =
@@ -1242,6 +1249,59 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showCloudSetup() {
+        final EditText key = new EditText(this);
+        key.setHint("Groq API key (this screen session only)");
+        key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setSaveEnabled(false);
+        key.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        activeDialog = new AlertDialog.Builder(this).setTitle("Optional Groq cloud")
+                .setMessage("Offline fixed commands remain the default. A key is held in memory only, cleared when this app backgrounds. Each cloud request needs a separate preview and Allow. Only the typed command is sent to Groq, not contacts, notifications, calendar data or history. Use a free-tier key; Vision cannot enforce your account's billing limit.")
+                .setView(key).setNegativeButton("Cancel", (d, w) -> key.setText(""))
+                .setPositiveButton("Use this session", (d, w) -> {
+                    try {
+                        GroqReasoningProvider configured = new GroqReasoningProvider(key.getText().toString());
+                        forgetCloud();
+                        cloudProvider = configured;
+                        providerSelector.register(ProviderMode.CLOUD, cloudProvider);
+                        activityText.setText("CLOUD CONFIGURED\n\nOffline is still default. Type provider use cloud to opt in; every request is previewed. Type cloud forget to clear the key.");
+                    } catch (IllegalArgumentException e) {
+                        activityText.setText("INVALID KEY\n\nNo key saved. Offline default stays active.");
+                    } finally { key.setText(""); }
+                }).create();
+        activeDialog.setOnDismissListener(d -> key.setText(""));
+        activeDialog.show();
+        styleCloudButtons(activeDialog);
+        activeDialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+    }
+
+    private void forgetCloud() {
+        cancelProviderRequest();
+        if (cloudProvider != null) cloudProvider.clear();
+        cloudProvider = null;
+        providerSelector.unregister(ProviderMode.CLOUD);
+    }
+
+    private void confirmCloudRequest(String command, EditText input) {
+        final long token = ++cloudConsentToken;
+        activeDialog = new AlertDialog.Builder(this).setTitle("Send this command to Groq?")
+                .setMessage("Only this exact text will leave the device, using Groq GPT-OSS 20B. No history or device data. A model can misunderstand; review its proposal before allowing any action.\n\n" + command)
+                .setNegativeButton("Deny", (d, w) -> activityText.setText("CLOUD DENIED\n\nNothing sent or performed."))
+                .setPositiveButton("Allow once", (d, w) -> {
+                    if (token != cloudConsentToken || providerSelector.mode() != ProviderMode.CLOUD
+                            || cloudProvider == null || !cloudProvider.configured()) return;
+                    startProviderRequest(command, input, java.util.Collections.emptyList());
+                }).create();
+        activeDialog.show();
+        styleCloudButtons(activeDialog);
+    }
+
+    private static void styleCloudButtons(AlertDialog dialog) {
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(0, 90, 60));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(0, 90, 60));
+    }
+
     private void startProviderRequest(String command, EditText input, java.util.List<String> hints) {
         activityText.setText("THINKING\n\nWaiting for the selected model. Type cancel request to stop. Nothing runs without your confirmation.");
         providerRequestId = providerRunner.submit(providerSelector.active(), command, hints,
@@ -1249,6 +1309,8 @@ public class MainActivity extends Activity {
     }
 
     private void cancelProviderRequest() {
+        ++cloudConsentToken;
+        if (activeDialog != null) { activeDialog.dismiss(); activeDialog = null; }
         providerRequestId = 0;
         providerRunner.cancel();
     }
@@ -1264,7 +1326,19 @@ public class MainActivity extends Activity {
                     command, new ReasoningProvider() {
                         @Override public String propose(String userRequest) { return raw; }
                     }, java.util.Collections.emptyList());
-            dispatchCoordination(command, input, coordination);
+            if (providerSelector.mode() == ProviderMode.CLOUD && coordination.action.type != VisionAction.Type.UNKNOWN) {
+                final long token = ++cloudConsentToken;
+                activeDialog = new AlertDialog.Builder(this).setTitle("Review cloud proposal")
+                        .setMessage("Requested: " + command + "\n\nProposed: " + coordination.action.type
+                                + "\nTarget: " + coordination.action.target + "\n\nDoes this match your intent? Nothing has run.")
+                        .setNegativeButton("Deny", (d, w) -> activityText.setText("PROPOSAL DENIED\n\nNothing performed."))
+                        .setPositiveButton("Continue", (d, w) -> {
+                            if (token == cloudConsentToken && !isFinishing() && !isDestroyed())
+                                dispatchCoordination(command, input, coordination);
+                        }).create();
+                activeDialog.show();
+                styleCloudButtons(activeDialog);
+            } else dispatchCoordination(command, input, coordination);
         } else if (outcome.status == ProviderOutcome.Status.NO_PROPOSAL) {
             activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
         } else if (outcome.status == ProviderOutcome.Status.TIMED_OUT) {
@@ -1283,6 +1357,8 @@ public class MainActivity extends Activity {
         stopPlan("PLAN CANCELLED", true);
         clearSessionContext();
         clearPreferenceMemory();
+        forgetCloud();
+        if (activeDialog != null) { activeDialog.dismiss(); activeDialog = null; }
         super.onStop();
     }
 
