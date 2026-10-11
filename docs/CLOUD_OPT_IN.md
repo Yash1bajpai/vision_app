@@ -6,9 +6,9 @@ remains disabled because wrong-but-valid actions were observed in the pilot.
 ## Consent and execution
 
 `cloud setup` is the one-time consent step. Its notice says that only the typed
-command is uploaded to Groq, not contacts, notifications, calendar contents,
+command is uploaded to the selected provider, not contacts, notifications, calendar contents,
 prior requests or tool results. Adding the key enables the cloud route. Known
-commands still use the offline parser; unknown commands use Groq automatically.
+commands still use the offline parser; unknown commands use the selected provider automatically.
 No repeated upload prompt or model-intent review is shown.
 
 The same strict validator and existing action risk policy remain. Ordinary
@@ -22,7 +22,7 @@ background agent or a guarantee of correct intent understanding.
 removes the saved ciphertext, clears key references and restores the offline
 mode. A saved key enables cloud again at next launch. `cancel request`, a newer
 request, timeout and backgrounding discard late responses. They cannot retract
-an upload already received by Groq.
+an upload already received by the selected provider.
 
 ## Key storage
 
@@ -38,31 +38,55 @@ retyping. Activity destruction clears runtime key references; a saved encrypted
 key is restored on next launch. Java strings cannot promise forensic heap erasure.
 No production key is bundled in code, APK, logs or saved instance state.
 
-## Network
+## Providers and network
 
-Fixed endpoint: https://api.groq.com/openai/v1/chat/completions
-Model `openai/gpt-oss-20b`, temperature 0, low reasoning, max 512 completion tokens,
-JSON-object response, reasoning omitted. Connect 5s/read 8s; outer runner 15s;
-request <=500 chars; response <=32KiB. No redirects, retries, fallback or cleartext.
-No account billing cap is enforced. Use a free-tier restricted key; no paid call
-was made or authorized in this work.
+One OpenAI-compatible adapter supports these preset full endpoints:
 
-Parameters checked against https://console.groq.com/docs/reasoning and
-https://console.groq.com/docs/openai on 11 October 2026.
+- Groq: https://api.groq.com/openai/v1/chat/completions
+- OpenRouter: https://openrouter.ai/api/v1/chat/completions
+- OpenAI: https://api.openai.com/v1/chat/completions
+- Gemini: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+- Custom: full HTTPS URL ending in `/chat/completions`, port 443 only, no embedded
+  credentials, query, fragment, raw IP or localhost. Redirects are not followed.
+  Only configure providers you trust with the typed request and API key.
+
+Groq defaults to `openai/gpt-oss-20b`. Other routes require the exact model ID
+from that provider. No model availability or universal compatibility is claimed.
+Custom compatibility means OpenAI chat-completions request/response shape, not
+arbitrary third-party APIs. The selected provider, endpoint, model and key are
+saved together inside encrypted storage. Switching the picker clears the entered
+key. Old key-only saved records are refused rather than sent to a new destination.
+
+Temperature 0, JSON-object response, max 512 completion tokens. Only Groq GPT-OSS
+gets low reasoning/include_reasoning=false; these options are not sent elsewhere.
+OpenAI/Groq use max_completion_tokens; other presets use max_tokens. Unsupported
+model/parameter, payment-required, rate-limit and other errors fail closed without
+retry or fallback. Provider/model feature support still needs a keyed live test.
+
+Connect 5s/read 8s; runner 15s; request <=500 chars; response <=32KiB. No redirects,
+retries, fallback or cleartext. Providers can charge based on your account; no
+billing cap is enforced. No paid or live keyed call was made in this work.
+
+Sources checked on 11 October 2026:
+https://console.groq.com/docs/reasoning
+https://console.groq.com/docs/openai
+https://ai.google.dev/gemini-api/docs/openai
+https://openrouter.ai/docs/api-reference/overview
+https://platform.openai.com/docs/api-reference/chat/create
 
 ## Verification and limits
 
-Local Linux Java 17 / SDK 34: 205 JVM/Robolectric tests, debug APK,
-instrumentation APK and lint checks. Seventeen new JVM tests cover adapter,
+Local Linux Java 17 / SDK 34: 212 JVM/Robolectric tests, debug APK,
+instrumentation APK and lint checks. Twenty-four new JVM tests cover adapter,
 autonomous UI and storage. Storage tests use real AES-GCM with an injected crypto
 seam, not Android Keystore hardware. Keystore device round-trip tests compile
 but have not run. Five Python research-pilot tests pass separately.
 
-The one-time setup dialog was rendered with native Robolectric graphics and
+The preset and Custom one-time setup dialogs was rendered with native Robolectric graphics and
 visually inspected. It is a test render, not a phone screenshot. The repeated
 upload and model-review dialogs were removed.
 
-No authenticated call with this exact Java adapter or completed phone/emulator
+No authenticated call with this exact Java adapter to any provider or completed phone/emulator
 run. Software emulator without /dev/kvm did not finish boot in the bounded
 attempt and caused memory pressure; stopped. No device latency, memory, thermal
 or battery measurements, or hardware Keystore verification. Keep this PR draft
