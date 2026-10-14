@@ -1,4 +1,4 @@
-# Optional autonomous cloud route (draft PR #16)
+# Optional autonomous cloud route (PR #16 merged 2026-10-14)
 
 Offline means fixed-command parsing, not a live offline LLM. The Qwen model
 remains disabled because wrong-but-valid actions were observed in the pilot.
@@ -65,7 +65,9 @@ retry or fallback. Provider/model feature support still needs a keyed live test.
 
 Connect 5s/read 8s; runner 15s; request <=500 chars; response <=32KiB. No redirects,
 retries, fallback or cleartext. Providers can charge based on your account; no
-billing cap is enforced. No paid or live keyed call was made in this work.
+billing cap is enforced. No paid or live keyed call was made during the original implementation work.
+The maintainer later reported functional testing; the provider and billing
+conditions of that test were not specified.
 
 Sources checked on 11 October 2026:
 https://console.groq.com/docs/reasoning
@@ -76,19 +78,30 @@ https://platform.openai.com/docs/api-reference/chat/create
 
 ## Verification and limits
 
+PR #16 is merged on main `cb00a9f`. [Post-merge CI](https://github.com/Yash1bajpai/vision_app/actions/runs/38521698258)
+passed JVM tests, debug and instrumentation APK assembly, and lint on Ubuntu
+and Windows. CI does not execute a phone or emulator.
+
+On 2026-10-14 the maintainer reported testing and merging the Vision PRs.
+That functional test is complete as reported. It does not document universal
+provider compatibility, hardware-Keystore checks or measured device performance.
+The following records describe the original implementation checks.
+
 Local Linux Java 17 / SDK 34: 212 JVM/Robolectric tests, debug APK,
 instrumentation APK and lint checks. Twenty-four new JVM tests cover adapter,
 autonomous UI and storage. Storage tests use real AES-GCM with an injected crypto
 seam, not Android Keystore hardware. Keystore device round-trip tests compile
 but have not run. Five Python research-pilot tests pass separately.
 
-The preset and Custom one-time setup dialogs was rendered with native Robolectric graphics and
+The preset and Custom one-time setup dialogs were rendered with native Robolectric graphics and
 visually inspected. It is a test render, not a phone screenshot. The repeated
 upload and model-review dialogs were removed.
 
-No authenticated call with this exact Java adapter to any provider or completed phone/emulator
-run. Software emulator without /dev/kvm did not finish boot in the bounded
-attempt and caused memory pressure; stopped. No device latency, memory, thermal
-or battery measurements, or hardware Keystore verification. Keep this PR draft
-until those remaining checks can be completed. Earlier playground scores are
+At implementation time, no authenticated call with this exact Java adapter to any
+provider or completed phone/emulator run had been independently verified.
+The software emulator without /dev/kvm did not finish boot in the bounded attempt
+and caused memory pressure; it was stopped. That implementation record contains
+no device latency, memory, thermal or battery measurements, or hardware Keystore
+verification. The PR is now merged following the maintainer's reported test.
+Earlier playground scores remain
 research evidence, not adapter/device success.
