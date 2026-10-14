@@ -1,10 +1,33 @@
 # Vision
 
-Offline-first Android assistant with deterministic commands, per-action confirmation
-and no disk persistence. Production still uses `NoOpReasoningProvider`: no live
-language model is connected. Model integration remains paused.
+Offline-first Android assistant with deterministic commands and an optional,
+user-keyed cloud reasoning route. Known commands stay local. Supported ordinary
+actions run after validation; existing risky-action confirmations remain.
+Cloud configuration can be saved with Android Keystore encryption. Preference
+memory is still session-only; there is no persistent user memory or bundled model.
 
-## Draft autonomous cloud route (2026-10-11, PR #16, not merged)
+## Current main status (2026-10-14)
+
+PR #16 is merged on main `cb00a9f`. Post-merge GitHub Actions passed the JVM
+suite, debug and androidTest APK builds, and lint on Linux and Windows.
+The PR's local verification reports 212 JVM/Robolectric tests and five separate
+Python pilot tests. CI does not run a phone or emulator.
+
+The maintainer reports testing and merging the Vision PRs on 2026-10-14.
+This is maintainer-reported functional testing, not independent verification of
+every provider, Android Keystore hardware, device performance or OEM behavior.
+The specific provider/device checks in that test were not recorded here.
+
+- Cloud: Groq, OpenRouter, OpenAI, Gemini and Custom OpenAI-compatible setup.
+- Offline: deterministic commands; the pilot Qwen LLM remains disabled.
+- Memory: opt-in `response_style` only, 60-second expiry, reset on background.
+- Voice/Android: offline push-to-talk drafts, dialer and Clock handoffs.
+
+[Post-merge CI](https://github.com/Yash1bajpai/vision_app/actions/runs/38521698258)
+checks this main commit. Older sections below describe earlier snapshots, not
+current verification totals or the current absence of cloud support.
+
+## Optional autonomous cloud route (PR #16 merged 2026-10-14)
 
 Fixed commands stay offline. The tested Qwen LLM remains disabled because it
 sometimes produced wrong-but-valid actions. `cloud setup` adds an optional cloud
@@ -22,13 +45,14 @@ plaintext. `cloud forget` removes it. `provider use deterministic` pauses cloud
 for this screen session. No keys are bundled. INTERNET is now declared, cleartext
 is disabled, and there are no retries, redirects or automatic provider fallbacks.
 
-See [implementation checks and limits](docs/CLOUD_OPT_IN.md), including unverified
-live API, physical-phone and hardware-Keystore tests. Free-tier use depends on
+See [implementation checks and limits](docs/CLOUD_OPT_IN.md), including the distinction between maintainer-reported testing and
+independently verified API, phone and hardware-Keystore evidence. Free-tier use depends on
 your key/account; Vision cannot enforce a provider-side spending cap.
 
-## Update (2026-10-10): provider foundation merged
+## Historical snapshot (2026-10-10): provider foundation
 
-Main now also includes PRs #11-#13 (merged 2026-10-10):
+PRs #11-#13 were merged on 2026-10-10. This section records that pre-cloud
+snapshot; PR #16 has since added the optional cloud route:
 
 - **#11 fail-closed provider failures:** an ordinary exception from an optional
   reasoning provider returns `UNKNOWN` with no plan. Adds boundary tests for
@@ -39,13 +63,13 @@ Main now also includes PRs #11-#13 (merged 2026-10-10):
   deterministic|on-device|cloud` and `cancel request`. On-device and cloud report
   "not available in this build" because no real provider exists.
 
-Still true: no live language model, no API key, no `INTERNET` permission, nothing
+At that snapshot: no live language model, no API key, no `INTERNET` permission, nothing
 stored on disk. Verification: GitHub Actions (JVM tests, debug and androidTest APK
 build, lint) passed on Linux and Windows for each PR and for main after #11 and #12.
 The PRs report 160, 169 and 176 JVM tests. These changes have not been run on a
 phone or emulator.
 
-## Current main status (2026-10-08)
+## Historical snapshot (2026-10-08): offline features
 
 Main `1447ea0` integrates the four feature branches from PRs #6-#9, including
 the follow-up dialog/comment fix:
@@ -67,13 +91,21 @@ smoke checks for all four features (dialer Allow/Deny, reminder prefill,
 push-to-talk listening/stop, preference save/concise/expiry/reset). The reported
 phone checks have not been independently rerun for this documentation update.
 
-Still to check on a real phone: an incoming third-party notification reply,
+Coverage not individually documented by the 2026-10-14 maintainer report includes
+an incoming third-party notification reply,
 Deny/stale-reply/timeout behavior, broader microphone permission and OEM lifecycle
 cases, speech accuracy/model availability, and font scaling. Opening the dialer,
 Clock or a composer does not prove a call, saved alarm or delivered message.
 
 The sections below retain dated verification records for earlier batches; their
 test totals describe those snapshots, not the current total.
+
+## Earlier implementation records
+
+The remaining sections record the original offline phases. Statements about no
+network, no provider or zero disk persistence apply to those historical phases.
+For current behavior and storage limits, use the current-main section above and
+[cloud route documentation](docs/CLOUD_OPT_IN.md).
 
 ## Plan lifetime and short-lived context
 
@@ -157,7 +189,7 @@ The historical release notes below describe earlier releases.
 
 ## Historical release architecture
 
-Vision is an offline-first Android assistant for the iQOO Z9x, with an optional cloud route on this draft branch. It uses deterministic execution, explicit authorization and risk-tiered safety. Cloud keys can be saved with Android Keystore encryption; some existing pending offline actions can be saved in Android instance state, so this is not a blanket zero-disk-persistence claim.
+Vision is an offline-first Android assistant for the iQOO Z9x, with the optional cloud route merged in PR #16. It uses deterministic execution, explicit authorization and risk-tiered safety. Cloud keys can be saved with Android Keystore encryption; some existing pending offline actions can be saved in Android instance state, so this is not a blanket zero-disk-persistence claim.
 
 > **Note on Assistant Intelligence Runtime:**
 > **Historical release baseline: `v0.12.0`** - Phase 11 added device-status reads (battery, network, time, calendar) and Phase 12 added daily-driver intents (timers, alarms, navigation, media, volume, torch, calendar events); the full phase-by-phase record is in `PROJECT_REPORT.md`.
