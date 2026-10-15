@@ -70,6 +70,7 @@ public class MainActivity extends Activity {
     private Runnable voiceTimeout;
     private static final int REQUEST_CODE_MIC = 104;
     private TextView activityText;
+    private android.widget.ScrollView activityScroll;
     private TextView statusText;
     private AlertDialog activeDialog;
     private VisionAction pendingContactAction;
@@ -88,6 +89,8 @@ public class MainActivity extends Activity {
     private final VisionPlanLifetime planLifetime = new VisionPlanLifetime();
     private final VisionSessionContext sessionContext = new VisionSessionContext();
     private final VisionPreferenceControls preferenceControls = new VisionPreferenceControls();
+    private SavedPreferenceMemory savedPreferenceMemory;
+    private boolean transientPreferenceOutput;
     private final Handler planHandler = new Handler(Looper.getMainLooper());
     private Runnable planTimeout;
     private long planToken;
@@ -114,6 +117,7 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         cloudKeyStore = new CloudKeyStore(this);
+        savedPreferenceMemory = new SavedPreferenceMemory(new PreferenceMemoryStore(this));
         restoreCloud();
         buildScreen();
         if (state != null) {
@@ -160,7 +164,7 @@ public class MainActivity extends Activity {
                     outState.putString(STATE_PENDING_EVENT_WRITE_STATE, pendingEventWriteAction.state.name());
                 }
             }
-            if (pendingPlan == null && activityText != null && activityText.getText() != null) {
+            if (!transientPreferenceOutput && pendingPlan == null && activityText != null && activityText.getText() != null) {
                 outState.putCharSequence(STATE_ACTIVITY_TEXT, activityText.getText());
             }
         }
@@ -315,12 +319,17 @@ public class MainActivity extends Activity {
 
         root.addView(label("RECENT ACTIVITY", 11, MUTED));
         activityText = label("No activity yet\n\nYour actions will appear here after you start a conversation.", 14, MUTED);
-        activityText.setMovementMethod(new ScrollingMovementMethod());
+        activityText.setSaveEnabled(false);
+        activityScroll = new android.widget.ScrollView(this);
+        activityScroll.setFillViewport(true);
+        activityScroll.setSaveEnabled(false);
+        activityScroll.setVerticalScrollBarEnabled(true);
         activityText.setGravity(Gravity.CENTER);
         activityText.setPadding(dp(20), dp(26), dp(20), dp(26));
         LinearLayout.LayoutParams activityParams = new LinearLayout.LayoutParams(-1, 0, 1);
         activityParams.setMargins(0, dp(8), 0, dp(16));
-        root.addView(activityText, activityParams);
+        activityScroll.addView(activityText, new android.widget.ScrollView.LayoutParams(-1, -2));
+        root.addView(activityScroll, activityParams);
 
         LinearLayout composer = row();
         composer.setPadding(dp(14), dp(8), dp(8), dp(8));
@@ -359,6 +368,8 @@ public class MainActivity extends Activity {
                 // The command is captured; clear the composer so every action type and
                 // error surface starts from an empty field (send is final regardless of outcome).
                 input.setText("");
+                transientPreferenceOutput = false;
+                activityScroll.scrollTo(0, 0);
                 if (command.equalsIgnoreCase("cancel plan")) {
                     if (pendingPlan != null) stopPlan("PLAN CANCELLED", true);
                     else activityText.setText("NO ACTIVE PLAN");
@@ -389,7 +400,23 @@ public class MainActivity extends Activity {
                     activityText.setText("PLAN IN PROGRESS\n\nA plan is currently executing. Type cancel plan to stop it before starting a new request.");
                     return;
                 }
+                if (command.equalsIgnoreCase("enable saved preference memory")) {
+                    showSavedPreferenceOptIn();
+                    return;
+                }
+                String savedResult = savedPreferenceMemory.handle(command, System.currentTimeMillis());
+                if (savedResult != null) { transientPreferenceOutput = true; activityText.setText(savedResult); return; }
                 String preferenceResult = preferenceControls.handle(command, SystemClock.elapsedRealtime());
+                if (preferenceResult != null) {
+                    transientPreferenceOutput = true;
+                    if (command.equalsIgnoreCase("show preferences")) {
+                        preferenceResult += "\n\n" + savedPreferenceMemory.inspect(System.currentTimeMillis());
+                    } else if (command.equalsIgnoreCase("clear preferences") || command.equalsIgnoreCase("forget preference response_style")) {
+                        preferenceResult = "SESSION " + preferenceResult + "\n\n" + savedPreferenceMemory.clear(System.currentTimeMillis());
+                    } else if (command.equalsIgnoreCase("disable preference memory")) {
+                        preferenceResult = "SESSION " + preferenceResult + "\n\n" + savedPreferenceMemory.disable();
+                    }
+                }
                 if (preferenceResult != null) {
                     if (preferenceResult.startsWith("PREFERENCE SAVED")) {
                         if (preferenceExpiry != null) planHandler.removeCallbacks(preferenceExpiry);
@@ -436,6 +463,26 @@ public class MainActivity extends Activity {
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
         updateAccessStatus();
+    }
+
+    private void showSavedPreferenceOptIn() {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Save response style on this device?")
+                .setMessage("Off by default. Only response_style (concise or standard) can be saved, encrypted locally. Each explicit save expires after 30 days; reads and restarts do not extend it.\n\nNo session value is copied. No chat history, contacts, notifications, calendar contents, model input or action approvals are stored.\n\nView: show preferences. Delete: forget preference response_style or clear preferences. Disable: disable saved preference memory. Cloud keys are separate. Session-only mode remains available.")
+                .setNegativeButton("Keep session only", (d, which) -> {
+                    transientPreferenceOutput = true;
+                    activityText.setText("SAVED MEMORY UNCHANGED\n\nNo saved-memory opt-in added. Session-only preference memory remains available.");
+                })
+                .setPositiveButton("Enable saved memory", (d, which) -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    transientPreferenceOutput = true;
+                    activityText.setText(savedPreferenceMemory.handle("enable saved preference memory", System.currentTimeMillis()));
+                })
+                .setOnDismissListener(d -> { if (activeDialog == d) activeDialog = null; })
+                .create();
+        showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }
 
     private void handleDialerAction(VisionAction action, Runnable onComplete) {
@@ -550,7 +597,8 @@ public class MainActivity extends Activity {
             activityText.setText(preferenceControls.statusResponse(
                     "Battery is at " + percent + "%" + (charging ? " and charging." : " and not charging."),
                     "Battery: " + percent + "% (" + (charging ? "charging" : "not charging") + ").",
-                    SystemClock.elapsedRealtime()));
+                    SystemClock.elapsedRealtime(), savedPreferenceMemory.style(System.currentTimeMillis()))
+                    + savedPreferenceMemory.failureNotice());
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the battery status.");
@@ -585,7 +633,8 @@ public class MainActivity extends Activity {
             activityText.setText(preferenceControls.statusResponse(
                     "The device is " + (online ? "online via " + kind + "." : "offline."),
                     "Network: " + (online ? "online via " + kind + "." : "offline."),
-                    SystemClock.elapsedRealtime()));
+                    SystemClock.elapsedRealtime(), savedPreferenceMemory.style(System.currentTimeMillis()))
+                    + savedPreferenceMemory.failureNotice());
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the network status.");
@@ -602,7 +651,8 @@ public class MainActivity extends Activity {
             activityText.setText(preferenceControls.statusResponse(
                     "It is " + timeFormat.format(now) + " on " + dayFormat.format(now) + ".",
                     "Time: " + timeFormat.format(now) + "; " + dayFormat.format(now) + ".",
-                    SystemClock.elapsedRealtime()));
+                    SystemClock.elapsedRealtime(), savedPreferenceMemory.style(System.currentTimeMillis()))
+                    + savedPreferenceMemory.failureNotice());
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
             activityText.setText("FAILED\n\nCould not read the current time.");
