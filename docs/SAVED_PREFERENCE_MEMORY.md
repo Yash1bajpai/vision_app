@@ -79,9 +79,15 @@ were inspected at 360dp width, including scrolling to the end of long output.
 These are simulated Android Activity tests, not a live phone or emulator.
 
 AES-GCM tests use generated synthetic JVM keys. Two new instrumentation tests
-exercise actual Android Keystore and Activity recreation, but have only been
-compiled here, not executed on Android. Run them only in an isolated test
-installation/profile: they clear saved preference test data. Windows CI has not run for this patch;
-the existing workflow is still configured for Linux and Windows after publication.
-No provider/API calls, paid compute, release or physical-device verification are
-claimed. Earlier maintainer-reported phone testing applies to earlier code.
+exercise actual Android Keystore and Activity recreation. They have been executed
+on a physical device: `SavedPreferenceInstrumentedTest` passed 2/2 on 2026-10-16 on
+an I2219 running Android 16 (API 36, arm64). Run them only in an isolated test
+installation/profile: they clear saved preference test data. The targeted emulator
+workflow (`.github/workflows/android-instrumentation.yml`) boots a headless API 28
+x86_64 AVD, runs only that class and asserts exactly two passing tests; its first
+published run (2026-10-16) exhausted the job timeout and was cancelled with no
+output, so the workflow now bounds every blocking command, uses the supported
+`swiftshader_indirect` software GPU and prints stage progress. Windows CI has not
+run for this patch; the existing Linux/Windows workflow is unchanged.
+No provider/API calls, paid compute or release verification are claimed. Earlier
+maintainer-reported phone testing applies to earlier code.

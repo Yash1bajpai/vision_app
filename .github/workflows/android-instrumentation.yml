@@ -4,14 +4,19 @@ on:
   push:
     branches: ['feature/saved-preference-memory']
     paths: ['.github/workflows/android-instrumentation.yml']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: preference-instrumentation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   preference-instrumentation:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,31 +33,68 @@ jobs:
         with:
           gradle-version: '8.7'
           cache-disabled: true
-      - name: Verify hardware acceleration and prepare clean emulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -c /dev/kvm
-          sudo chmod a+rw /dev/kvm
-          "$ANDROID_HOME/emulator/emulator" -accel-check
-          echo no | avdmanager create avd --force --name vision_preference_test --package 'system-images;android-28;default;x86_64'
-      - name: Run only saved-preference instrumentation
+      - name: Boot headless emulator and run saved-preference instrumentation
+        timeout-minutes: 38
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p emulator-evidence
-          "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test -no-window -no-audio -no-boot-anim -no-snapshot -accel on -gpu swiftshader -feature -Vulkan > emulator-evidence/emulator.log 2>&1 &
+          stage() { echo "[stage $(date -u +%H:%M:%S)] $*"; }
+
+          stage "check hardware acceleration"
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+          echo no | avdmanager create avd --force --name vision_preference_test --package 'system-images;android-28;default;x86_64'
+
+          stage "start emulator"
+          # swiftshader_indirect is the supported software-GPU value; plain swiftshader
+          # leaves the renderer wedged on headless runners, which hangs the Activity tests.
+          "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test \
+            -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -accel on -gpu swiftshader_indirect -feature -Vulkan \
+            -camera-back none -camera-front none -memory 2048 \
+            > emulator-evidence/emulator.log 2>&1 &
           EMULATOR_PID=$!
-          trap 'adb logcat -d > emulator-evidence/logcat.txt 2>&1 || true; adb emu kill || true; kill "$EMULATOR_PID" 2>/dev/null || true; wait "$EMULATOR_PID" 2>/dev/null || true' EXIT
-          timeout 120 adb wait-for-device
-          timeout 240 bash -c 'until adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" | grep -qx 1; do sleep 2; done'
-          adb shell settings put global window_animation_scale 0
-          adb shell settings put global transition_animation_scale 0
-          adb shell settings put global animator_duration_scale 0
-          adb shell getprop ro.build.version.release > emulator-evidence/android-version.txt
-          adb shell getprop ro.build.version.sdk >> emulator-evidence/android-version.txt
-          adb shell getprop ro.product.cpu.abi >> emulator-evidence/android-version.txt
-          gradle "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" '-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.SavedPreferenceInstrumentedTest' connectedDebugAndroidTest
+          dump_evidence() {
+            echo "----- adb devices -----"; adb devices -l || true
+            echo "----- emulator.log (tail) -----"; tail -n 80 emulator-evidence/emulator.log 2>/dev/null || true
+            echo "----- logcat.txt (tail) -----"; tail -n 80 emulator-evidence/logcat.txt 2>/dev/null || true
+          }
+          cleanup() {
+            adb logcat -d > emulator-evidence/logcat.txt 2>&1 || true
+            dump_evidence
+            adb emu kill || true
+            kill "$EMULATOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          stage "wait for adb device"
+          timeout -k 10 180 adb wait-for-device
+          stage "wait for boot_completed"
+          timeout -k 10 600 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
+          stage "device booted"
+          adb devices -l
+
+          stage "disable animations and record device fingerprint"
+          timeout -k 10 60 adb shell settings put global window_animation_scale 0
+          timeout -k 10 60 adb shell settings put global transition_animation_scale 0
+          timeout -k 10 60 adb shell settings put global animator_duration_scale 0
+          { adb shell getprop ro.build.version.release
+            adb shell getprop ro.build.version.sdk
+            adb shell getprop ro.product.cpu.abi
+          } | tr -d '\r' > emulator-evidence/android-version.txt
+          cat emulator-evidence/android-version.txt
+
+          stage "run instrumentation"
+          # --console=plain keeps Gradle line-buffered so a stall is visible in the log,
+          # and the outer timeout turns a wedged device/looper into a fast, loud failure
+          # instead of an indefinite hang that rides the job timeout.
+          timeout -k 30 1500 gradle --console=plain \
+            "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
+            '-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.SavedPreferenceInstrumentedTest' \
+            connectedDebugAndroidTest
+          stage "instrumentation finished"
       - name: Print test evidence without stored artifacts
         if: always()
         shell: bash
