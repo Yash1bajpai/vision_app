@@ -1,0 +1,73 @@
+name: Targeted Android preference instrumentation
+
+on:
+  push:
+    branches: ['feature/saved-preference-memory']
+    paths: ['.github/workflows/android-instrumentation.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  preference-instrumentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 emulator system-images;android-28;default;x86_64'
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-disabled: true
+      - name: Verify hardware acceleration and prepare clean emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+          echo no | avdmanager create avd --force --name vision_preference_test --package 'system-images;android-28;default;x86_64'
+      - name: Run only saved-preference instrumentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p emulator-evidence
+          "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test -no-window -no-audio -no-boot-anim -no-snapshot -accel on -gpu swiftshader -feature -Vulkan > emulator-evidence/emulator.log 2>&1 &
+          EMULATOR_PID=$!
+          trap 'adb logcat -d > emulator-evidence/logcat.txt 2>&1 || true; adb emu kill || true; kill "$EMULATOR_PID" 2>/dev/null || true; wait "$EMULATOR_PID" 2>/dev/null || true' EXIT
+          timeout 120 adb wait-for-device
+          timeout 240 bash -c 'until adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" | grep -qx 1; do sleep 2; done'
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell getprop ro.build.version.release > emulator-evidence/android-version.txt
+          adb shell getprop ro.build.version.sdk >> emulator-evidence/android-version.txt
+          adb shell getprop ro.product.cpu.abi >> emulator-evidence/android-version.txt
+          gradle "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" '-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.SavedPreferenceInstrumentedTest' connectedDebugAndroidTest
+      - name: Print test evidence without stored artifacts
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import glob, xml.etree.ElementTree as ET
+          paths = glob.glob('app/build/outputs/androidTest-results/connected/**/*.xml', recursive=True)
+          suites = [ET.parse(path).getroot() for path in paths]
+          total = sum(int(s.get('tests', 0)) for s in suites)
+          failures = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
+          print('Android instrumentation:', total, 'tests;', failures, 'failures/errors')
+          for suite in suites:
+              for case in suite.iter('testcase'):
+                  print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
+          if total != 2 or failures:
+              raise SystemExit('Expected exactly two passing saved-preference instrumentation tests')
+          PYTHON
+          cat emulator-evidence/android-version.txt
