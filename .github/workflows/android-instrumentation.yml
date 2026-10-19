@@ -1,0 +1,148 @@
+name: Targeted Android preference instrumentation
+
+on:
+  push:
+    branches: ['feature/saved-preference-memory']
+    paths: ['.github/workflows/android-instrumentation.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preference-instrumentation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preference-instrumentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 emulator system-images;android-28;default;x86_64'
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-disabled: true
+      - name: Boot headless emulator and run saved-preference instrumentation
+        timeout-minutes: 28
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p emulator-evidence
+          stage() { echo "[stage $(date -u +%H:%M:%S)] $*"; }
+
+          stage "check hardware acceleration"
+          ls -l /dev/kvm
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check || true
+          # avdmanager and emulator versions disagree on default home discovery.
+          # Give both tools the same explicit AVD root and fail before boot if absent.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/vision-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force --name vision_preference_test \
+            --path "$ANDROID_AVD_HOME/vision_preference_test.avd" --package 'system-images;android-28;default;x86_64'
+
+          test -s "$ANDROID_AVD_HOME/vision_preference_test.ini"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee emulator-evidence/avd-list.txt
+          grep -qx vision_preference_test emulator-evidence/avd-list.txt
+
+          stage "start emulator"
+          # swiftshader_indirect is the supported software GPU; plain swiftshader is not.
+          "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test \
+            -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -accel on -gpu swiftshader_indirect -feature -Vulkan \
+            -camera-back none -camera-front none -memory 2048 \
+            > emulator-evidence/emulator.log 2>&1 &
+          EMULATOR_PID=$!
+
+          # Every command here is bounded. An unbounded adb call on a device-less
+          # server blocks forever and hides the real failure behind a step timeout.
+          cleanup() {
+            echo "===== emulator-evidence/emulator.log ====="
+            cat emulator-evidence/emulator.log 2>/dev/null || true
+            echo "===== adb devices ====="
+            timeout -k 5 30 adb devices -l || true
+            echo "===== logcat tail ====="
+            timeout -k 5 60 adb logcat -d 2>/dev/null | tail -n 80 || true
+            timeout -k 5 30 adb emu kill || true
+            kill "$EMULATOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          stage "wait for emulator to appear in adb"
+          seen=0
+          for _ in $(seq 1 50); do
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              echo "emulator process exited before adb listed it"
+              exit 1
+            fi
+            if timeout -k 5 15 adb devices 2>/dev/null | grep -q '^emulator-'; then seen=1; break; fi
+            sleep 3
+          done
+          if [ "$seen" != 1 ]; then
+            echo "emulator never appeared in adb within 150s"
+            exit 1
+          fi
+          stage "emulator visible to adb"
+
+          timeout -k 5 30 adb wait-for-device
+          stage "wait for boot_completed"
+          timeout -k 10 420 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
+          stage "device booted"
+          timeout -k 5 30 adb devices -l
+
+          stage "disable animations and record device fingerprint"
+          timeout -k 5 30 adb shell settings put global window_animation_scale 0
+          timeout -k 5 30 adb shell settings put global transition_animation_scale 0
+          timeout -k 5 30 adb shell settings put global animator_duration_scale 0
+          { adb shell getprop ro.build.version.release
+            adb shell getprop ro.build.version.sdk
+            adb shell getprop ro.product.cpu.abi
+          } | tr -d '\r' > emulator-evidence/android-version.txt
+          cat emulator-evidence/android-version.txt
+
+          stage "run instrumentation"
+          # --console=plain keeps Gradle line-buffered; the outer timeout turns a
+          # wedged device or main looper into a fast failure instead of a silent hang.
+          timeout -k 30 720 gradle --console=plain \
+            "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
+            '-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.SavedPreferenceInstrumentedTest' \
+            connectedDebugAndroidTest
+          stage "instrumentation finished"
+      - name: Upload emulator diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-evidence
+          path: emulator-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Print test evidence without stored artifacts
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import glob, xml.etree.ElementTree as ET
+          paths = glob.glob('app/build/outputs/androidTest-results/connected/**/*.xml', recursive=True)
+          suites = [ET.parse(path).getroot() for path in paths]
+          total = sum(int(s.get('tests', 0)) for s in suites)
+          failures = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
+          print('Android instrumentation:', total, 'tests;', failures, 'failures/errors')
+          for suite in suites:
+              for case in suite.iter('testcase'):
+                  print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
+          if total != 2 or failures:
+              raise SystemExit('Expected exactly two passing saved-preference instrumentation tests')
+          PYTHON
+          cat emulator-evidence/android-version.txt

@@ -1,5 +1,9 @@
 # Session preference controls
 
+For the separate opt-in encrypted 30-day mode on the review branch, see
+[SAVED_PREFERENCE_MEMORY.md](SAVED_PREFERENCE_MEMORY.md). This document records
+the original session-only behavior below.
+
 Preference controls and response styling, integrated on main `1447ea0` on
 2026-10-08 alongside dialer, clock reminder and offline push-to-talk features.
 The filename is retained so existing links keep working.

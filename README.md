@@ -3,10 +3,24 @@
 Offline-first Android assistant with deterministic commands and an optional,
 user-keyed cloud reasoning route. Known commands stay local. Supported ordinary
 actions run after validation; existing risky-action confirmations remain.
-Cloud configuration can be saved with Android Keystore encryption. Preference
-memory is still session-only; there is no persistent user memory or bundled model.
+Cloud configuration can be saved with Android Keystore encryption. A separate,
+off-by-default saved response-style preference uses its own encrypted store and
+30-day expiry. The 60-second session-only mode remains. There is no conversation
+memory or bundled model.
 
-## Current main status (2026-10-14)
+## Saved preference memory (review branch, 2026-10-15)
+
+Only `response_style = concise|standard` can be saved, after a separate opt-in
+notice and explicit save. View, forget, clear and disable controls are available.
+It changes successful battery/network/time wording only, never model input or
+action approvals. Session values are not copied automatically. Saved values
+expire 30 days after explicit save; reads and restarts do not extend retention.
+The local review patch passes 235 JVM/Robolectric tests, debug and instrumentation
+APK builds, and lint (0 errors, 69 warnings) on Linux. New actual-Keystore tests
+are compiled, not run on Android; Windows CI has not run for this patch.
+See [commands, storage, deletion and verification limits](docs/SAVED_PREFERENCE_MEMORY.md).
+
+## Previous main status (2026-10-14)
 
 PR #16 is merged on main `cb00a9f`. Post-merge GitHub Actions passed the JVM
 suite, debug and androidTest APK builds, and lint on Linux and Windows.
