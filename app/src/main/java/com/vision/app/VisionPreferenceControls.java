@@ -57,8 +57,14 @@ public final class VisionPreferenceControls {
 
     /** Only trusted, structured status facts use this style; never arbitrary text truncation. */
     public String statusResponse(String standard, String concise, long now) {
+        return statusResponse(standard, concise, now, null);
+    }
+
+    /** Session-only choice takes precedence; saved enum is a local wording fallback. */
+    public String statusResponse(String standard, String concise, long now, String savedStyle) {
         expire(now);
-        return "SUCCEEDED\n\n" + (enabled && "concise".equals(responseStyle) ? concise : standard);
+        String selected = enabled && responseStyle != null ? responseStyle : savedStyle;
+        return "SUCCEEDED\n\n" + ("concise".equals(selected) ? concise : standard);
     }
 
     public void reset() { enabled = false; clearValues(); }
