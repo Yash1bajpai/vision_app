@@ -3,11 +3,11 @@
 The emulator workflow now runs all Android instrumentation rather than filtering
 to one preference test class. It keeps a read-only repository token, bounded
 startup/test commands and short-lived diagnostics on failure. It fails when
-fewer than the current six baseline tests execute, any fail or any are skipped.
+fewer than the current eight baseline tests execute, any fail or any are skipped.
 It runs on changes to app code or its workflow; it can also be run manually.
 
 The baseline covers cloud-key Keystore round trip/clear using a synthetic key,
-message-confirmation Deny/dismiss/recreation, and help-command rendering.
+message-confirmation Deny/dismiss/recreation, help-command rendering and synthetic voice-session cancellation/recreation.
 It does not make calls, send messages, use real API keys or contact providers.
 
 This is a production-hardening batch, not production certification. Emulator
