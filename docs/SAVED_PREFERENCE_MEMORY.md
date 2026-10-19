@@ -79,15 +79,18 @@ were inspected at 360dp width, including scrolling to the end of long output.
 These are simulated Android Activity tests, not a live phone or emulator.
 
 AES-GCM tests use generated synthetic JVM keys. Two new instrumentation tests
-exercise actual Android Keystore and Activity recreation. They have been executed
-on a physical device: `SavedPreferenceInstrumentedTest` passed 2/2 on 2026-10-16 on
-an I2219 running Android 16 (API 36, arm64). Run them only in an isolated test
-installation/profile: they clear saved preference test data. The targeted emulator
-workflow (`.github/workflows/android-instrumentation.yml`) boots a headless API 28
-x86_64 AVD, runs only that class and asserts exactly two passing tests; its first
-published run (2026-10-16) exhausted the job timeout and was cancelled with no
-output, so the workflow now bounds every blocking command, uses the supported
-`swiftshader_indirect` software GPU and prints stage progress. Windows CI has not
-run for this patch; the existing Linux/Windows workflow is unchanged.
+exercise actual Android Keystore and Activity recreation. The recorded CI run on
+2026-10-19 passed both tests (2/2, zero failures) on an API 28 x86_64 emulator:
+https://github.com/Yash1bajpai/vision_app/actions/runs/39296587982
+
+The earlier physical-device 2/2 claim was not backed by recovered test output;
+it is not independent verification and is superseded here by recorded emulator
+evidence. Emulator Keystore success does not prove hardware backing or behavior
+on the maintainer's physical phone. Run instrumentation only in an isolated test
+installation/profile: it clears saved preference test data.
+
+The targeted workflow uses an explicit shared AVD directory for avdmanager and
+the emulator, checks AVD discovery before boot and bounds blocking commands.
+Linux and Windows test/build/lint CI also passed for the workflow correction.
 No provider/API calls, paid compute or release verification are claimed. Earlier
-maintainer-reported phone testing applies to earlier code.
+maintainer-reported phone testing applies only to the code and checks reported.
