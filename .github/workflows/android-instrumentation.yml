@@ -46,7 +46,16 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -accel-check || true
-          echo no | avdmanager create avd --force --name vision_preference_test --package 'system-images;android-28;default;x86_64'
+          # avdmanager and emulator versions disagree on default home discovery.
+          # Give both tools the same explicit AVD root and fail before boot if absent.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/vision-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force --name vision_preference_test \
+            --path "$ANDROID_AVD_HOME/vision_preference_test.avd" --package 'system-images;android-28;default;x86_64'
+
+          test -s "$ANDROID_AVD_HOME/vision_preference_test.ini"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee emulator-evidence/avd-list.txt
+          grep -qx vision_preference_test emulator-evidence/avd-list.txt
 
           stage "start emulator"
           # swiftshader_indirect is the supported software GPU; plain swiftshader is not.
