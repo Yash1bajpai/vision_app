@@ -58,4 +58,23 @@ public class VisionVoiceUiTest {
     @Test public void replacementIgnoresOldCallback()throws Exception {
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();FakeVoice v=install(a);begin(a);OfflineVoiceInput.Callback old=v.callback;begin(a);old.result("old text");assertEquals("",((EditText)field(a,"inputField")).getText().toString());v.callback.result("new text");assertEquals("new text",((EditText)field(a,"inputField")).getText().toString());c.pause().stop().destroy();
     }
+
+    @Test public void pauseAloneStopsMicrophoneAndRejectsLateResult()throws Exception {
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();FakeVoice v=install(a);begin(a);
+        c.pause();assertTrue(v.cancelled);v.callback.result("help");
+        assertEquals("",((EditText)field(a,"inputField")).getText().toString());c.stop().destroy();
+    }
+    @Test public void availabilityFailureStaysLocalAndDoesNotCrash()throws Exception {
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();
+        set(a,"voiceInput",new OfflineVoiceInput(){public boolean available(Context context){throw new SecurityException("service unavailable");}});
+        begin(a);assertTrue(((android.widget.TextView)field(a,"activityText")).getText().toString().startsWith("OFFLINE VOICE UNAVAILABLE"));
+        assertNull(shadowOf(a).getNextStartedActivity());c.pause().stop().destroy();
+    }
+    @Test public void releaseOutsideButtonCancelsRatherThanFinishes()throws Exception {
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();FakeVoice v=install(a);begin(a);
+        android.widget.Button button=(android.widget.Button)field(a,"voiceButton");button.layout(0,0,300,100);
+        android.view.MotionEvent event=android.view.MotionEvent.obtain(0,0,android.view.MotionEvent.ACTION_UP,-1,50,0);
+        button.dispatchTouchEvent(event);event.recycle();assertTrue(v.cancelled);v.callback.result("help");
+        assertEquals("",((EditText)field(a,"inputField")).getText().toString());c.pause().stop().destroy();
+    }
 }
