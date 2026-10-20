@@ -11,7 +11,7 @@ new Android permissions or new action types.
 - Keep generation-bound results, the 30-second timeout, edit protection and
   explicit Send requirement.
 
-Local validation: 215 JVM/Robolectric tests, both APK builds and lint pass.
+Local validation: 238 JVM/Robolectric tests, both APK builds and lint pass.
 New regression tests cover pause without stop, a throwing availability service
 and an outside-button release. The native-graphics draft screen is also checked
 visually. These use fake recognition results: they do not prove real microphone

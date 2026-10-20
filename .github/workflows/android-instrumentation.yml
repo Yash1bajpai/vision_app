@@ -1,20 +1,23 @@
-name: Targeted Android preference instrumentation
+name: Android emulator safety checks
 
 on:
   push:
-    branches: ['feature/saved-preference-memory']
-    paths: ['.github/workflows/android-instrumentation.yml']
+    branches: [main, 'feature/android-production-checks']
+    paths: ['.github/workflows/android-instrumentation.yml', 'app/**']
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/android-instrumentation.yml', 'app/**']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: preference-instrumentation-${{ github.ref }}
+  group: android-safety-instrumentation-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  preference-instrumentation:
+  android-safety-instrumentation:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -33,7 +36,7 @@ jobs:
         with:
           gradle-version: '8.7'
           cache-disabled: true
-      - name: Boot headless emulator and run saved-preference instrumentation
+      - name: Boot headless emulator and run Android safety instrumentation
         timeout-minutes: 28
         shell: bash
         run: |
@@ -117,7 +120,6 @@ jobs:
           # wedged device or main looper into a fast failure instead of a silent hang.
           timeout -k 30 720 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
-            '-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.SavedPreferenceInstrumentedTest' \
             connectedDebugAndroidTest
           stage "instrumentation finished"
       - name: Upload emulator diagnostics on failure
@@ -138,11 +140,12 @@ jobs:
           suites = [ET.parse(path).getroot() for path in paths]
           total = sum(int(s.get('tests', 0)) for s in suites)
           failures = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
+          skipped = sum(int(s.get('skipped', 0)) for s in suites)
           print('Android instrumentation:', total, 'tests;', failures, 'failures/errors')
           for suite in suites:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
-          if total != 2 or failures:
-              raise SystemExit('Expected exactly two passing saved-preference instrumentation tests')
+          if total != 10 or failures or skipped:
+              raise SystemExit('Expected exactly ten passing Android safety instrumentation tests')
           PYTHON
           cat emulator-evidence/android-version.txt
