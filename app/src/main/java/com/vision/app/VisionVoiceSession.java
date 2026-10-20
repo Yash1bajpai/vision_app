@@ -10,6 +10,7 @@ public final class VisionVoiceSession {
         return active && token==generation && draft.equals(currentDraft) && text!=null
                 && !text.trim().isEmpty() && text.length()<=512;
     }
+    public boolean isActive() { return active; }
     public boolean isCurrent(long token) { return active && token==generation; }
     public void cancel() { active=false;generation++; }
 }

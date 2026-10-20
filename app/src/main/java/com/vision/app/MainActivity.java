@@ -452,8 +452,13 @@ public class MainActivity extends Activity {
         voiceButton.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) { beginVoice(); return true; }
             if (event.getAction() == MotionEvent.ACTION_UP) {
-                try { voiceInput.stop(); } catch (Exception e) { cancelVoice(); }
-                voiceButton.setText("Hold to talk");v.performClick();return true;
+                if (event.getX() < 0 || event.getY() < 0
+                        || event.getX() >= v.getWidth() || event.getY() >= v.getHeight()) {
+                    cancelVoice();
+                } else if (voiceSession.isActive()) {
+                    finishVoice();
+                }
+                v.performClick();return true;
             }
             if (event.getAction() == MotionEvent.ACTION_CANCEL) { cancelVoice();return true; }
             return true;
@@ -522,7 +527,10 @@ public class MainActivity extends Activity {
         if (pendingPlan != null || (activeDialog != null && activeDialog.isShowing())) {
             activityText.setText("VOICE UNAVAILABLE\n\nFinish or cancel the current confirmation or plan first.");return;
         }
-        if (!voiceInput.available(this)) {
+        boolean localAvailable;
+        try { localAvailable = voiceInput.available(this); }
+        catch (RuntimeException unavailable) { localAvailable = false; }
+        if (!localAvailable) {
             activityText.setText("OFFLINE VOICE UNAVAILABLE\n\nAndroid 12+ and an installed on-device speech service are required. Type your request instead. No online fallback is used.");return;
         }
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -554,6 +562,24 @@ public class MainActivity extends Activity {
                 }
             });
         } catch (Exception e) { cancelVoice();activityText.setText("VOICE UNAVAILABLE\n\nCould not start offline recognition. Type your request instead."); }
+    }
+
+    private void finishVoice() {
+        try {
+            voiceInput.stop();
+            voiceButton.setText("Finishing offline draft");
+        } catch (RuntimeException unavailable) {
+            cancelVoice();
+            activityText.setText("VOICE STOPPED\n\nNo voice draft was accepted. Type your request instead.");
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        // Losing the foreground must stop the microphone immediately, even when
+        // onStop is delayed by a translucent Activity or system overlay.
+        cancelVoice();
+        super.onPause();
     }
 
     private void cancelVoice() {
