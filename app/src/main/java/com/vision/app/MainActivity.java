@@ -1281,6 +1281,10 @@ public class MainActivity extends Activity {
             return;
         }
         VisionAction action = coordination.action;
+        if (action.type == VisionAction.Type.UNSUPPORTED_MULTI_ACTION) {
+            activityText.setText("MULTIPLE ACTIONS NOT SUPPORTED\n\nVision heard more than one action in this request and did not run any of them. Send one action at a time.");
+            return;
+        }
         if (action.type == VisionAction.Type.UNKNOWN) {
             activityText.setText("REQUEST NOT RECOGNIZED\n\nVision did not perform anything. Type help to see supported commands.");
             return;

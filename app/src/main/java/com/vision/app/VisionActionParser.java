@@ -55,6 +55,39 @@ public final class VisionActionParser {
 
     private static final long MAX_TIMER_SECONDS = 24L * 60L * 60L;
 
+    // --- Multi-action detection ---------------------------------------------
+    // Verbs that can begin an action clause. Used to split chained requests and
+    // to decide whether a clause asks the device to do something.
+    private static final String ACTION_VERBS =
+            "open|launch|start|set|turn|toggle|switch|play|pause|stop|skip|mute|unmute|silence"
+            + "|call|dial|send|reply|navigate|create|schedule|remind|check|read|show|tell|get"
+            + "|increase|decrease|raise|lower";
+
+    // Explicit sequencing words, or 'and' directly followed by an action verb. A plain
+    // 'and' never splits on its own, so payloads and names ('mom and dad', 'rock and
+    // roll') stay one request.
+    private static final Pattern CLAUSE_BOUNDARY_PATTERN = Pattern.compile(
+            "\\s+(?:and\\s+then|then|and\\s+also|and\\s+after\\s+that|after\\s+that)\\s+"
+                    + "|\\s+and\\s+(?=(?:" + ACTION_VERBS + ")\\b)"
+    );
+
+    private static final Pattern ACTION_VERB_WORD = Pattern.compile(
+            ".*\\b(?:" + ACTION_VERBS + ")\\b.*"
+    );
+
+    // Nouns naming something Vision can act on; a clause containing one asks for work
+    // even when its verb was left in the previous clause ('open Telegram and Gmail').
+    private static final Pattern ACTION_TARGET_WORD = Pattern.compile(
+            ".*\\b(?:whatsapp|telegram|gmail|messages|calendar|torch|flashlight|timer|alarm"
+                    + "|music|songs?|tracks?|media|volume|event|battery|network|notifications?)\\b.*"
+    );
+
+    private static final Pattern OPEN_VERB_WORD = Pattern.compile(".*\\b(?:open|launch|start)\\b.*");
+    private static final Pattern TORCH_WORD = Pattern.compile(".*\\b(?:torch|flashlight)\\b.*");
+    private static final Pattern TORCH_SWITCH_VERB = Pattern.compile(".*\\b(?:turn|toggle|switch)\\b.*");
+    private static final java.util.Set<String> APP_TOKENS = new java.util.HashSet<>(
+            java.util.Arrays.asList("whatsapp", "telegram", "gmail", "messages", "calendar"));
+
     private VisionActionParser() { }
 
     public static VisionAction parse(String request) {
@@ -122,6 +155,13 @@ public final class VisionActionParser {
         }
 
         String normalized = trimmed.replaceAll("\\s+", " ").toLowerCase(Locale.US);
+
+        // Refuse chained requests before any single action can run. This check sits
+        // after the structured message/reply/call/reminder patterns, so message bodies
+        // and contact names containing 'and' are never inspected here.
+        if (isMultiActionRequest(normalized)) {
+            return new VisionAction(VisionAction.Type.UNSUPPORTED_MULTI_ACTION, request, "");
+        }
 
         if (normalized.matches("(?:help|commands|show commands|show capabilities|what can you do)[?!.]?")) {
             return new VisionAction(VisionAction.Type.SHOW_HELP, request, "capabilities");
@@ -253,6 +293,60 @@ public final class VisionActionParser {
             }
         }
         return false;
+    }
+
+    /**
+     * True when a free-text request clearly chains more than one action, e.g.
+     * "open Telegram and then open Gmail" or "turn the torch off and then on again".
+     * The deterministic parser executes exactly one action per request, so a chained
+     * request must be refused up front instead of silently running only its first part.
+     *
+     * Conservative by design: structured message, reply, call and reminder requests are
+     * returned before this check runs, so their payloads are never inspected; a plain
+     * "and" only starts a new clause when an action verb follows it, keeping phrasings
+     * like "play rock and roll music" single-action.
+     */
+    public static boolean isMultiActionRequest(String request) {
+        if (request == null) {
+            return false;
+        }
+        String normalized = request.trim().replaceAll("\\s+", " ").toLowerCase(Locale.US);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        boolean torchMentioned = TORCH_WORD.matcher(normalized).matches();
+        int actionClauses = 0;
+        for (String clause : CLAUSE_BOUNDARY_PATTERN.split(normalized)) {
+            if (clause.isEmpty()) {
+                continue;
+            }
+            if (ACTION_VERB_WORD.matcher(clause).matches()
+                    || ACTION_TARGET_WORD.matcher(clause).matches()
+                    || (torchMentioned && clause.matches(".*\\b(?:on|off)\\b.*"))) {
+                actionClauses++;
+            }
+        }
+        if (actionClauses >= 2) {
+            return true;
+        }
+        // "Turn the torch on and off" chains two device changes with no sequencing word.
+        if (torchMentioned && TORCH_SWITCH_VERB.matcher(normalized).matches()
+                && normalized.matches(".*\\bon\\b.*") && normalized.matches(".*\\boff\\b.*")) {
+            return true;
+        }
+        // Two distinct apps cannot both open ("open Telegram and Gmail").
+        return OPEN_VERB_WORD.matcher(normalized).matches() && distinctAppTokenCount(normalized) >= 2;
+    }
+
+    private static int distinctAppTokenCount(String normalized) {
+        int count = 0;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String token : normalized.split("[^a-z0-9_]+")) {
+            if (APP_TOKENS.contains(token) && seen.add(token)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     // ===================== Daily-driver intent helpers =====================

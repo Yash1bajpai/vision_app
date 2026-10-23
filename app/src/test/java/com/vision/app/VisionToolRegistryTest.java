@@ -28,7 +28,9 @@ public class VisionToolRegistryTest {
             assertEquals(VisionRiskPolicy.requiresConfirmation(tool.type), tool.requiresConfirmation());
         }
         for (VisionAction.Type type : VisionAction.Type.values()) {
-            assertEquals(type != VisionAction.Type.UNKNOWN, seen.contains(type));
+            // UNKNOWN and the parser's own multi-action refusal are not provider capabilities.
+            assertEquals(type != VisionAction.Type.UNKNOWN
+                    && type != VisionAction.Type.UNSUPPORTED_MULTI_ACTION, seen.contains(type));
         }
     }
 
