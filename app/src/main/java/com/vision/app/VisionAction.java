@@ -21,6 +21,7 @@ public final class VisionAction {
         SET_VOLUME,
         TOGGLE_TORCH,
         CREATE_CALENDAR_EVENT,
+        UNSUPPORTED_MULTI_ACTION,
         UNKNOWN
     }
 
@@ -122,6 +123,7 @@ public final class VisionAction {
         if (type == Type.SET_VOLUME) return "Set volume: " + target;
         if (type == Type.TOGGLE_TORCH) return "Toggle the flashlight";
         if (type == Type.CREATE_CALENDAR_EVENT) return "Create calendar event";
+        if (type == Type.UNSUPPORTED_MULTI_ACTION) return "Refuse a multi-action request";
         return "Process this request locally";
     }
 
