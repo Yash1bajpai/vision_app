@@ -779,8 +779,7 @@ public class MainActivity extends Activity {
             } else {
                 startActivity(timer);
                 action.state = VisionAction.State.SUCCEEDED;
-                activityText.setText("SUCCEEDED\n\nTimer set for " + action.target
-                        + ".\n\nThe countdown is running in your clock app.");
+                activityText.setText(VisionTimerText.handoffMessage(action.target));
             }
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;
