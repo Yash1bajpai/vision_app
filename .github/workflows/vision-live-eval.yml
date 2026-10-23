@@ -1,0 +1,92 @@
+name: Vision live 25-request evaluation (manual)
+
+# Manual only. Needs the repository secret VISION_EVAL_GROQ_KEY (free-tier, temporary).
+# The key is piped over stdin into the app's private files directory. It is never a
+# command argument, instrumentation argument, artifact or log line.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 emulator system-images;android-28;default;x86_64'
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-disabled: true
+      - name: Build debug and test APKs
+        run: |
+          gradle --console=plain "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" assembleDebug assembleDebugAndroidTest
+          ls -l app/build/outputs/apk/debug app/build/outputs/apk/androidTest/debug
+      - name: Boot emulator, run the evaluation, collect results
+        env:
+          GROQ_KEY: ${{ secrets.VISION_EVAL_GROQ_KEY }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          test -n "$GROQ_KEY" || { echo "VISION_EVAL_GROQ_KEY secret is missing"; exit 1; }
+          mkdir -p eval-out
+          test -c /dev/kvm && sudo chmod a+rw /dev/kvm
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/vision-avd"; mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force --name vision_eval --path "$ANDROID_AVD_HOME/vision_eval.avd" --package 'system-images;android-28;default;x86_64'
+          "$ANDROID_HOME/emulator/emulator" -avd vision_eval -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -accel on -gpu swiftshader_indirect -feature -Vulkan -camera-back none -camera-front none -memory 2048 \
+            > emulator.log 2>&1 &
+          EMU=$!
+          cleanup() { timeout -k 5 20 adb emu kill >/dev/null 2>&1 || true; kill "$EMU" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for _ in $(seq 1 50); do timeout -k 5 15 adb devices 2>/dev/null | grep -q '^emulator-' && break; sleep 3; done
+          timeout -k 5 30 adb wait-for-device
+          timeout -k 10 420 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
+          for s in window_animation_scale transition_animation_scale animator_duration_scale; do adb shell settings put global $s 0; done
+          adb shell getprop ro.build.version.release | tr -d '\r' > eval-out/android-version.txt
+          adb install -r app/build/outputs/apk/debug/app-debug.apk | tail -1
+          adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk | tail -1
+          for p in READ_CONTACTS READ_CALENDAR WRITE_CALENDAR RECORD_AUDIO; do adb shell pm grant com.vision.app android.permission.$p || true; done
+          # Key goes in over stdin only (printf is a shell builtin, so it never appears in argv).
+          printf '%s' "$GROQ_KEY" | adb shell "run-as com.vision.app sh -c 'mkdir -p files; cat > files/eval_key'"
+          adb shell "run-as com.vision.app ls -l files/eval_key" | awk '{print "key file bytes:", $4}'
+          timeout -k 30 1500 adb shell am instrument -w -e class com.vision.app.VisionLiveEvalInstrumentedTest \
+            com.vision.app.test/androidx.test.runner.AndroidJUnitRunner > eval-out/instrument.txt 2>&1
+          echo "instrument exit: $?"
+          adb exec-out "run-as com.vision.app cat files/eval_results.json" > eval-out/results.json 2>/dev/null || true
+          adb shell "run-as com.vision.app rm -f files/eval_key" || true
+          # Leak guard: delete everything we would upload if the key text appears anywhere in it.
+          if grep -rqF -- "$GROQ_KEY" eval-out; then echo "KEY FOUND IN OUTPUT - removing outputs"; rm -rf eval-out; mkdir eval-out; echo leak > eval-out/LEAK_GUARD_TRIGGERED; exit 1; fi
+          tail -n 12 eval-out/instrument.txt
+          python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('eval-out/results.json'))
+          except Exception as e:
+              raise SystemExit('no results.json: %s' % e)
+          for c in d['cases']:
+              print(c['id'], c['auto_verdict'], '| parser_known=%s dialog=%s mode=%s | %s | %s' % (c['parser_known'], c['dialog_shown'], c['provider_mode'], c['request'], c['observed'].replace('\n', ' / ')[:110]))
+          PY
+      - name: Upload results (no key material, leak-guarded)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vision-live-eval
+          path: |
+            eval-out/results.json
+            eval-out/instrument.txt
+            eval-out/android-version.txt
+            eval-out/LEAK_GUARD_TRIGGERED
+          if-no-files-found: ignore
+          retention-days: 7
