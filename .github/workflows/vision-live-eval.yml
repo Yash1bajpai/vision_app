@@ -63,7 +63,7 @@ jobs:
           for p in READ_CONTACTS READ_CALENDAR WRITE_CALENDAR RECORD_AUDIO; do adb shell pm grant com.vision.app android.permission.$p || true; done
           # Key goes in over stdin only (printf is a shell builtin, so it never appears in argv).
           printf '%s' "$GROQ_KEY" | adb shell "run-as com.vision.app sh -c 'mkdir -p files; cat > files/eval_key'"
-          adb shell "run-as com.vision.app ls -l files/eval_key" | awk '{print "key file bytes:", $4}'
+          adb shell "run-as com.vision.app ls -l files/eval_key" | awk '{print "key file present, size column:", $5}'
           timeout -k 30 1500 adb shell am instrument -w -e class com.vision.app.VisionLiveEvalInstrumentedTest \
             com.vision.app.test/androidx.test.runner.AndroidJUnitRunner > eval-out/instrument.txt 2>&1
           echo "instrument exit: $?"
