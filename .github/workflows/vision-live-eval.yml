@@ -1,9 +1,12 @@
 name: Vision live 25-request evaluation (manual)
 
-# Manual only. Needs the repository secret VISION_EVAL_GROQ_KEY (free-tier, temporary).
+# Runs only on a push to eval/vision-live-25 that changes eval-trigger.txt (or manual dispatch once on the default branch). Needs the repository secret VISION_EVAL_GROQ_KEY (free-tier, temporary).
 # The key is piped over stdin into the app's private files directory. It is never a
 # command argument, instrumentation argument, artifact or log line.
 on:
+  push:
+    branches: ['eval/vision-live-25']
+    paths: ['eval-trigger.txt']
   workflow_dispatch:
 
 permissions:
