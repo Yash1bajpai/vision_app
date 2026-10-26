@@ -114,9 +114,10 @@ jobs:
           stage "run capture instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
           # wedged device or main looper into a fast failure instead of a silent hang.
+          CAPTURE_EXIT=0
           timeout -k 30 720 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
-            connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.DemoCaptureInstrumentedTest
+            connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.DemoCaptureInstrumentedTest || CAPTURE_EXIT=$?
           adb shell pkill -INT screenrecord || true
           wait "$RECORD_PID" || true
           adb pull /sdcard/vision-demo.mp4 demo-output/vision-demo-raw.mp4
@@ -124,6 +125,7 @@ jobs:
           cp emulator-evidence/android-version.txt demo-output/
           git rev-parse HEAD > demo-output/capture-commit.txt
           stage "instrumentation finished"
+          exit "$CAPTURE_EXIT"
       - name: Upload emulator diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4

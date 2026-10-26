@@ -55,7 +55,7 @@ public class DemoCaptureInstrumentedTest {
             scenario.onActivity(activity -> {
                 String actual = VisionUi.activityText(activity).getText().toString();
                 String expected = new SimpleDateFormat("h:mm a", Locale.US).format(new Date());
-                assertTrue(actual, actual.startsWith("It is ") && actual.contains(expected));
+                assertTrue(actual, actual.startsWith("SUCCEEDED") && actual.contains("It is ") && actual.contains(expected));
                 evidence.append("TIME: ").append(actual).append('\n');
             });
             pause(2000); screenshot("01-time"); pause(10000);
