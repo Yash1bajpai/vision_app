@@ -103,13 +103,16 @@ jobs:
           } | tr -d '\r' > emulator-evidence/android-version.txt
           cat emulator-evidence/android-version.txt
 
+          # Larger real viewport keeps the full refusal visible without scrolling.
+          adb shell wm size 720x1440
+          adb shell wm density 240
           stage "build APKs before recording"
           timeout -k 30 600 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
             assembleDebug assembleDebugAndroidTest
           stage "record real emulator display"
           mkdir -p demo-output
-          adb shell screenrecord --size 720x1280 --bit-rate 3500000 --time-limit 120 /sdcard/vision-demo.mp4 > emulator-evidence/screenrecord.log 2>&1 &
+          adb shell screenrecord --size 720x1440 --bit-rate 3500000 --time-limit 120 /sdcard/vision-demo.mp4 > emulator-evidence/screenrecord.log 2>&1 &
           RECORD_PID=$!
           stage "run capture instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
