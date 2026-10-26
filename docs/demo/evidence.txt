@@ -1,0 +1,12 @@
+TIME: SUCCEEDED
+
+It is 9:12 AM on Monday, 26 October 2026.
+REFUSAL: MULTIPLE ACTIONS NOT SUPPORTED
+
+Vision heard more than one action in this request and did not run any of them. Send one action at a time.
+CANCELLATION: CANCELLED
+
+Event "Demo rehearsal"
+
+Confirmation was dismissed.
+No WRITE_CALENDAR grant; confirmation dismissed before permission/write path.
