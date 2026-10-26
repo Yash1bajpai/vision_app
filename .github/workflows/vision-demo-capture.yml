@@ -115,9 +115,15 @@ jobs:
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
           # wedged device or main looper into a fast failure instead of a silent hang.
           CAPTURE_EXIT=0
-          timeout -k 30 720 gradle --console=plain \
-            "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
-            connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.DemoCaptureInstrumentedTest || CAPTURE_EXIT=$?
+          # Direct runner preserves the app's external evidence directory. Gradle's
+          # connected-test cleanup uninstalls the package and removes those files.
+          adb install -r app/build/outputs/apk/debug/app-debug.apk
+          adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          timeout -k 10 180 adb shell am instrument -w -r \
+            -e class com.vision.app.DemoCaptureInstrumentedTest \
+            com.vision.app.test/androidx.test.runner.AndroidJUnitRunner \
+            | tee demo-output/instrumentation.txt
+          grep -q 'OK (1 test)' demo-output/instrumentation.txt || CAPTURE_EXIT=1
           adb shell pkill -INT screenrecord || true
           wait "$RECORD_PID" || true
           adb pull /sdcard/vision-demo.mp4 demo-output/vision-demo-raw.mp4
