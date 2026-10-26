@@ -53,7 +53,7 @@ jobs:
           "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test \
             -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
             -accel on -gpu swiftshader_indirect -feature -Vulkan \
-            -camera-back none -camera-front none -memory 2048 \
+            -camera-back none -camera-front none -memory 2048 -skin 720x1440 -dpi-device 240 \
             > emulator-evidence/emulator.log 2>&1 &
           EMULATOR_PID=$!
 
@@ -103,9 +103,6 @@ jobs:
           } | tr -d '\r' > emulator-evidence/android-version.txt
           cat emulator-evidence/android-version.txt
 
-          # Larger real viewport keeps the full refusal visible without scrolling.
-          adb shell wm size 720x1440
-          adb shell wm density 240
           stage "build APKs before recording"
           timeout -k 30 600 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
