@@ -67,10 +67,10 @@ These are real Android 9 emulator screens, not mockups. The app still contains h
 
 ## Verification
 
-Current documentation baseline: main `0dad5862727515c2183ad1af45908d35157bcbb4` (app version `0.12.0`).
+Current documentation baseline: main `6387cfca2383fce8a93ca7b92acaf57bdf793792` (app version `0.12.0`).
 
-- [Linux and Windows checks](https://github.com/Yash1bajpai/vision_app/actions/runs/40005204328) passed unit-test/build/lint jobs on this commit.
-- [Android emulator safety checks](https://github.com/Yash1bajpai/vision_app/actions/runs/40005204260) passed on this commit. The workflow requires exactly 13 passing instrumented tests, with no failures or skips. These cover selected key/preference, voice-lifecycle, dialog-cancellation, help and multi-action paths.
+- [Linux and Windows checks](https://github.com/Yash1bajpai/vision_app/actions/runs/40640583526) passed unit-test/build/lint jobs on this commit.
+- [Android emulator safety checks](https://github.com/Yash1bajpai/vision_app/actions/runs/40640583550) passed on this commit. The workflow requires exactly 15 passing instrumented tests, with no failures or skips. These cover selected key/preference, voice-lifecycle, dialog-cancellation, help, multi-action and clock-handoff wording paths.
 - The [temporary demo capture run](https://github.com/Yash1bajpai/vision_app/actions/runs/40297383437) passed one dedicated Android instrumentation flow on capture commit `617134f` (no production-code changes from the baseline). It checked device time, refusal and Android Back cancellation. Calendar-write permission stayed denied throughout. This is new emulator evidence, not a real-phone or cloud test. The full original suite was not rerun by that dedicated flow. It does not prove every provider, OEM, microphone, battery or hardware-backed Keystore behavior.
 
 ## Known limitations
