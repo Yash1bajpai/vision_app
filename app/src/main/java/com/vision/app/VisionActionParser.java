@@ -329,6 +329,12 @@ public final class VisionActionParser {
         if (actionClauses >= 2) {
             return true;
         }
+        // Two different status reads joined by a conjunction ("check battery and network")
+        // cannot both run; refuse instead of answering only the first.
+        if (normalized.matches(".*(?:\\band\\b|,|&|\\bplus\\b).*")
+                && distinctStatusTargetCount(normalized) >= 2) {
+            return true;
+        }
         // "Turn the torch on and off" chains two device changes with no sequencing word.
         if (torchMentioned && TORCH_SWITCH_VERB.matcher(normalized).matches()
                 && normalized.matches(".*\\bon\\b.*") && normalized.matches(".*\\boff\\b.*")) {
@@ -336,6 +342,19 @@ public final class VisionActionParser {
         }
         // Two distinct apps cannot both open ("open Telegram and Gmail").
         return OPEN_VERB_WORD.matcher(normalized).matches() && distinctAppTokenCount(normalized) >= 2;
+    }
+
+    private static final java.util.Set<String> STATUS_TOKENS = new java.util.HashSet<>(
+            java.util.Arrays.asList("battery", "network", "time", "date", "calendar"));
+
+    private static int distinctStatusTargetCount(String normalized) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String token : normalized.split("[^a-z0-9_]+")) {
+            if (STATUS_TOKENS.contains(token)) {
+                seen.add(token);
+            }
+        }
+        return seen.size();
     }
 
     private static int distinctAppTokenCount(String normalized) {

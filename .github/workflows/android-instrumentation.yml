@@ -145,7 +145,7 @@ jobs:
           for suite in suites:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
-          if total != 13 or failures or skipped:
-              raise SystemExit('Expected exactly thirteen passing Android safety instrumentation tests')
+          if total != 15 or failures or skipped:
+              raise SystemExit('Expected exactly fifteen passing Android safety instrumentation tests')
           PYTHON
           cat emulator-evidence/android-version.txt

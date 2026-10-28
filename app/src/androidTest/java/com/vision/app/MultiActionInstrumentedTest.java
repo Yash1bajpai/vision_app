@@ -48,4 +48,34 @@ public class MultiActionInstrumentedTest {
             });
         }
     }
+
+    @Test public void pairedStatusReadsShowRefusalAndRunNeither() {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                VisionUi.typeAndSend(activity, "check battery and network");
+                String shown = VisionUi.activityText(activity).getText().toString();
+                assertTrue("Refusal headline shown, was: " + shown,
+                        shown.startsWith("MULTIPLE ACTIONS NOT SUPPORTED"));
+                assertTrue("States nothing ran", shown.contains("did not run any of them"));
+                assertNull(VisionUi.activeDialog(activity));
+            });
+        }
+    }
+
+    @Test public void alarmHandoffNeverClaimsTheAlarmIsSet() {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                VisionUi.typeAndSend(activity, "set an alarm for 7:30 am");
+                String shown = VisionUi.activityText(activity).getText().toString();
+                assertFalse("Must not claim the alarm is set, was: " + shown,
+                        shown.contains("Alarm set") || shown.contains("is scheduled"));
+                assertTrue("Honest handoff or failure, was: " + shown,
+                        shown.startsWith("CLOCK OPENED") || shown.startsWith("FAILED"));
+                if (shown.startsWith("CLOCK OPENED")) {
+                    assertTrue(shown.contains("07:30"));
+                    assertTrue(shown.contains("does not check"));
+                }
+            });
+        }
+    }
 }
