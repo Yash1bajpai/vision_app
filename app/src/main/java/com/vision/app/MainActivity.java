@@ -848,9 +848,8 @@ public class MainActivity extends Activity {
                 activityText.setText("FAILED\n\nNo clock app is available to set alarms.");
             } else {
                 startActivity(alarm);
-                action.state = VisionAction.State.SUCCEEDED;
-                activityText.setText("SUCCEEDED\n\nAlarm set for " + action.target
-                        + ".\n\nThe alarm is scheduled in your clock app.");
+                action.state = VisionAction.State.COMPOSER_OPENED;
+                activityText.setText(VisionAlarmText.handoffMessage(action.target));
             }
         } catch (Exception e) {
             action.state = VisionAction.State.FAILED;

@@ -33,6 +33,13 @@ public class VisionMultiActionTest {
     }
 
     @Test
+    public void twoStatusReadsInOneRequestAreRefused() {
+        assertMultiAction("check battery and network");
+        assertMultiAction("what is the battery and the time");
+        assertMultiAction("show battery, network");
+    }
+
+    @Test
     public void twoAppsInOneRequestAreRefused() {
         assertMultiAction("open telegram and gmail");
         assertMultiAction("open telegram then gmail");
@@ -52,8 +59,8 @@ public class VisionMultiActionTest {
         assertEquals(VisionAction.Type.SET_TIMER, duration.type);
         assertEquals("1h 30m", duration.target);
 
-        VisionAction statusPair = VisionActionParser.parse("check battery and network");
-        assertEquals(VisionAction.Type.READ_BATTERY, statusPair.type);
+        assertEquals(VisionAction.Type.READ_BATTERY, VisionActionParser.parse("check battery").type);
+        assertEquals(VisionAction.Type.READ_NETWORK, VisionActionParser.parse("check network").type);
     }
 
     @Test
