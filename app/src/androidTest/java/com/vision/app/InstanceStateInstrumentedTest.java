@@ -155,6 +155,9 @@ public class InstanceStateInstrumentedTest {
             scenario.recreate();
             VisionUi.settle();
 
+            Context targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+            InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                    .grantRuntimePermission(targetContext.getPackageName(), Manifest.permission.READ_CALENDAR);
             scenario.onActivity(activity -> {
                 VisionAction restored = (VisionAction) field(activity, "pendingCalendarAction");
                 assertNotNull("pendingCalendarAction must be restored across recreation", restored);
