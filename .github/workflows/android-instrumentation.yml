@@ -74,11 +74,15 @@ jobs:
           cleanup() {
             echo "===== emulator-evidence/emulator.log ====="
             cat emulator-evidence/emulator.log 2>/dev/null || true
-            timeout -k 5 30 adb pull /sdcard/Android/data/com.vision.app/files/. emulator-evidence/ 2>/dev/null || true
+            for f in after-recreate.png fail-closed-message.png calendar-read-ok.png; do
+              timeout -k 5 30 adb shell run-as com.vision.app cat "/sdcard/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
+              [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb shell run-as com.vision.app cat "/data/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
+            done
             echo "===== adb devices ====="
             timeout -k 5 30 adb devices -l || true
             echo "===== logcat tail ====="
-            timeout -k 5 60 adb logcat -d 2>/dev/null | tail -n 80 || true
+            timeout -k 5 60 adb logcat -d > emulator-evidence/logcat.txt 2>/dev/null || true
+            tail -n 80 emulator-evidence/logcat.txt 2>/dev/null || true
             timeout -k 5 30 adb emu kill || true
             kill "$EMULATOR_PID" 2>/dev/null || true
           }
@@ -125,8 +129,12 @@ jobs:
           stage "instrumentation finished"
 
           stage "pull screenshot evidence"
-          timeout -k 5 30 adb pull /sdcard/Android/data/com.vision.app/files/. emulator-evidence/ 2>/dev/null || true
-          timeout -k 5 30 adb pull /storage/emulated/0/Android/data/com.vision.app/files/. emulator-evidence/ 2>/dev/null || true
+          # Scoped storage blocks adb pull of Android/data on API 30+; run-as reads as the app itself.
+          for f in after-recreate.png fail-closed-message.png calendar-read-ok.png; do
+            timeout -k 5 30 adb shell run-as com.vision.app cat "/sdcard/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
+            [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb shell run-as com.vision.app cat "/data/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
+            ls -la "emulator-evidence/$f" 2>/dev/null || echo "no capture: $f"
+          done
       - name: Upload emulator diagnostics and visual evidence
         if: always()
         uses: actions/upload-artifact@v4
