@@ -49,20 +49,12 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CODE_READ_CALENDAR = 102;
     private static final int REQUEST_CODE_WRITE_CALENDAR = 103;
 
-    private static final String STATE_PENDING_ACTION_TYPE = "pending_action_type";
-    private static final String STATE_PENDING_ACTION_REQUEST = "pending_action_request";
-    private static final String STATE_PENDING_ACTION_TARGET = "pending_action_target";
-    private static final String STATE_PENDING_ACTION_REPLY_TEXT = "pending_action_reply_text";
-    private static final String STATE_PENDING_ACTION_CHANNEL = "pending_action_channel";
-    private static final String STATE_PENDING_ACTION_STATE = "pending_action_state";
+    // Instance-state Bundle keys. Pending actions carrying user content (messages, event writes)
+    // and the activity log are deliberately not saved: losing the Activity cancels them (fail-closed),
+    // matching the plan-step rule. Only the standalone READ_CALENDAR marker (fixed type string +
+    // state enum, zero user content) is preserved across lifecycle recreation.
     private static final String STATE_PENDING_CALENDAR_TYPE = "pending_calendar_type";
     private static final String STATE_PENDING_CALENDAR_STATE = "pending_calendar_state";
-    private static final String STATE_PENDING_EVENT_WRITE_TYPE = "pending_event_write_type";
-    private static final String STATE_PENDING_EVENT_WRITE_REQUEST = "pending_event_write_request";
-    private static final String STATE_PENDING_EVENT_WRITE_TARGET = "pending_event_write_target";
-    private static final String STATE_PENDING_EVENT_WRITE_TEXT = "pending_event_write_text";
-    private static final String STATE_PENDING_EVENT_WRITE_STATE = "pending_event_write_state";
-    private static final String STATE_ACTIVITY_TEXT = "activity_text";
 
     private OfflineVoiceInput voiceInput = new OfflineVoiceInput();
     private final VisionVoiceSession voiceSession = new VisionVoiceSession();
@@ -129,77 +121,23 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (outState != null) {
-            // A pending action belonging to a plan step is deliberately NOT saved: the plan
-            // dies with the Activity, and restoring the step as a standalone action would
-            // orphan it after lifecycle loss (fail-closed).
-            if (pendingContactAction != null && pendingStepCompletion == null) {
-                if (pendingContactAction.type != null) {
-                    outState.putString(STATE_PENDING_ACTION_TYPE, pendingContactAction.type.name());
-                }
-                outState.putString(STATE_PENDING_ACTION_REQUEST, pendingContactAction.request);
-                outState.putString(STATE_PENDING_ACTION_TARGET, pendingContactAction.target);
-                outState.putString(STATE_PENDING_ACTION_REPLY_TEXT, pendingContactAction.replyText);
-                outState.putString(STATE_PENDING_ACTION_CHANNEL, pendingContactAction.channel);
-                if (pendingContactAction.state != null) {
-                    outState.putString(STATE_PENDING_ACTION_STATE, pendingContactAction.state.name());
-                }
-            }
+            // Pending actions carrying user content (messages, event writes) and the activity
+            // log are deliberately not saved: losing the Activity cancels them (fail-closed),
+            // matching the plan-step rule.
             // A pending calendar read is a standalone SAFE action (never a plan step when
-            // pending: plan-step pendings carry pendingStepCompletion and are skipped above),
-            // so it is safe to restore — same lifecycle-recovery contract as Phase 8 contacts.
+            // pending: plan-step pendings carry pendingStepCompletion and are skipped),
+            // so it is safe to restore — fixed type string and state enum, zero user content.
             if (pendingCalendarAction != null && pendingCalendarCompletion == null) {
                 outState.putString(STATE_PENDING_CALENDAR_TYPE, "READ_CALENDAR");
                 if (pendingCalendarAction.state != null) {
                     outState.putString(STATE_PENDING_CALENDAR_STATE, pendingCalendarAction.state.name());
                 }
             }
-            // A pending event write is always modal-approved already; a plan-step write
-            // carries pendingEventWriteCompletion and is skipped (plan dies, fail-closed).
-            if (pendingEventWriteAction != null && pendingEventWriteCompletion == null) {
-                outState.putString(STATE_PENDING_EVENT_WRITE_TYPE, "CREATE_CALENDAR_EVENT");
-                outState.putString(STATE_PENDING_EVENT_WRITE_REQUEST, pendingEventWriteAction.request);
-                outState.putString(STATE_PENDING_EVENT_WRITE_TARGET, pendingEventWriteAction.target);
-                outState.putString(STATE_PENDING_EVENT_WRITE_TEXT, pendingEventWriteAction.replyText);
-                if (pendingEventWriteAction.state != null) {
-                    outState.putString(STATE_PENDING_EVENT_WRITE_STATE, pendingEventWriteAction.state.name());
-                }
-            }
-            if (!transientPreferenceOutput && pendingPlan == null && activityText != null && activityText.getText() != null) {
-                outState.putCharSequence(STATE_ACTIVITY_TEXT, activityText.getText());
-            }
         }
     }
 
     private void restoreInstanceState(Bundle state) {
         if (state == null) return;
-        CharSequence savedText = state.getCharSequence(STATE_ACTIVITY_TEXT);
-        if (savedText != null && activityText != null) {
-            activityText.setText(savedText);
-        }
-        String typeStr = state.getString(STATE_PENDING_ACTION_TYPE);
-        if (typeStr != null) {
-            try {
-                VisionAction.Type type = VisionAction.Type.valueOf(typeStr);
-                String request = state.getString(STATE_PENDING_ACTION_REQUEST, "");
-                String target = state.getString(STATE_PENDING_ACTION_TARGET, "");
-                String replyText = state.getString(STATE_PENDING_ACTION_REPLY_TEXT, "");
-                String channel = state.getString(STATE_PENDING_ACTION_CHANNEL, "");
-                if (type == VisionAction.Type.SEND_MESSAGE_DIRECT && target != null && !target.trim().isEmpty()) {
-                    VisionAction restored = new VisionAction(type, request, target, replyText, channel);
-                    String stateStr = state.getString(STATE_PENDING_ACTION_STATE);
-                    if (stateStr != null) {
-                        try {
-                            restored.state = VisionAction.State.valueOf(stateStr);
-                        } catch (Exception ignored) { }
-                    }
-                    pendingContactAction = restored;
-                } else {
-                    pendingContactAction = null;
-                }
-            } catch (Exception e) {
-                pendingContactAction = null;
-            }
-        }
         if ("READ_CALENDAR".equals(state.getString(STATE_PENDING_CALENDAR_TYPE))) {
             VisionAction restored = new VisionAction(VisionAction.Type.READ_CALENDAR, "", "calendar");
             String stateStr = state.getString(STATE_PENDING_CALENDAR_STATE);
@@ -209,21 +147,6 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) { }
             }
             pendingCalendarAction = restored;
-        }
-        if ("CREATE_CALENDAR_EVENT".equals(state.getString(STATE_PENDING_EVENT_WRITE_TYPE))) {
-            String target = state.getString(STATE_PENDING_EVENT_WRITE_TARGET, "");
-            String text = state.getString(STATE_PENDING_EVENT_WRITE_TEXT, "");
-            if (VisionActionParser.isValidEventTitle(target) && VisionActionParser.isValidCanonicalEventTime(text)) {
-                VisionAction restored = new VisionAction(VisionAction.Type.CREATE_CALENDAR_EVENT,
-                        state.getString(STATE_PENDING_EVENT_WRITE_REQUEST, ""), target, text);
-                String stateStr = state.getString(STATE_PENDING_EVENT_WRITE_STATE);
-                if (stateStr != null) {
-                    try {
-                        restored.state = VisionAction.State.valueOf(stateStr);
-                    } catch (Exception ignored) { }
-                }
-                pendingEventWriteAction = restored;
-            }
         }
     }
 
@@ -1589,7 +1512,19 @@ public class MainActivity extends Activity {
         }
         if (pendingPlan != null && !mayExecutePendingAction()) return;
         if (pendingContactAction == null && pendingCalendarAction == null
-                && pendingEventWriteAction == null) return;
+                && pendingEventWriteAction == null) {
+            boolean granted = grantResults != null && grantResults.length > 0
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (requestCode == REQUEST_CODE_WRITE_CALENDAR && granted && grantResults.length > 1) {
+                granted = grantResults[1] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            }
+            if (granted && (requestCode == REQUEST_CODE_READ_CONTACTS || requestCode == REQUEST_CODE_WRITE_CALENDAR)) {
+                if (!isFinishing() && !isDestroyed() && activityText != null) {
+                    activityText.setText("FAILED\n\nPermission granted, but the pending action was cleared when the screen was recreated. Please repeat your request.");
+                }
+            }
+            return;
+        }
         if (requestCode == REQUEST_CODE_WRITE_CALENDAR) {
             VisionAction pending = pendingEventWriteAction;
             Runnable completion = pendingEventWriteCompletion;
@@ -1601,9 +1536,13 @@ public class MainActivity extends Activity {
                     && grantResults[1] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             if (pending != null && granted && !isFinishing() && !isDestroyed()) {
                 executeCalendarEventInsert(pending);
+            } else if (pending == null && granted) {
+                if (!isFinishing() && !isDestroyed() && activityText != null) {
+                    activityText.setText("FAILED\n\nPermission granted, but the pending action was cleared when the screen was recreated. Please repeat your request.");
+                }
             } else {
                 if (pending != null) pending.state = VisionAction.State.FAILED;
-                if (!isFinishing() && !isDestroyed()) {
+                if (!isFinishing() && !isDestroyed() && activityText != null) {
                     activityText.setText("FAILED\n\nCalendar permission was denied. Vision cannot create events without permission.");
                 }
             }
@@ -1641,9 +1580,9 @@ public class MainActivity extends Activity {
             if (grantResults != null && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 if (pending != null && !isFinishing() && !isDestroyed()) {
                     handleContactDirectMessageAction(pending, input, completion);
-                } else if (!isFinishing() && !isDestroyed()) {
+                } else if (!isFinishing() && !isDestroyed() && activityText != null) {
                     if (pending != null) pending.state = VisionAction.State.FAILED;
-                    activityText.setText("FAILED\n\nContacts permission was granted, but the pending request could not be recovered. Please make your request again.");
+                    activityText.setText("FAILED\n\nPermission granted, but the pending action was cleared when the screen was recreated. Please repeat your request.");
                     if (completion != null) completion.run();
                 }
             } else {
