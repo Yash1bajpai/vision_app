@@ -120,6 +120,21 @@ jobs:
           } | tr -d '\r' > emulator-evidence/android-version.txt
           cat emulator-evidence/android-version.txt
 
+          stage "start frame + logcat capture"
+          # Gradle uninstalls the app after the test run, which deletes Android/data:
+          # in-test screenshot files never survive to a post-test pull. Capture frames
+          # and logcat on the HOST during the run instead; selection happens later.
+          mkdir -p emulator-evidence/frames
+          timeout -k 2 10 adb logcat -c 2>/dev/null || true
+          ( adb logcat > emulator-evidence/logcat-full.txt 2>/dev/null ) &
+          LOGCAT_PID=$!
+          ( while :; do
+              ts=$(date +%s%3N)
+              timeout -k 2 8 adb exec-out screencap -p > "emulator-evidence/frames/$ts.png" 2>/dev/null || true
+              sleep 1
+            done ) &
+          CAPTURE_PID=$!
+
           stage "run instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
           # wedged device or main looper into a fast failure instead of a silent hang.
@@ -128,23 +143,44 @@ jobs:
             connectedDebugAndroidTest
           stage "instrumentation finished"
 
-          stage "pull screenshot evidence"
-          # Retrieval tries shell cat, adb pull, then run-as (errors kept in $f.err).
-          # A missing or zero-byte capture FAILS the job: evidence is qualification, not decoration.
-          ok=1
-          for f in after-recreate.png fail-closed-message.png calendar-read-ok.png; do
-            timeout -k 5 30 adb shell cat "/storage/emulated/0/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>"emulator-evidence/$f.err" || true
-            [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb pull "/storage/emulated/0/Android/data/com.vision.app/files/$f" "emulator-evidence/$f/" 2>>"emulator-evidence/$f.err" || true
-            [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb shell run-as com.vision.app cat "/storage/emulated/0/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>>"emulator-evidence/$f.err" || true
-            if [ ! -s "emulator-evidence/$f" ]; then
-              echo "MISSING or zero-byte evidence: $f"
-              cat "emulator-evidence/$f.err" 2>/dev/null || true
-              ok=0
-            else
-              ls -la "emulator-evidence/$f"
-            fi
-          done
-          [ "$ok" = "1" ]
+          stage "stop frame + logcat capture"
+          kill $CAPTURE_PID 2>/dev/null || true
+          kill $LOGCAT_PID 2>/dev/null || true
+          sleep 1
+      - name: Select evidence frames from capture
+        if: always()
+        shell: bash
+        run: |
+          pkill -f 'adb exec-out screencap' 2>/dev/null || true
+          pkill -f 'adb logcat' 2>/dev/null || true
+          sleep 1
+          python3 - <<'PYTHON'
+          import glob, os, re, shutil, sys, datetime
+          log = open('emulator-evidence/logcat-full.txt', errors='ignore').read()
+          marks = re.findall(r'^(\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\.(\d{3}).*?Screenshot (\S+\.png) saved:.*success=true', log, re.M)
+          print('capture marks found:', marks)
+          frames = {}
+          for path in glob.glob('emulator-evidence/frames/*.png'):
+              if os.path.getsize(path) > 0:
+                  frames[int(os.path.basename(path)[:-4])] = path
+          print('non-empty frames:', len(frames))
+          ok = True
+          year = datetime.datetime.now().year
+          for wanted in ('after-recreate.png', 'fail-closed-message.png', 'calendar-read-ok.png'):
+              hit = [m for m in marks if m[3] == wanted]
+              if not hit or not frames:
+                  print('EVIDENCE MISSING (no mark or no frames):', wanted); ok = False; continue
+              md, hms, ms, _ = hit[0]
+              target = int(datetime.datetime.strptime(f'{year}-{md} {hms}.{ms}', '%Y-%m-%d %H:%M:%S.%f').timestamp() * 1000)
+              best = min(frames, key=lambda t: abs(t - target))
+              if abs(best - target) > 5000:
+                  print('EVIDENCE MISSING (no frame within 5s):', wanted, 'target', target, 'best', best); ok = False; continue
+              shutil.copy(frames[best], os.path.join('emulator-evidence', wanted))
+              print('selected frame for', wanted, ':', frames[best], os.path.getsize(os.path.join('emulator-evidence', wanted)), 'bytes')
+          shutil.rmtree('emulator-evidence/frames', ignore_errors=True)
+          if not ok:
+              raise SystemExit('Required screenshot evidence missing or zero-byte')
+          PYTHON
       - name: Upload emulator diagnostics and visual evidence
         if: always()
         uses: actions/upload-artifact@v4
