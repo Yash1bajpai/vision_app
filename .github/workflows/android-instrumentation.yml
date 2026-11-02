@@ -129,12 +129,22 @@ jobs:
           stage "instrumentation finished"
 
           stage "pull screenshot evidence"
-          # Scoped storage blocks adb pull of Android/data on API 30+; run-as reads as the app itself.
+          # Retrieval tries shell cat, adb pull, then run-as (errors kept in $f.err).
+          # A missing or zero-byte capture FAILS the job: evidence is qualification, not decoration.
+          ok=1
           for f in after-recreate.png fail-closed-message.png calendar-read-ok.png; do
-            timeout -k 5 30 adb shell run-as com.vision.app cat "/sdcard/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
-            [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb shell run-as com.vision.app cat "/data/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
-            ls -la "emulator-evidence/$f" 2>/dev/null || echo "no capture: $f"
+            timeout -k 5 30 adb shell cat "/storage/emulated/0/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>"emulator-evidence/$f.err" || true
+            [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb pull "/storage/emulated/0/Android/data/com.vision.app/files/$f" "emulator-evidence/$f/" 2>>"emulator-evidence/$f.err" || true
+            [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb shell run-as com.vision.app cat "/storage/emulated/0/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>>"emulator-evidence/$f.err" || true
+            if [ ! -s "emulator-evidence/$f" ]; then
+              echo "MISSING or zero-byte evidence: $f"
+              cat "emulator-evidence/$f.err" 2>/dev/null || true
+              ok=0
+            else
+              ls -la "emulator-evidence/$f"
+            fi
           done
+          [ "$ok" = "1" ]
       - name: Upload emulator diagnostics and visual evidence
         if: always()
         uses: actions/upload-artifact@v4
