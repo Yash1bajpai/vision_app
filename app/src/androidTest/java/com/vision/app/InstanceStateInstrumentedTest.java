@@ -4,12 +4,15 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.util.Base64;
 import android.util.Log;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import org.junit.Test;
@@ -81,10 +84,38 @@ public class InstanceStateInstrumentedTest {
 
             String path = dest.getAbsolutePath();
             Log.i(TAG, "Screenshot " + filename + " saved: " + path + " (success=" + captured + ", size=" + dest.length() + ")");
+            if (captured) {
+                emitEvidenceToLogcat(filename, dest);
+            }
             System.out.println("Screenshot " + filename + " saved: " + path + " (success=" + captured + ", size=" + dest.length() + ")");
         } catch (Throwable t) {
             Log.e(TAG, "Failed to capture screenshot " + filename, t);
             System.out.println("Failed to capture screenshot " + filename + ": " + t.getMessage());
+        }
+    }
+
+    private static void emitEvidenceToLogcat(String filename, File file) {
+        try {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            try (FileInputStream in = new FileInputStream(file)) {
+                while ((n = in.read(buf)) > 0) {
+                    buffer.write(buf, 0, n);
+                }
+            }
+            String b64 = Base64.encodeToString(buffer.toByteArray(), Base64.NO_WRAP);
+            int chunkSize = 3000;
+            int total = (b64.length() + chunkSize - 1) / chunkSize;
+            Log.i(TAG, "EVIDENCE-BEGIN " + filename + " chunks=" + total);
+            for (int i = 0; i < total; i++) {
+                int start = i * chunkSize;
+                int end = Math.min(b64.length(), start + chunkSize);
+                Log.i(TAG, "EVIDENCE " + filename + " " + i + "/" + total + " " + b64.substring(start, end));
+            }
+            Log.i(TAG, "EVIDENCE-END " + filename);
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to emit evidence for " + filename, t);
         }
     }
 
