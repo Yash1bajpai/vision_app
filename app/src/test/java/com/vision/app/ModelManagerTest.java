@@ -1,7 +1,7 @@
 package com.vision.app;
 
 import android.content.Context;
-import androidx.test.core.app.ApplicationProvider;
+import org.robolectric.RuntimeEnvironment;
 
 import org.junit.After;
 import org.junit.Before;
@@ -29,7 +29,7 @@ public class ModelManagerTest {
 
     @Before
     public void setup() {
-        context = ApplicationProvider.getApplicationContext();
+        context = RuntimeEnvironment.getApplication();
         modelManager = new ModelManager(context);
         modelsDir = modelManager.getModelsDir();
     }

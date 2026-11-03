@@ -4,7 +4,7 @@ import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
-import androidx.test.core.app.ApplicationProvider;
+import org.robolectric.RuntimeEnvironment;
 
 import org.junit.After;
 import org.junit.Before;
@@ -30,7 +30,45 @@ public class LocalModelProviderTest {
     private FakeBridge fakeBridge;
     private Handler handler;
     private LocalModelProvider provider;
+    private DirectExecutorService directExecutor;
 
+    private static class DirectExecutorService extends java.util.concurrent.AbstractExecutorService {
+        private volatile boolean shutdown = false;
+
+        @Override
+        public void shutdown() {
+            shutdown = true;
+        }
+
+        @Override
+        public java.util.List<Runnable> shutdownNow() {
+            shutdown = true;
+            return java.util.Collections.emptyList();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit) {
+            return true;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            if (shutdown) {
+                throw new java.util.concurrent.RejectedExecutionException("Executor is shut down");
+            }
+            command.run();
+        }
+    }
     private static class FakeBridge implements LlamaBridgeInterface {
         long nextHandle = 100L;
         long loadedHandle = 0;
@@ -77,11 +115,12 @@ public class LocalModelProviderTest {
 
     @Before
     public void setup() throws Exception {
-        context = ApplicationProvider.getApplicationContext();
+        context = RuntimeEnvironment.getApplication();
         modelManager = new ModelManager(context);
         fakeBridge = new FakeBridge();
         handler = new Handler(Looper.getMainLooper());
-        provider = new LocalModelProvider(context, modelManager, fakeBridge, handler, Runnable::run);
+        directExecutor = new DirectExecutorService();
+        provider = new LocalModelProvider(context, modelManager, fakeBridge, handler, directExecutor);
 
         // Install a dummy active model
         File dummyFile = new File(modelManager.getModelsDir(), "active-model.gguf");
@@ -102,7 +141,10 @@ public class LocalModelProviderTest {
     @After
     public void cleanup() {
         if (provider != null) {
-            provider.unload();
+            provider.shutdown();
+        }
+        if (directExecutor != null) {
+            directExecutor.shutdown();
         }
         File dummy = new File(modelManager.getModelsDir(), "active-model.gguf");
         if (dummy.exists()) dummy.delete();
