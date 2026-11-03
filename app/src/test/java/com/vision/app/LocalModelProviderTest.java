@@ -195,6 +195,8 @@ public class LocalModelProviderTest {
         modelManager.setModelInUse(false);
         provider.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL);
         assertFalse("TRIM_MEMORY_RUNNING_CRITICAL must unload model when idle", provider.isLoaded());
+        assertEquals(3, fakeBridge.unloadCallCount);
+
         // 5. Re-propose and idle 5 minutes triggers unload
         provider.propose("turn on torch");
         assertTrue(provider.isLoaded());
@@ -202,7 +204,7 @@ public class LocalModelProviderTest {
         // Fast forward Looper by 5 minutes
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(5 * 60 * 1000L, java.util.concurrent.TimeUnit.MILLISECONDS);
         assertFalse("Model must be unloaded after 5 minutes of idle time", provider.isLoaded());
-        assertEquals(3, fakeBridge.unloadCallCount);
+        assertEquals(4, fakeBridge.unloadCallCount);
     }
 
     // 10. ProviderSelector ON_DEVICE registration rules
