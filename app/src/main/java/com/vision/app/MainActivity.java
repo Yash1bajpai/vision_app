@@ -175,7 +175,7 @@ public class MainActivity extends Activity {
             downloadReceiver = null;
         }
         if (localModelProvider != null) {
-            localModelProvider.unloadAsync(null);
+            localModelProvider.shutdown();
         }
         super.onDestroy();
         if (activeDialog != null) {
@@ -1602,7 +1602,13 @@ public class MainActivity extends Activity {
                     }
                     localModelProvider.getExecutor().execute(() -> {
                         try {
-                            modelManager.deleteModel(info, () -> localModelProvider.unload());
+                            if (modelManager.isModelInUse()) {
+                                planHandler.post(() -> activityText.setText("Model busy - try after the current request"));
+                                return;
+                            }
+                            // Lock order: unload provider first before calling deleteModel (no nested [M]->[P])
+                            localModelProvider.unload();
+                            modelManager.deleteModel(info);
                             initLocalModelRoute();
                             planHandler.post(() -> {
                                 activityText.setText("MODEL DELETED\n\nDeleted " + info.displayName + ".");

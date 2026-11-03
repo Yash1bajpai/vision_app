@@ -114,7 +114,7 @@ public class ModelRuntimeInstrumentedTest {
                     assertEquals("Loading header-only synthetic GGUF must return 0", 0L, handle);
 
                     // Clean up test model
-                    mm.deleteModel(imported, null);
+                    mm.deleteModel(imported);
                     assertFalse(importedFile.exists());
                 } catch (Exception e) {
                     throw new AssertionError(e);

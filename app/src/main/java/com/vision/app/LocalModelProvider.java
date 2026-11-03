@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * On-device local reasoning provider backed by embedded llama.cpp runtime.
+ *
+ * Lock discipline:
+ * Lock order is always LocalModelProvider before ModelManager. ModelManager methods must
+ * never call into LocalModelProvider (no callbacks under the ModelManager monitor); callers
+ * must not hold the ModelManager monitor while calling synchronized provider methods.
  */
 public class LocalModelProvider implements ReasoningProvider {
     private static final String TAG = "LocalModelProvider";
@@ -36,8 +41,8 @@ public class LocalModelProvider implements ReasoningProvider {
     private final ExecutorService modelExecutor;
     private final AtomicBoolean isUnloading = new AtomicBoolean(false);
 
-    private long nativeHandle = 0;
-    private long lastGenerationTimeMs = 0;
+    private volatile long nativeHandle = 0;
+    private volatile long lastGenerationTimeMs = 0;
     private String cachedGrammar = null;
 
     private final Runnable idleUnloadRunnable = new Runnable() {
@@ -102,67 +107,71 @@ public class LocalModelProvider implements ReasoningProvider {
             Log.w(TAG, "Model is unloading; rejecting new request fail-closed");
             return null;
         }
-
-        ModelInfo activeModel = modelManager.getActiveModel();
-        File modelFile = modelManager.getActiveModelFile();
-        if (activeModel == null || modelFile == null || !modelFile.exists()) {
-            Log.w(TAG, "No active local model installed or found on disk");
-            return null;
-        }
-
-        // Lazy-load model if not currently loaded
-        if (nativeHandle == 0) {
-            int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
-            Log.i(TAG, "Lazy-loading local model: " + modelFile.getName() + " (threads=" + threads + ")");
-            nativeHandle = bridge.load(modelFile.getAbsolutePath(), CTX_TOKENS, threads);
-            if (nativeHandle == 0) {
-                Log.e(TAG, "Failed loading local model into memory");
+        // Close load/check gap: mark in-use before active-model check and native load so
+        // switch/delete requests correctly see model busy during the entire load phase.
+        modelManager.setModelInUse(true);
+        try {
+            ModelInfo activeModel = modelManager.getActiveModel();
+            File modelFile = modelManager.getActiveModelFile();
+            if (activeModel == null || modelFile == null || !modelFile.exists()) {
+                Log.w(TAG, "No active local model installed or found on disk");
                 return null;
             }
-        }
 
-        // Prepare prompt with chat template
-        String formattedPrompt = null;
-        String systemPrompt = DEFAULT_SYSTEM_PROMPT;
-        if (recentRequests != null && !recentRequests.isEmpty()) {
-            StringBuilder sb = new StringBuilder(systemPrompt);
-            sb.append("\nRecent context:");
-            for (String r : recentRequests) {
-                if (r != null && !r.trim().isEmpty()) {
-                    sb.append("\n- ").append(r.trim());
+            // Lazy-load model if not currently loaded
+            if (nativeHandle == 0) {
+                int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+                Log.i(TAG, "Lazy-loading local model: " + modelFile.getName() + " (threads=" + threads + ")");
+                nativeHandle = bridge.load(modelFile.getAbsolutePath(), CTX_TOKENS, threads);
+                if (nativeHandle == 0) {
+                    Log.e(TAG, "Failed loading local model into memory");
+                    return null;
                 }
             }
-            systemPrompt = sb.toString();
-        }
 
-        formattedPrompt = bridge.formatChat(nativeHandle, activeModel.templateHint, systemPrompt, userRequest.trim());
-        if (formattedPrompt == null) {
-            // N4: When nativeFormatChat returns null, do NOT silently fall back to plain formatting.
-            // Treat as generation setup failure: log LOGE, return null fail-closed.
-            Log.e(TAG, "Chat template formatting failed for model: " + activeModel.displayName);
-            return null;
-        }
+            // Prepare prompt with chat template
+            String formattedPrompt = null;
+            String systemPrompt = DEFAULT_SYSTEM_PROMPT;
+            if (recentRequests != null && !recentRequests.isEmpty()) {
+                StringBuilder sb = new StringBuilder(systemPrompt);
+                sb.append("\nRecent context:");
+                for (String r : recentRequests) {
+                    if (r != null && !r.trim().isEmpty()) {
+                        sb.append("\n- ").append(r.trim());
+                    }
+                }
+                systemPrompt = sb.toString();
+            }
 
-        String grammar = loadGrammar();
+            formattedPrompt = bridge.formatChat(nativeHandle, activeModel.templateHint, systemPrompt, userRequest.trim());
+            if (formattedPrompt == null) {
+                // N4: When nativeFormatChat returns null, do NOT silently fall back to plain formatting.
+                // Treat as generation setup failure: log LOGE, return null fail-closed.
+                Log.e(TAG, "Chat template formatting failed for model: " + activeModel.displayName);
+                return null;
+            }
 
-        modelManager.setModelInUse(true);
-        String rawOutput = null;
-        try {
-            rawOutput = bridge.generate(nativeHandle, formattedPrompt, grammar, MAX_TOKENS, TIMEOUT_MS);
-        } catch (Throwable t) {
-            Log.e(TAG, "Local model generation threw exception", t);
+            String grammar = loadGrammar();
+
+            String rawOutput = null;
+            try {
+                rawOutput = bridge.generate(nativeHandle, formattedPrompt, grammar, MAX_TOKENS, TIMEOUT_MS);
+            } catch (Throwable t) {
+                Log.e(TAG, "Local model generation threw exception", t);
+            } finally {
+                lastGenerationTimeMs = System.currentTimeMillis();
+                scheduleIdleUnload();
+            }
+
+            if (rawOutput == null) {
+                Log.w(TAG, "Local model generation failed or timed out");
+                return null;
+            }
+
+            return rawOutput.trim();
         } finally {
             modelManager.setModelInUse(false);
-            lastGenerationTimeMs = System.currentTimeMillis();
-            scheduleIdleUnload();
         }
-
-        if (rawOutput == null) {
-            Log.w(TAG, "Local model generation failed or timed out");
-            return null;
-        }
-
-        return rawOutput.trim();
     }
 
     private String loadGrammar() {

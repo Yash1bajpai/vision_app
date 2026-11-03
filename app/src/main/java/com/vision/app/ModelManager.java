@@ -27,6 +27,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Manages on-device model discovery, catalog, installation, and lifecycle.
+ *
+ * Lock discipline:
+ * Lock order is always LocalModelProvider before ModelManager. ModelManager methods must
+ * never call into LocalModelProvider (no callbacks under the ModelManager monitor); callers
+ * must not hold the ModelManager monitor while calling synchronized provider methods.
  */
 public class ModelManager {
     private static final String TAG = "ModelManager";
@@ -279,7 +284,11 @@ public class ModelManager {
         return info;
     }
 
-    public synchronized void deleteModel(ModelInfo info, Runnable unloadAction) throws IOException, SecurityException {
+    // Lock order is always LocalModelProvider before ModelManager.
+    // ModelManager methods must never call into LocalModelProvider (no callbacks under the
+    // ModelManager monitor); callers must not hold the ModelManager monitor while calling
+    // synchronized provider methods.
+    public synchronized boolean deleteModel(ModelInfo info) throws IOException, SecurityException {
         if (isModelInUse()) {
             throw new IllegalStateException("Cannot delete model while generation is in progress");
         }
@@ -291,14 +300,12 @@ public class ModelManager {
 
         String activeId = getActiveModelId();
         if (activeId != null && activeId.equals(info.id)) {
-            if (unloadAction != null) {
-                unloadAction.run();
-            }
             prefs.edit().remove(KEY_ACTIVE_MODEL_ID).apply();
         }
 
+        boolean deleted = true;
         if (targetFile.exists()) {
-            targetFile.delete();
+            deleted = targetFile.delete();
         }
 
         List<ModelInfo> installed = listInstalledModels();
@@ -309,6 +316,7 @@ public class ModelManager {
             }
         }
         saveInstalledModels(updated);
+        return deleted;
     }
 
     public static String computeSha256(File file) throws IOException {

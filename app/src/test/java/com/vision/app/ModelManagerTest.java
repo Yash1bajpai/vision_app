@@ -257,7 +257,7 @@ public class ModelManagerTest {
         );
 
         try {
-            modelManager.deleteModel(evilModel, null);
+            modelManager.deleteModel(evilModel);
             fail("Should have rejected path traversal in fileName");
         } catch (SecurityException expected) {
             assertTrue(expected.getMessage().contains("Path traversal attempt detected"));
@@ -284,7 +284,7 @@ public class ModelManagerTest {
 
         modelManager.setModelInUse(true);
         try {
-            modelManager.deleteModel(m, null);
+            modelManager.deleteModel(m);
             fail("Should have blocked delete while model is in use");
         } catch (IllegalStateException expected) {
             assertTrue(expected.getMessage().contains("Cannot delete model while generation is in progress"));
@@ -293,8 +293,68 @@ public class ModelManagerTest {
         }
 
         // Now deletion should succeed
-        modelManager.deleteModel(m, null);
+        modelManager.deleteModel(m);
         assertFalse(new File(modelsDir, m.fileName).exists());
+    }
+
+    // AB-BA lock-ordering deadlock between LocalModelProvider and ModelManager is prevented
+    // by construction: ModelManager.deleteModel takes no callback under its monitor, and callers
+    // follow the strict lock order of LocalModelProvider before ModelManager.
+    @Test
+    public void deleteActiveModelClearsActiveIdAndFile() throws Exception {
+        ModelInfo active = new ModelInfo(
+                "active-del", "Active To Delete", "active_del.gguf", 200L,
+                null, "import", "custom", System.currentTimeMillis(), true, true, "llama3"
+        );
+        File f = new File(modelsDir, active.fileName);
+        f.createNewFile();
+
+        List<ModelInfo> list = new ArrayList<>();
+        list.add(active);
+        modelManager.saveInstalledModels(list);
+        modelManager.setActiveModelId(active.id);
+
+        assertEquals("active-del", modelManager.getActiveModelId());
+        assertTrue(f.exists());
+
+        assertTrue(modelManager.deleteModel(active));
+
+        assertNull("Active model ID must be cleared when active model is deleted", modelManager.getActiveModelId());
+        assertFalse("Model file must be deleted", f.exists());
+        assertTrue("Installed models list must be empty", modelManager.listInstalledModels().isEmpty());
+    }
+
+    @Test
+    public void deleteNonActiveModelKeepsActiveSelection() throws Exception {
+        ModelInfo active = new ModelInfo(
+                "active-stay", "Active Stays", "active_stay.gguf", 200L,
+                null, "import", "custom", System.currentTimeMillis(), true, true, "llama3"
+        );
+        ModelInfo inactive = new ModelInfo(
+                "inactive-del", "Inactive Delete", "inactive_del.gguf", 100L,
+                null, "import", "custom", System.currentTimeMillis(), false, true, "chatml"
+        );
+        File fActive = new File(modelsDir, active.fileName);
+        File fInactive = new File(modelsDir, inactive.fileName);
+        fActive.createNewFile();
+        fInactive.createNewFile();
+
+        List<ModelInfo> list = new ArrayList<>();
+        list.add(active);
+        list.add(inactive);
+        modelManager.saveInstalledModels(list);
+        modelManager.setActiveModelId(active.id);
+
+        assertEquals("active-stay", modelManager.getActiveModelId());
+
+        assertTrue(modelManager.deleteModel(inactive));
+
+        assertEquals("Active model ID must remain unchanged when deleting an inactive model",
+                "active-stay", modelManager.getActiveModelId());
+        assertTrue("Active model file must remain untouched", fActive.exists());
+        assertFalse("Inactive model file must be deleted", fInactive.exists());
+        assertEquals(1, modelManager.listInstalledModels().size());
+        assertEquals("active-stay", modelManager.listInstalledModels().get(0).id);
     }
 
     // 5. Bundled catalog parses + required fields
