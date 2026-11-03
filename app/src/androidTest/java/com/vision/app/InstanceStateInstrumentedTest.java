@@ -4,6 +4,11 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Rect;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
 import android.util.Base64;
 import android.util.Log;
 import androidx.test.core.app.ActivityScenario;
@@ -119,6 +124,98 @@ public class InstanceStateInstrumentedTest {
         }
     }
 
+    private static File evidenceFile(String filename) {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File dir = context.getExternalFilesDir(null);
+        if (dir == null) {
+            dir = context.getFilesDir();
+        }
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return new File(dir, filename);
+    }
+
+    /**
+     * Renders the activity's own view tree to a bitmap, bypassing the emulator
+     * compositor. The three compositor-level captures above returned byte-identical
+     * frames across two test methods minutes apart, which indicates the emulator
+     * stopped composing new frames after the first; view.draw records what the app
+     * itself renders, which is the behavior under qualification.
+     */
+    private static void renderViewTree(String filename, ActivityScenario<MainActivity> scenario) {
+        scenario.onActivity(activity -> {
+            try {
+                View root = activity.getWindow().getDecorView();
+                int w = root.getWidth();
+                int h = root.getHeight();
+                if (w <= 0 || h <= 0) {
+                    Log.e(TAG, "RENDER-FAIL " + filename + " decorView size " + w + "x" + h);
+                    return;
+                }
+                Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                Canvas canvas = new Canvas(bitmap);
+                root.draw(canvas);
+                File dest = evidenceFile(filename);
+                try (FileOutputStream out = new FileOutputStream(dest)) {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+                }
+                Log.i(TAG, "RENDER " + filename + " " + w + "x" + h + " bytes=" + dest.length());
+                emitEvidenceToLogcat(filename, dest);
+            } catch (Throwable t) {
+                Log.e(TAG, "RENDER-FAIL " + filename, t);
+            }
+        });
+    }
+
+    /** Logs every TextView in the window with visibility, on-screen bounds, and text. */
+    private static void dumpHierarchy(String label, ActivityScenario<MainActivity> scenario) {
+        scenario.onActivity(activity -> {
+            Log.i(TAG, "HIER-BEGIN " + label + " windowFocus=" + activity.hasWindowFocus());
+            walkHierarchy(label, activity.getWindow().getDecorView());
+            Log.i(TAG, "HIER-END " + label);
+        });
+    }
+
+    private static void walkHierarchy(String label, View view) {
+        if (view instanceof TextView) {
+            Rect rect = new Rect();
+            boolean onScreen = view.getGlobalVisibleRect(rect);
+            String idName;
+            try {
+                idName = view.getId() == -1 ? "none" : view.getResources().getResourceEntryName(view.getId());
+            } catch (Exception e) {
+                idName = "unknown";
+            }
+            String text = ((TextView) view).getText().toString().replace('\n', '|');
+            if (text.length() > 120) {
+                text = text.substring(0, 120) + "...";
+            }
+            Log.i(TAG, "HIER " + label + " id=" + idName
+                    + " visibility=" + visibilityName(view.getVisibility())
+                    + " shown=" + view.isShown()
+                    + " onScreen=" + onScreen
+                    + " rect=" + rect.toShortString()
+                    + " size=" + view.getWidth() + "x" + view.getHeight()
+                    + " text=\"" + text + "\"");
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                walkHierarchy(label, group.getChildAt(i));
+            }
+        }
+    }
+
+    private static String visibilityName(int visibility) {
+        switch (visibility) {
+            case View.VISIBLE: return "VISIBLE";
+            case View.INVISIBLE: return "INVISIBLE";
+            case View.GONE: return "GONE";
+            default: return String.valueOf(visibility);
+        }
+    }
+
     @Test
     public void recreationCancelsPendingMessageActionAndGrantFailsClosed() {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
@@ -146,6 +243,8 @@ public class InstanceStateInstrumentedTest {
             });
 
             // Capture screenshot before the permission call
+            dumpHierarchy("after-recreate", scenario);
+            renderViewTree("after-recreate-render.png", scenario);
             takeScreenshot("after-recreate.png");
 
             // Invoke recreated.onRequestPermissionsResult on main thread
@@ -169,6 +268,8 @@ public class InstanceStateInstrumentedTest {
             });
 
             // Capture second screenshot showing fail-closed message
+            dumpHierarchy("fail-closed-message", scenario);
+            renderViewTree("fail-closed-message-render.png", scenario);
             takeScreenshot("fail-closed-message.png");
         }
     }
@@ -210,6 +311,8 @@ public class InstanceStateInstrumentedTest {
                         text.startsWith("SUCCEEDED"));
             });
 
+            dumpHierarchy("calendar-read-ok", scenario);
+            renderViewTree("calendar-read-ok-render.png", scenario);
             takeScreenshot("calendar-read-ok.png");
         }
     }

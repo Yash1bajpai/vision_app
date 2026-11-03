@@ -157,7 +157,8 @@ jobs:
           python3 - <<'PYTHON'
           import base64, os, re, shutil
           log = open('emulator-evidence/logcat-full.txt', errors='ignore').read()
-          want = ('after-recreate.png', 'fail-closed-message.png', 'calendar-read-ok.png')
+          want = ('after-recreate.png', 'fail-closed-message.png', 'calendar-read-ok.png',
+                  'after-recreate-render.png', 'fail-closed-message-render.png', 'calendar-read-ok-render.png')
           chunks = re.findall(r'EVIDENCE (\S+\.png) (\d+)/(\d+) (\S+)', log)
           byfile = {}
           for name, i, total, data in chunks:
