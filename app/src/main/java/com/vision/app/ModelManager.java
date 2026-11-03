@@ -149,7 +149,7 @@ public class ModelManager {
         }
         File tmpFile = new File(modelsDir, "models.json.tmp");
         try (FileOutputStream fos = new FileOutputStream(tmpFile)) {
-            fos.write(arr.toString(2).getBytes(StandardCharsets.UTF_8));
+            fos.write(arr.toString().getBytes(StandardCharsets.UTF_8));
             fos.flush();
         }
         if (!tmpFile.renameTo(metadataFile)) {
