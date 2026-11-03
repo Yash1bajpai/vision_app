@@ -5,7 +5,7 @@ plugins {
 android {
     namespace "com.vision.app"
     compileSdk 34
-
+    ndkVersion "26.1.10909125"
     testOptions {
         unitTests.includeAndroidResources = true
     }
@@ -17,6 +17,16 @@ android {
         versionCode 22
         versionName "0.12.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
     }
 }
 

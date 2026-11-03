@@ -1,0 +1,30 @@
+[
+  {
+    "id": "llama-3.2-1b-instruct-q4_k_m",
+    "displayName": "Llama 3.2 1B Instruct (Q4_K_M)",
+    "fileName": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "sizeBytes": 807694464,
+    "sha256": "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+    "downloadUrl": "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "upstreamRepo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+    "upstreamCommit": "067b946cf014b7c697f3654f621d577a3e3afd1c",
+    "licenseSpdx": "llama3.2",
+    "licenseUrl": "https://llama.meta.com/llama3/license/",
+    "templateHint": "llama3",
+    "defaultCtx": 1024
+  },
+  {
+    "id": "qwen2.5-1.5b-instruct-q4_k_m",
+    "displayName": "Qwen 2.5 1.5B Instruct (Q4_K_M)",
+    "fileName": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "sizeBytes": 1117320736,
+    "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    "downloadUrl": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "upstreamRepo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "upstreamCommit": "91cad51170dc346986eccefdc2dd33a9da36ead9",
+    "licenseSpdx": "Apache-2.0",
+    "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+    "templateHint": "chatml",
+    "defaultCtx": 1024
+  }
+]

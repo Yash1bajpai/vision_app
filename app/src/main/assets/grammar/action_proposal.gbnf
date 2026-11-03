@@ -1,0 +1,4 @@
+root ::= "{" ws "\"type\"" ws ":" ws string "," ws "\"target\"" ws ":" ws string "," ws "\"text\"" ws ":" ws string "," ws "\"channel\"" ws ":" ws string ws "}"
+string ::= "\"" char* "\""
+char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+ws ::= [ \t\n\r]*
