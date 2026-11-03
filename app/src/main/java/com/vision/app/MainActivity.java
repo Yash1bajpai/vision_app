@@ -2,10 +2,13 @@ package com.vision.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -13,8 +16,10 @@ import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -24,6 +29,7 @@ import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.ScrollingMovementMethod;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -35,11 +41,16 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
-
 public class MainActivity extends Activity {
+    private static final String TAG = "MainActivity";
     private static final int BG = Color.rgb(16, 21, 29);
     private static final int PANEL = Color.rgb(25, 32, 43);
     private static final int TEXT = Color.rgb(239, 244, 242);
@@ -198,10 +209,19 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
-        super.onStop();
+        cancelVoice();
+        cancelProviderRequest();
+        stopPlan("PLAN CANCELLED", true);
+        clearSessionContext();
+        clearPreferenceMemory();
+        if (activeDialog != null) {
+            activeDialog.dismiss();
+            activeDialog = null;
+        }
         if (localModelProvider != null) {
             localModelProvider.onAppBackgrounded();
         }
+        super.onStop();
     }
 
     @Override
@@ -1769,16 +1789,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override
-    protected void onStop() {
-        cancelVoice();
-        cancelProviderRequest();
-        stopPlan("PLAN CANCELLED", true);
-        clearSessionContext();
-        clearPreferenceMemory();
-        if (activeDialog != null) { activeDialog.dismiss(); activeDialog = null; }
-        super.onStop();
-    }
 
     @Override
     public void onBackPressed() {
