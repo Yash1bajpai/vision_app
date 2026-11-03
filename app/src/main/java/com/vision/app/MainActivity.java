@@ -77,6 +77,7 @@ public class MainActivity extends Activity {
     private CloudKeyStore cloudKeyStore;
     private ModelManager modelManager;
     private LocalModelProvider localModelProvider;
+    private BroadcastReceiver downloadReceiver;
 
     // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
     private VisionPlan pendingPlan;
@@ -117,6 +118,8 @@ public class MainActivity extends Activity {
         modelManager = new ModelManager(this);
         localModelProvider = new LocalModelProvider(this, modelManager, new LlamaBridge(), planHandler);
         initLocalModelRoute();
+        setupDownloadReceiver();
+        reconcilePendingDownload();
         buildScreen();
         if (state != null) {
             restoreInstanceState(state);
@@ -165,8 +168,14 @@ public class MainActivity extends Activity {
         stopPlan("PLAN CANCELLED", false);
         clearSessionContext();
         clearPreferenceMemory();
+        if (downloadReceiver != null) {
+            try {
+                unregisterReceiver(downloadReceiver);
+            } catch (Exception ignored) { }
+            downloadReceiver = null;
+        }
         if (localModelProvider != null) {
-            localModelProvider.unload();
+            localModelProvider.unloadAsync(null);
         }
         super.onDestroy();
         if (activeDialog != null) {
@@ -1403,43 +1412,211 @@ public class MainActivity extends Activity {
         showManagedDialog(dialog);
     }
 
+    private void setupDownloadReceiver() {
+        IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        downloadReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) {
+                    long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+                    long pendingId = modelManager != null ? modelManager.getPendingDownloadId() : -1L;
+                    // Security note: DOWNLOAD_COMPLETE is not a protected broadcast.
+                    // Treat as hint only, verify against pending ID, confirm via Query.
+                    if (id != -1L && id == pendingId) {
+                        reconcilePendingDownload();
+                    }
+                }
+            }
+        };
+        // Flag basis: targetSdk 34 requires an explicit export flag on context-registered receivers
+        // (Android 14 behavior change). System broadcasts require Context.RECEIVER_EXPORTED.
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            registerReceiver(downloadReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(downloadReceiver, filter);
+        }
+    }
+
+    private void reconcilePendingDownload() {
+        if (modelManager == null) return;
+        long pendingId = modelManager.getPendingDownloadId();
+        if (pendingId == -1L) return;
+
+        DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return;
+
+        DownloadManager.Query query = new DownloadManager.Query().setFilterById(pendingId);
+        try (Cursor cursor = dm.query(query)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                modelManager.clearPendingDownload();
+                return;
+            }
+
+            int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+            int uriIdx = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+            int reasonIdx = cursor.getColumnIndex(DownloadManager.COLUMN_REASON);
+
+            int status = statusIdx >= 0 ? cursor.getInt(statusIdx) : -1;
+            String localUriStr = uriIdx >= 0 ? cursor.getString(uriIdx) : null;
+            int reason = reasonIdx >= 0 ? cursor.getInt(reasonIdx) : 0;
+
+            String catalogId = modelManager.getPendingDownloadCatalogId();
+            CatalogEntry match = null;
+            for (CatalogEntry e : modelManager.loadCatalog()) {
+                if (e.id.equals(catalogId)) {
+                    match = e;
+                    break;
+                }
+            }
+            final CatalogEntry entry = match;
+
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                if (entry == null) {
+                    modelManager.clearPendingDownload();
+                    return;
+                }
+                File partFile = null;
+                if (localUriStr != null) {
+                    Uri uri = Uri.parse(localUriStr);
+                    if ("file".equals(uri.getScheme())) {
+                        partFile = new File(uri.getPath());
+                    }
+                }
+                if (partFile == null || !partFile.exists()) {
+                    File dlDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                    partFile = new File(dlDir, "models/" + entry.fileName + ".part");
+                }
+                final File finalPartFile = partFile;
+
+                localModelProvider.getExecutor().execute(() -> {
+                    try {
+                        modelManager.completeDownload(entry, finalPartFile);
+                        initLocalModelRoute();
+                        planHandler.post(() -> {
+                            activityText.setText("DOWNLOAD COMPLETED\n\nVerified and installed " + entry.displayName + ".");
+                        });
+                    } catch (Exception e) {
+                        Log.e(TAG, "Failed completing model download: " + entry.fileName, e);
+                        planHandler.post(() -> {
+                            activityText.setText("DOWNLOAD CORRUPTED\n\nSHA-256 mismatch or file error for " + entry.displayName + ". File removed.");
+                        });
+                    }
+                });
+            } else if (status == DownloadManager.STATUS_FAILED) {
+                if (entry != null) {
+                    File dlDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                    File partFile = new File(dlDir, "models/" + entry.fileName + ".part");
+                    if (partFile.exists()) partFile.delete();
+                }
+                modelManager.clearPendingDownload();
+                activityText.setText("DOWNLOAD FAILED\n\nDownloadManager error code: " + reason);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error querying DownloadManager for pending download", e);
+        }
+    }
+
     private void showModelManagerDialog() {
         if (modelManager == null) return;
+        reconcilePendingDownload();
+
         List<ModelInfo> installed = modelManager.listInstalledModels();
         ModelInfo active = modelManager.getActiveModel();
         List<CatalogEntry> catalog = modelManager.loadCatalog();
 
-        StringBuilder msg = new StringBuilder();
-        msg.append("On-device reasoning runs locally using embedded llama.cpp.\n\n");
-        msg.append("Active model: ").append(active != null ? active.displayName : "None").append("\n");
-
-        ModelManager.FitStatus fit = modelManager.estimateFit(807694464L);
-        msg.append("Estimated compatibility: ")
-                .append(fit == ModelManager.FitStatus.ESTIMATED_TO_FIT ? "Estimated to fit" : "Low memory warning (may run slowly)")
-                .append("\n");
-        if (modelManager.isExternalStorageRemovable()) {
-            msg.append("Note: Storage is removable; model loading may be slower.\n");
+        List<String> items = new ArrayList<>();
+        items.add("Bundled Catalog (" + catalog.size() + " models)");
+        items.add("Import GGUF file from storage");
+        for (ModelInfo m : installed) {
+            items.add("Installed: " + m.displayName + (m.active ? " (Active)" : ""));
         }
 
-        if (installed.isEmpty()) {
-            msg.append("\nNo models installed yet. Choose a model from the bundled catalog or import a GGUF file from your device.");
-        } else {
-            msg.append("\nInstalled models:\n");
-            for (ModelInfo info : installed) {
-                msg.append("• ").append(info.displayName)
-                        .append(info.active ? " (Active)" : "")
-                        .append(" - ").append(info.sizeBytes / (1024 * 1024)).append(" MB\n");
-            }
-        }
+        String activeName = active != null ? active.displayName : "None";
+        String removableNote = modelManager.isExternalStorageRemovable() ? "\nNote: Storage is removable; model loading may be slower." : "";
+        String downloadNote = modelManager.getPendingDownloadId() != -1L ? "\nDownload in progress in background..." : "";
 
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("On-device model (experimental)")
-                .setMessage(msg.toString())
-                .setPositiveButton("Catalog", (d, which) -> showCatalogDialog(catalog))
-                .setNeutralButton("Import GGUF", (d, which) -> openModelPicker())
-                .setNegativeButton("Close", null);
+                .setMessage("Active: " + activeName + removableNote + downloadNote)
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which == 0) {
+                        showCatalogDialog(catalog);
+                    } else if (which == 1) {
+                        openModelPicker();
+                    } else {
+                        int modelIdx = which - 2;
+                        if (modelIdx >= 0 && modelIdx < installed.size()) {
+                            showInstalledModelActionDialog(installed.get(modelIdx));
+                        }
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .create();
+        showManagedDialog(dialog);
+    }
 
-        showManagedDialog(builder.create());
+    private void showInstalledModelActionDialog(ModelInfo info) {
+        String[] actions = new String[] {
+                info.active ? "Active (selected)" : "Set active",
+                "Delete",
+                "Cancel"
+        };
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(info.displayName)
+                .setMessage("Size: " + (info.sizeBytes / (1024 * 1024)) + " MB\nSource: " + info.source + "\nLicense: " + info.licenseSpdx)
+                .setItems(actions, (d, which) -> {
+                    if (which == 0) {
+                        // R3: Set active serialized on background executor with in-use guard
+                        if (modelManager.isModelInUse()) {
+                            activityText.setText("Model busy - try after the current request");
+                            return;
+                        }
+                        localModelProvider.getExecutor().execute(() -> {
+                            if (modelManager.isModelInUse()) {
+                                planHandler.post(() -> activityText.setText("Model busy - try after the current request"));
+                                return;
+                            }
+                            localModelProvider.unload();
+                            modelManager.setActiveModelId(info.id);
+                            initLocalModelRoute();
+                            planHandler.post(() -> {
+                                activityText.setText("MODEL ACTIVATED\n\nActive model set to " + info.displayName + ".");
+                            });
+                        });
+                    } else if (which == 1) {
+                        showDeleteConfirmationDialog(info);
+                    }
+                })
+                .create();
+        showManagedDialog(dialog);
+    }
+
+    private void showDeleteConfirmationDialog(ModelInfo info) {
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Delete " + info.displayName + "?")
+                .setMessage("Are you sure you want to delete this model? This cannot be undone.")
+                .setPositiveButton("Delete", (d, which) -> {
+                    if (modelManager.isModelInUse()) {
+                        activityText.setText("Model busy - try after the current request");
+                        return;
+                    }
+                    localModelProvider.getExecutor().execute(() -> {
+                        try {
+                            modelManager.deleteModel(info, () -> localModelProvider.unload());
+                            initLocalModelRoute();
+                            planHandler.post(() -> {
+                                activityText.setText("MODEL DELETED\n\nDeleted " + info.displayName + ".");
+                            });
+                        } catch (Exception e) {
+                            planHandler.post(() -> {
+                                activityText.setText("DELETE FAILED\n\n" + e.getMessage());
+                            });
+                        }
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .create();
+        showManagedDialog(dialog);
     }
 
     private void showCatalogDialog(List<CatalogEntry> catalog) {
@@ -1450,7 +1627,11 @@ public class MainActivity extends Activity {
         String[] items = new String[catalog.size()];
         for (int i = 0; i < catalog.size(); i++) {
             CatalogEntry e = catalog.get(i);
-            items[i] = e.displayName + " (" + (e.sizeBytes / (1024 * 1024)) + " MB) - " + e.licenseSpdx;
+            // N6: Fit estimate computed per catalog entry
+            ModelManager.FitStatus fit = modelManager.estimateFit(e.sizeBytes);
+            String fitLabel = fit == ModelManager.FitStatus.ESTIMATED_TO_FIT
+                    ? "Estimated to fit" : "Low memory warning";
+            items[i] = e.displayName + " (" + (e.sizeBytes / (1024 * 1024)) + " MB) • " + fitLabel;
         }
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Bundled Model Catalog")
@@ -1464,21 +1645,31 @@ public class MainActivity extends Activity {
     }
 
     private void showLicenseDialog(CatalogEntry entry) {
+        ModelManager.FitStatus fit = modelManager.estimateFit(entry.sizeBytes);
+        String fitNote = fit == ModelManager.FitStatus.ESTIMATED_TO_FIT
+                ? "Estimated compatibility: Estimated to fit (unverified 1GB overhead estimate)"
+                : "Estimated compatibility: Low memory warning (may run slowly or be killed by OS)";
+
         String msg = "Before downloading " + entry.displayName + " (" + (entry.sizeBytes / (1024 * 1024)) + " MB), you must review and accept its license:\n\n"
                 + "License: " + entry.licenseSpdx + "\n"
                 + "URL: " + entry.licenseUrl + "\n\n"
+                + fitNote + "\n\n"
                 + "Tap 'Accept & download' to proceed via Android DownloadManager.";
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("License: " + entry.licenseSpdx)
                 .setMessage(msg)
                 .setPositiveButton("Accept & download", (d, which) -> {
-                    long id = modelManager.startDownload(entry);
-                    if (id != -1) {
-                        activityText.setText("DOWNLOAD STARTED\n\nDownloading " + entry.displayName + " (" + (entry.sizeBytes / (1024 * 1024)) + " MB).\n"
-                                + "Download runs in background via system DownloadManager. Check notifications for progress.");
-                    } else {
-                        activityText.setText("DOWNLOAD FAILED\n\nCould not queue download with DownloadManager.");
+                    try {
+                        long id = modelManager.startDownload(entry);
+                        if (id != -1) {
+                            activityText.setText("DOWNLOAD STARTED\n\nDownloading " + entry.displayName + " (" + (entry.sizeBytes / (1024 * 1024)) + " MB).\n"
+                                    + "Download runs in background via system DownloadManager. Check notifications for progress.");
+                        } else {
+                            activityText.setText("DOWNLOAD FAILED\n\nCould not queue download with DownloadManager.");
+                        }
+                    } catch (IllegalStateException e) {
+                        activityText.setText("DOWNLOAD REFUSED\n\n" + e.getMessage());
                     }
                 })
                 .setNegativeButton("Cancel", (d, which) -> showCatalogDialog(modelManager.loadCatalog()))
@@ -1503,7 +1694,7 @@ public class MainActivity extends Activity {
 
     private void importModelUri(android.net.Uri uri) {
         activityText.setText("IMPORTING MODEL\n\nValidating GGUF header and copying model file. Please wait...");
-        new Thread(() -> {
+        localModelProvider.getExecutor().execute(() -> {
             try {
                 String name = "imported_model.gguf";
                 long size = 0;
@@ -1535,9 +1726,8 @@ public class MainActivity extends Activity {
                     activityText.setText("IMPORT FAILED\n\n" + e.getMessage());
                 });
             }
-        }).start();
+        });
     }
-
     private void startProviderRequest(String command, EditText input, java.util.List<String> hints) {
         activityText.setText("THINKING\n\nWaiting for the selected model. Type cancel request to stop. Normal actions run automatically; risky actions still need confirmation.");
         providerRequestId = providerRunner.submit(providerSelector.active(), command, hints,
@@ -1807,6 +1997,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (statusText != null) updateAccessStatus();
+        reconcilePendingDownload();
     }
 
     private void updateAccessStatus() {

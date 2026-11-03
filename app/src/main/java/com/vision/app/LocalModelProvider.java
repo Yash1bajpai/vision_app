@@ -11,6 +11,9 @@ import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * On-device local reasoning provider backed by embedded llama.cpp runtime.
@@ -30,6 +33,8 @@ public class LocalModelProvider implements ReasoningProvider {
     private final ModelManager modelManager;
     private final LlamaBridgeInterface bridge;
     private final Handler idleHandler;
+    private final ExecutorService modelExecutor;
+    private final AtomicBoolean isUnloading = new AtomicBoolean(false);
 
     private long nativeHandle = 0;
     private long lastGenerationTimeMs = 0;
@@ -38,29 +43,36 @@ public class LocalModelProvider implements ReasoningProvider {
     private final Runnable idleUnloadRunnable = new Runnable() {
         @Override
         public void run() {
-            synchronized (LocalModelProvider.this) {
-                if (nativeHandle != 0 && !modelManager.isModelInUse()) {
-                    long idleTime = System.currentTimeMillis() - lastGenerationTimeMs;
-                    if (idleTime >= IDLE_UNLOAD_MS) {
-                        Log.i(TAG, "Unloading resident local model due to 5-minute inactivity");
-                        unload();
-                    } else {
-                        idleHandler.postDelayed(this, IDLE_UNLOAD_MS - idleTime);
-                    }
+            if (nativeHandle != 0 && !modelManager.isModelInUse()) {
+                long idleTime = System.currentTimeMillis() - lastGenerationTimeMs;
+                if (idleTime >= IDLE_UNLOAD_MS) {
+                    Log.i(TAG, "Unloading resident local model due to 5-minute inactivity");
+                    unloadAsync(null);
+                } else if (idleHandler != null) {
+                    idleHandler.postDelayed(this, IDLE_UNLOAD_MS - idleTime);
                 }
             }
         }
     };
 
     public LocalModelProvider(Context context) {
-        this(context, new ModelManager(context), new LlamaBridge(), new Handler(Looper.getMainLooper()));
+        this(context, new ModelManager(context), new LlamaBridge(), new Handler(Looper.getMainLooper()), Executors.newSingleThreadExecutor());
     }
 
     public LocalModelProvider(Context context, ModelManager modelManager, LlamaBridgeInterface bridge, Handler handler) {
+        this(context, modelManager, bridge, handler, Executors.newSingleThreadExecutor());
+    }
+
+    public LocalModelProvider(Context context, ModelManager modelManager, LlamaBridgeInterface bridge, Handler handler, ExecutorService executor) {
         this.context = context.getApplicationContext();
         this.modelManager = modelManager;
         this.bridge = bridge;
         this.idleHandler = handler;
+        this.modelExecutor = executor != null ? executor : Executors.newSingleThreadExecutor();
+    }
+
+    public ExecutorService getExecutor() {
+        return modelExecutor;
     }
 
     public synchronized boolean isLoaded() {
@@ -83,6 +95,11 @@ public class LocalModelProvider implements ReasoningProvider {
     @Override
     public synchronized String propose(String userRequest, List<String> recentRequests) {
         if (userRequest == null || userRequest.trim().isEmpty()) {
+            return null;
+        }
+
+        if (isUnloading.get()) {
+            Log.w(TAG, "Model is unloading; rejecting new request fail-closed");
             return null;
         }
 
@@ -120,8 +137,10 @@ public class LocalModelProvider implements ReasoningProvider {
 
         formattedPrompt = bridge.formatChat(nativeHandle, activeModel.templateHint, systemPrompt, userRequest.trim());
         if (formattedPrompt == null) {
-            // Fallback plain formatting if templating fails
-            formattedPrompt = systemPrompt + "\nUser: " + userRequest.trim() + "\nAssistant: ";
+            // N4: When nativeFormatChat returns null, do NOT silently fall back to plain formatting.
+            // Treat as generation setup failure: log LOGE, return null fail-closed.
+            Log.e(TAG, "Chat template formatting failed for model: " + activeModel.displayName);
+            return null;
         }
 
         String grammar = loadGrammar();
@@ -171,17 +190,30 @@ public class LocalModelProvider implements ReasoningProvider {
         }
     }
 
-    public synchronized void onTrimMemory(int level) {
+    // N3: Unload at >= TRIM_MEMORY_UI_HIDDEN; ALSO unload at TRIM_MEMORY_RUNNING_CRITICAL when idle
+    public void onTrimMemory(int level) {
         if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
-                || level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
+                || (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL && !modelManager.isModelInUse())) {
             Log.i(TAG, "Unloading local model due to trim memory level: " + level);
-            unload();
+            unloadAsync(null);
         }
     }
 
-    public synchronized void onAppBackgrounded() {
+    public void onAppBackgrounded() {
         Log.i(TAG, "Unloading local model because app moved to background");
-        unload();
+        unloadAsync(null);
+    }
+
+    public void unloadAsync(Runnable onComplete) {
+        isUnloading.set(true);
+        modelExecutor.execute(() -> {
+            try {
+                unload();
+            } finally {
+                isUnloading.set(false);
+                if (onComplete != null) onComplete.run();
+            }
+        });
     }
 
     public synchronized void unload() {
@@ -193,5 +225,9 @@ public class LocalModelProvider implements ReasoningProvider {
             nativeHandle = 0;
             Log.i(TAG, "Local model unloaded from memory");
         }
+    }
+
+    public void shutdown() {
+        unloadAsync(() -> modelExecutor.shutdown());
     }
 }

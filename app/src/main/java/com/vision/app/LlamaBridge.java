@@ -1,5 +1,7 @@
 package com.vision.app;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * JNI wrapper for the embedded llama.cpp runtime library ("vision_llama").
  */
@@ -38,7 +40,8 @@ public class LlamaBridge implements LlamaBridgeInterface {
     public String generate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs) {
         if (!libraryLoaded || handle == 0 || prompt == null) return null;
         try {
-            return nativeGenerate(handle, prompt, gbnfGrammar, maxTokens, timeoutMs);
+            byte[] bytes = nativeGenerate(handle, prompt, gbnfGrammar, maxTokens, timeoutMs);
+            return bytes != null ? new String(bytes, StandardCharsets.UTF_8) : null;
         } catch (Throwable t) {
             return null;
         }
@@ -57,14 +60,15 @@ public class LlamaBridge implements LlamaBridgeInterface {
     public String formatChat(long handle, String templateHint, String systemPrompt, String userMessage) {
         if (!libraryLoaded || handle == 0) return null;
         try {
-            return nativeFormatChat(handle, templateHint, systemPrompt, userMessage);
+            byte[] bytes = nativeFormatChat(handle, templateHint, systemPrompt, userMessage);
+            return bytes != null ? new String(bytes, StandardCharsets.UTF_8) : null;
         } catch (Throwable t) {
             return null;
         }
     }
 
     public static native long nativeLoad(String path, int ctxTokens, int threads);
-    public static native String nativeGenerate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs);
+    public static native byte[] nativeGenerate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs);
     public static native void nativeUnload(long handle);
-    public static native String nativeFormatChat(long handle, String templateHint, String systemPrompt, String userMessage);
+    public static native byte[] nativeFormatChat(long handle, String templateHint, String systemPrompt, String userMessage);
 }

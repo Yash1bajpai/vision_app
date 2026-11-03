@@ -32,7 +32,8 @@ public class ModelManager {
     private static final String TAG = "ModelManager";
     public static final String PREFS_NAME = "vision_models";
     public static final String KEY_ACTIVE_MODEL_ID = "active_model_id";
-
+    public static final String KEY_PENDING_DOWNLOAD_ID = "pending_download_id";
+    public static final String KEY_PENDING_DOWNLOAD_CATALOG_ID = "pending_download_catalog_id";
     // Estimated memory overhead placeholder (1GB) until real measurements exist
     public static final long ESTIMATED_OVERHEAD_BYTES = 1024L * 1024L * 1024L;
     public static final long MAX_IMPORT_SIZE_BYTES = (long) (2.5 * 1024 * 1024 * 1024L); // 2.5 GB
@@ -222,14 +223,22 @@ public class ModelManager {
         File finalFile = new File(modelsDir, finalFileName);
 
         try (FileOutputStream fos = new FileOutputStream(partFile)) {
-            byte[] buf = new byte[8192];
-            int read = sourceStream.read(buf, 0, 4);
-            if (read < 4 || !validateGgufMagic(buf)) {
+            byte[] magic = new byte[4];
+            int totalMagic = 0;
+            // N1: Loop until 4 bytes or EOF before checking GGUF magic
+            while (totalMagic < 4) {
+                int r = sourceStream.read(magic, totalMagic, 4 - totalMagic);
+                if (r == -1) break;
+                totalMagic += r;
+            }
+            if (totalMagic < 4 || !validateGgufMagic(magic)) {
                 throw new IllegalArgumentException("Invalid GGUF format: magic header missing");
             }
-            fos.write(buf, 0, read);
+            fos.write(magic, 0, totalMagic);
 
-            long totalCopied = read;
+            byte[] buf = new byte[8192];
+            long totalCopied = totalMagic;
+            int read;
             while ((read = sourceStream.read(buf)) != -1) {
                 totalCopied += read;
                 if (totalCopied > MAX_IMPORT_SIZE_BYTES) {
@@ -327,7 +336,44 @@ public class ModelManager {
         return expectedSha256.equalsIgnoreCase(actual);
     }
 
-    public long startDownload(CatalogEntry entry) {
+    public long getPendingDownloadId() {
+        return prefs.getLong(KEY_PENDING_DOWNLOAD_ID, -1L);
+    }
+
+    public String getPendingDownloadCatalogId() {
+        return prefs.getString(KEY_PENDING_DOWNLOAD_CATALOG_ID, null);
+    }
+
+    public synchronized void setPendingDownload(long downloadId, String catalogId) {
+        prefs.edit()
+                .putLong(KEY_PENDING_DOWNLOAD_ID, downloadId)
+                .putString(KEY_PENDING_DOWNLOAD_CATALOG_ID, catalogId)
+                .apply();
+    }
+
+    public synchronized void clearPendingDownload() {
+        prefs.edit()
+                .remove(KEY_PENDING_DOWNLOAD_ID)
+                .remove(KEY_PENDING_DOWNLOAD_CATALOG_ID)
+                .apply();
+    }
+
+    public boolean isModelInstalled(String id) {
+        if (id == null) return false;
+        for (ModelInfo info : listInstalledModels()) {
+            if (id.equals(info.id)) return true;
+        }
+        return false;
+    }
+
+    public synchronized long startDownload(CatalogEntry entry) {
+        if (getPendingDownloadId() != -1L) {
+            throw new IllegalStateException("Download already in progress");
+        }
+        if (isModelInstalled(entry.id)) {
+            throw new IllegalStateException("Model is already installed: " + entry.displayName);
+        }
+
         DownloadManager dm = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm == null) return -1;
 
@@ -337,16 +383,21 @@ public class ModelManager {
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE);
         request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "models/" + entry.fileName + ".part");
 
-        return dm.enqueue(request);
+        long downloadId = dm.enqueue(request);
+        if (downloadId != -1L) {
+            setPendingDownload(downloadId, entry.id);
+        }
+        return downloadId;
     }
 
-    public boolean completeDownload(CatalogEntry entry, File downloadedPartFile) throws IOException {
+    public synchronized boolean completeDownload(CatalogEntry entry, File downloadedPartFile) throws IOException {
         if (!downloadedPartFile.exists()) {
             return false;
         }
 
         if (!verifySha256(downloadedPartFile, entry.sha256)) {
             downloadedPartFile.delete();
+            clearPendingDownload();
             throw new IOException("SHA-256 mismatch for downloaded model: " + entry.fileName);
         }
 
@@ -378,9 +429,17 @@ public class ModelManager {
                 entry.templateHint
         );
 
+        // R2: Dedupe by id: re-download replaces, not duplicates
         List<ModelInfo> installed = listInstalledModels();
-        installed.add(info);
-        saveInstalledModels(installed);
+        List<ModelInfo> updated = new ArrayList<>();
+        for (ModelInfo m : installed) {
+            if (!m.id.equals(entry.id)) {
+                updated.add(m);
+            }
+        }
+        updated.add(info);
+        saveInstalledModels(updated);
+        clearPendingDownload();
         return true;
     }
 }

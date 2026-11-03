@@ -39,6 +39,7 @@ public class LocalModelProviderTest {
         int generateCallCount = 0;
 
         String returnText = null;
+        String returnFormatChat = "<formatted>";
         boolean simulateTimeout = false;
         long lastTimeoutMs = 0;
 
@@ -69,7 +70,8 @@ public class LocalModelProviderTest {
 
         @Override
         public String formatChat(long handle, String templateHint, String systemPrompt, String userMessage) {
-            return "<formatted>" + userMessage + "</formatted>";
+            if (returnFormatChat == null) return null;
+            return returnFormatChat + userMessage + "</formatted>";
         }
     }
 
@@ -79,7 +81,7 @@ public class LocalModelProviderTest {
         modelManager = new ModelManager(context);
         fakeBridge = new FakeBridge();
         handler = new Handler(Looper.getMainLooper());
-        provider = new LocalModelProvider(context, modelManager, fakeBridge, handler);
+        provider = new LocalModelProvider(context, modelManager, fakeBridge, handler, Runnable::run);
 
         // Install a dummy active model
         File dummyFile = new File(modelManager.getModelsDir(), "active-model.gguf");
@@ -142,6 +144,15 @@ public class LocalModelProviderTest {
         assertFalse("Model must be unloaded on TRIM_MEMORY_MODERATE", provider.isLoaded());
         assertEquals(2, fakeBridge.unloadCallCount);
 
+        // 4b. N3: TRIM_MEMORY_RUNNING_CRITICAL unloads when idle, but NOT when in use
+        provider.propose("turn on torch");
+        assertTrue(provider.isLoaded());
+        modelManager.setModelInUse(true);
+        provider.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL);
+        assertTrue("TRIM_MEMORY_RUNNING_CRITICAL must NOT unload model while in use", provider.isLoaded());
+        modelManager.setModelInUse(false);
+        provider.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL);
+        assertFalse("TRIM_MEMORY_RUNNING_CRITICAL must unload model when idle", provider.isLoaded());
         // 5. Re-propose and idle 5 minutes triggers unload
         provider.propose("turn on torch");
         assertTrue(provider.isLoaded());
@@ -215,5 +226,14 @@ public class LocalModelProviderTest {
         // Malformed JSON returns null from StrictJson
         String malformed = "{not json}";
         assertNull(StrictJson.parseObject(malformed));
+    }
+
+    // N4: formatChat failure returns null without falling back to plain format
+    @Test
+    public void formatChatFailureFailsClosedWithoutPlainFallback() {
+        fakeBridge.returnFormatChat = null;
+        String result = provider.propose("turn on torch");
+        assertNull("formatChat failure must fail closed and return null", result);
+        assertEquals(0, fakeBridge.generateCallCount);
     }
 }

@@ -7,11 +7,62 @@
 #include <cstring>
 #include <algorithm>
 #include <exception>
+#include <mutex>
 
 #define TAG "VisionLlama"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+static std::once_flag s_backend_init_flag;
+
+// R1: Initialize backend exactly once before first model load. Process lifetime: never free.
+static void ensure_backend_init() {
+    std::call_once(s_backend_init_flag, []() {
+        llama_backend_init();
+        LOGI("llama_backend_init completed successfully");
+    });
+}
+
+// R5: RAII guard for JNI string UTF characters to prevent double-release or leaks on exceptions
+class JniStringChars {
+public:
+    JniStringChars(JNIEnv* env, jstring jstr) : m_env(env), m_jstr(jstr), m_chars(nullptr) {
+        if (m_env != nullptr && m_jstr != nullptr) {
+            m_chars = m_env->GetStringUTFChars(m_jstr, nullptr);
+        }
+    }
+
+    ~JniStringChars() {
+        if (m_env != nullptr && m_jstr != nullptr && m_chars != nullptr) {
+            m_env->ReleaseStringUTFChars(m_jstr, m_chars);
+            m_chars = nullptr;
+        }
+    }
+
+    const char* c_str() const {
+        return m_chars;
+    }
+
+    JniStringChars(const JniStringChars&) = delete;
+    JniStringChars& operator=(const JniStringChars&) = delete;
+
+private:
+    JNIEnv* m_env;
+    jstring m_jstr;
+    const char* m_chars;
+};
+
+// UTF-8-safe JNI byte array conversion (avoids NewStringUTF MUTF-8 hazards on arbitrary model bytes)
+static jbyteArray stringToByteArray(JNIEnv* env, const std::string& str) {
+    jsize len = static_cast<jsize>(str.size());
+    jbyteArray bytes = env->NewByteArray(len);
+    if (bytes == nullptr) {
+        return nullptr;
+    }
+    env->SetByteArrayRegion(bytes, 0, len, reinterpret_cast<const jbyte*>(str.data()));
+    return bytes;
+}
 
 struct VisionLlamaHandle {
     llama_model* model = nullptr;
@@ -30,15 +81,18 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
     if (pathStr == nullptr) {
         return 0;
     }
-    const char* path = env->GetStringUTFChars(pathStr, nullptr);
-    if (path == nullptr) {
+
+    JniStringChars path(env, pathStr);
+    if (path.c_str() == nullptr) {
         return 0;
     }
 
+    // R1: Ensure backend is initialized before loading any model
+    ensure_backend_init();
+
     try {
         llama_model_params mparams = llama_model_default_params();
-        llama_model* model = llama_model_load_from_file(path, mparams);
-        env->ReleaseStringUTFChars(pathStr, path);
+        llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
         if (model == nullptr) {
             LOGE("Failed to load llama_model from file");
             return 0;
@@ -62,11 +116,9 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
         return reinterpret_cast<jlong>(handle);
     } catch (const std::exception& e) {
         LOGE("Exception in nativeLoad: %s", e.what());
-        env->ReleaseStringUTFChars(pathStr, path);
         return 0;
     } catch (...) {
         LOGE("Unknown exception in nativeLoad");
-        env->ReleaseStringUTFChars(pathStr, path);
         return 0;
     }
 }
@@ -80,6 +132,7 @@ Java_com_vision_app_LlamaBridge_nativeUnload(
         return;
     }
     auto* handle = reinterpret_cast<VisionLlamaHandle*>(handleVal);
+    // Context must be freed before model
     if (handle->ctx != nullptr) {
         llama_free(handle->ctx);
         handle->ctx = nullptr;
@@ -91,7 +144,7 @@ Java_com_vision_app_LlamaBridge_nativeUnload(
     delete handle;
 }
 
-JNIEXPORT jstring JNICALL
+JNIEXPORT jbyteArray JNICALL
 Java_com_vision_app_LlamaBridge_nativeFormatChat(
         JNIEnv* env,
         jclass /* clazz */,
@@ -107,16 +160,16 @@ Java_com_vision_app_LlamaBridge_nativeFormatChat(
         return nullptr;
     }
 
-    const char* templateHint = templateHintStr ? env->GetStringUTFChars(templateHintStr, nullptr) : nullptr;
-    const char* sysPrompt = systemPromptStr ? env->GetStringUTFChars(systemPromptStr, nullptr) : "";
-    const char* userPrompt = userPromptStr ? env->GetStringUTFChars(userPromptStr, nullptr) : "";
+    JniStringChars templateHint(env, templateHintStr);
+    JniStringChars sysPrompt(env, systemPromptStr);
+    JniStringChars userPrompt(env, userPromptStr);
 
     std::vector<llama_chat_message> chat;
-    if (sysPrompt && sysPrompt[0] != '\0') {
-        chat.push_back({ "system", sysPrompt });
+    if (sysPrompt.c_str() != nullptr && sysPrompt.c_str()[0] != '\0') {
+        chat.push_back({ "system", sysPrompt.c_str() });
     }
-    if (userPrompt && userPrompt[0] != '\0') {
-        chat.push_back({ "user", userPrompt });
+    if (userPrompt.c_str() != nullptr && userPrompt.c_str()[0] != '\0') {
+        chat.push_back({ "user", userPrompt.c_str() });
     }
 
     const char* embedded_tmpl = llama_model_chat_template(handle->model, nullptr);
@@ -127,30 +180,29 @@ Java_com_vision_app_LlamaBridge_nativeFormatChat(
         needed = llama_chat_apply_template(embedded_tmpl, chat.data(), chat.size(), true, nullptr, 0);
     }
 
-    // Fall back to templateHint (e.g. "llama3" or "chatml")
+    // Fall back ONLY to the documented templateHint (e.g. "llama3" or "chatml")
     const char* effective_tmpl = embedded_tmpl;
-    if (needed < 0 && templateHint != nullptr && templateHint[0] != '\0') {
-        needed = llama_chat_apply_template(templateHint, chat.data(), chat.size(), true, nullptr, 0);
-        effective_tmpl = templateHint;
+    if (needed < 0 && templateHint.c_str() != nullptr && templateHint.c_str()[0] != '\0') {
+        needed = llama_chat_apply_template(templateHint.c_str(), chat.data(), chat.size(), true, nullptr, 0);
+        effective_tmpl = templateHint.c_str();
     }
 
-    jstring result = nullptr;
-    if (needed > 0) {
-        std::vector<char> buf(needed + 1, 0);
-        int32_t written = llama_chat_apply_template(effective_tmpl, chat.data(), chat.size(), true, buf.data(), buf.size());
-        if (written > 0) {
-            result = env->NewStringUTF(buf.data());
-        }
+    if (needed <= 0) {
+        LOGE("Failed to resolve chat template (both embedded and templateHint failed)");
+        return nullptr;
     }
 
-    if (templateHintStr && templateHint) env->ReleaseStringUTFChars(templateHintStr, templateHint);
-    if (systemPromptStr && sysPrompt) env->ReleaseStringUTFChars(systemPromptStr, sysPrompt);
-    if (userPromptStr && userPrompt) env->ReleaseStringUTFChars(userPromptStr, userPrompt);
+    std::vector<char> buf(needed + 1, 0);
+    int32_t written = llama_chat_apply_template(effective_tmpl, chat.data(), chat.size(), true, buf.data(), buf.size());
+    if (written <= 0) {
+        LOGE("Failed applying resolved chat template");
+        return nullptr;
+    }
 
-    return result;
+    return stringToByteArray(env, std::string(buf.data(), written));
 }
 
-JNIEXPORT jstring JNICALL
+JNIEXPORT jbyteArray JNICALL
 Java_com_vision_app_LlamaBridge_nativeGenerate(
         JNIEnv* env,
         jclass /* clazz */,
@@ -167,52 +219,47 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         return nullptr;
     }
 
-    const char* prompt = env->GetStringUTFChars(promptStr, nullptr);
-    if (prompt == nullptr) {
+    JniStringChars prompt(env, promptStr);
+    if (prompt.c_str() == nullptr) {
         return nullptr;
     }
-    const char* grammar_str = gbnfGrammarStr ? env->GetStringUTFChars(gbnfGrammarStr, nullptr) : nullptr;
+    JniStringChars grammar(env, gbnfGrammarStr);
 
     const llama_vocab* vocab = llama_model_get_vocab(handle->model);
     if (vocab == nullptr) {
-        env->ReleaseStringUTFChars(promptStr, prompt);
-        if (gbnfGrammarStr && grammar_str) env->ReleaseStringUTFChars(gbnfGrammarStr, grammar_str);
         return nullptr;
     }
 
     auto start_time = std::chrono::steady_clock::now();
 
     // 1. Tokenize prompt
-    int prompt_len = (int)strlen(prompt);
-    int n_tokens = -llama_tokenize(vocab, prompt, prompt_len, nullptr, 0, true, true);
+    int prompt_len = (int)strlen(prompt.c_str());
+    int n_tokens = -llama_tokenize(vocab, prompt.c_str(), prompt_len, nullptr, 0, true, true);
     if (n_tokens <= 0) {
         n_tokens = 512;
     }
     std::vector<llama_token> prompt_tokens(n_tokens);
-    int token_count = llama_tokenize(vocab, prompt, prompt_len, prompt_tokens.data(), prompt_tokens.size(), true, true);
+    int token_count = llama_tokenize(vocab, prompt.c_str(), prompt_len, prompt_tokens.data(), prompt_tokens.size(), true, true);
     if (token_count < 0) {
         prompt_tokens.resize(-token_count);
-        token_count = llama_tokenize(vocab, prompt, prompt_len, prompt_tokens.data(), prompt_tokens.size(), true, true);
+        token_count = llama_tokenize(vocab, prompt.c_str(), prompt_len, prompt_tokens.data(), prompt_tokens.size(), true, true);
     }
-    env->ReleaseStringUTFChars(promptStr, prompt);
     if (token_count <= 0) {
-        if (gbnfGrammarStr && grammar_str) env->ReleaseStringUTFChars(gbnfGrammarStr, grammar_str);
         return nullptr;
     }
     prompt_tokens.resize(token_count);
 
-    // 2. Initialize sampler chain with greedy/dist and optional GBNF grammar
+    // 2. Initialize sampler chain with greedy/dist and mandatory GBNF grammar
     llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    if (grammar_str != nullptr && grammar_str[0] != '\0') {
-        llama_sampler* g_smpl = llama_sampler_init_grammar(vocab, grammar_str, "root");
-        if (g_smpl != nullptr) {
-            llama_sampler_chain_add(smpl, g_smpl);
-        } else {
-            LOGW("llama_sampler_init_grammar returned NULL for grammar string");
+    if (grammar.c_str() != nullptr && grammar.c_str()[0] != '\0') {
+        llama_sampler* g_smpl = llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+        if (g_smpl == nullptr) {
+            // R4: Grammar must fail closed. Free sampler chain and return nullptr; never generate unconstrained.
+            LOGE("llama_sampler_init_grammar failed: grammar parsing error, refusing unconstrained generation");
+            llama_sampler_free(smpl);
+            return nullptr;
         }
-    }
-    if (gbnfGrammarStr && grammar_str) {
-        env->ReleaseStringUTFChars(gbnfGrammarStr, grammar_str);
+        llama_sampler_chain_add(smpl, g_smpl);
     }
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(42));
 
@@ -279,7 +326,7 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
     }
 
     llama_sampler_free(smpl);
-    return env->NewStringUTF(result_text.c_str());
+    return stringToByteArray(env, result_text);
 }
 
 } // extern "C"
