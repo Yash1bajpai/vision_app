@@ -254,6 +254,7 @@ public class ModelManager {
             fos.flush();
         } catch (Throwable t) {
             partFile.delete();
+            if (t instanceof IllegalArgumentException) throw (IllegalArgumentException) t;
             if (t instanceof IOException) throw (IOException) t;
             throw new IOException("Import failed: " + t.getMessage(), t);
         }

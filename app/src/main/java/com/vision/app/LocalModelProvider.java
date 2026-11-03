@@ -4,6 +4,7 @@ import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
@@ -49,7 +50,7 @@ public class LocalModelProvider implements ReasoningProvider {
         @Override
         public void run() {
             if (nativeHandle != 0 && !modelManager.isModelInUse()) {
-                long idleTime = System.currentTimeMillis() - lastGenerationTimeMs;
+                long idleTime = SystemClock.elapsedRealtime() - lastGenerationTimeMs;
                 if (idleTime >= IDLE_UNLOAD_MS) {
                     Log.i(TAG, "Unloading resident local model due to 5-minute inactivity");
                     unloadAsync(null);
@@ -159,7 +160,7 @@ public class LocalModelProvider implements ReasoningProvider {
             } catch (Throwable t) {
                 Log.e(TAG, "Local model generation threw exception", t);
             } finally {
-                lastGenerationTimeMs = System.currentTimeMillis();
+                lastGenerationTimeMs = SystemClock.elapsedRealtime();
                 scheduleIdleUnload();
             }
 

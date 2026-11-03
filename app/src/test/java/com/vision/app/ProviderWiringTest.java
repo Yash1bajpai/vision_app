@@ -5,7 +5,11 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.Test;
@@ -44,6 +48,33 @@ public class ProviderWiringTest {
     }
     private ProviderSelector selector(MainActivity a) throws Exception { return (ProviderSelector) field(a, "providerSelector"); }
 
+    private void installDummyActiveModel(MainActivity a) throws Exception {
+        ModelManager mm = (ModelManager) field(a, "modelManager");
+        File dummyFile = new File(mm.getModelsDir(), "active-model.gguf");
+        try (FileOutputStream fos = new FileOutputStream(dummyFile)) {
+            fos.write(new byte[]{0x47, 0x47, 0x55, 0x46});
+        }
+        ModelInfo info = new ModelInfo(
+                "active-1", "Active Test Model", "active-model.gguf",
+                dummyFile.length(), null, "import", "custom",
+                System.currentTimeMillis(), true, true, "llama3"
+        );
+        List<ModelInfo> list = new ArrayList<>();
+        list.add(info);
+        mm.saveInstalledModels(list);
+        mm.setActiveModelId("active-1");
+    }
+
+    private void cleanupDummyModel(MainActivity a) throws Exception {
+        ModelManager mm = (ModelManager) field(a, "modelManager");
+        if (mm != null) {
+            File dummy = new File(mm.getModelsDir(), "active-model.gguf");
+            if (dummy.exists()) dummy.delete();
+            File meta = new File(mm.getModelsDir(), "models.json");
+            if (meta.exists()) meta.delete();
+            mm.setActiveModelId(null);
+        }
+    }
     @Test public void defaultModeIsDeterministicAndModelModesAreRefused() throws Exception {
         ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity a = c.get();
@@ -60,16 +91,21 @@ public class ProviderWiringTest {
     @Test public void modelProposalRunsOffThreadThenIsValidatedAndShown() throws Exception {
         ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity a = c.get();
-        MockReasoningProvider fake = new MockReasoningProvider(TIME);
-        selector(a).register(ProviderMode.ON_DEVICE, fake);
-        command(a, "provider use on-device");
-        assertEquals(ProviderMode.ON_DEVICE, selector(a).mode());
-        command(a, "gibberish zzz qqq");
-        settle(1500);
-        assertEquals(1, fake.callCount);
-        assertFalse(text(a).startsWith("THINKING"));
-        assertFalse("proposal shown, not a failure", text(a).startsWith("MODEL"));
-        c.pause().stop().destroy();
+        installDummyActiveModel(a);
+        try {
+            MockReasoningProvider fake = new MockReasoningProvider(TIME);
+            selector(a).register(ProviderMode.ON_DEVICE, fake);
+            command(a, "provider use on-device");
+            assertEquals(ProviderMode.ON_DEVICE, selector(a).mode());
+            command(a, "gibberish zzz qqq");
+            settle(1500);
+            assertEquals(1, fake.callCount);
+            assertFalse(text(a).startsWith("THINKING"));
+            assertFalse("proposal shown, not a failure", text(a).startsWith("MODEL"));
+        } finally {
+            cleanupDummyModel(a);
+            c.pause().stop().destroy();
+        }
     }
 
     @Test public void parserRecognisedCommandNeverReachesModel() throws Exception {
@@ -99,50 +135,60 @@ public class ProviderWiringTest {
     @Test public void cancelRequestDiscardsLateProposal() throws Exception {
         ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity a = c.get();
-        final CountDownLatch started = new CountDownLatch(1);
-        final CountDownLatch release = new CountDownLatch(1);
-        selector(a).register(ProviderMode.ON_DEVICE, new ReasoningProvider() {
-            @Override public String propose(String r) {
-                started.countDown();
-                try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignore) { }
-                return TIME;
-            }
-        });
-        command(a, "provider use on-device");
-        command(a, "gibberish zzz qqq");
-        assertTrue(text(a).startsWith("THINKING"));
-        assertTrue(started.await(3, TimeUnit.SECONDS));
-        command(a, "cancel request");
-        assertEquals("REQUEST CANCELLED", text(a));
-        release.countDown();
-        settle(400);
-        assertEquals("late proposal must not replace the cancel message", "REQUEST CANCELLED", text(a));
-        command(a, "cancel request");
-        assertEquals("NO ACTIVE REQUEST", text(a));
-        c.pause().stop().destroy();
+        installDummyActiveModel(a);
+        try {
+            final CountDownLatch started = new CountDownLatch(1);
+            final CountDownLatch release = new CountDownLatch(1);
+            selector(a).register(ProviderMode.ON_DEVICE, new ReasoningProvider() {
+                @Override public String propose(String r) {
+                    started.countDown();
+                    try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignore) { }
+                    return TIME;
+                }
+            });
+            command(a, "provider use on-device");
+            command(a, "gibberish zzz qqq");
+            assertTrue(text(a).startsWith("THINKING"));
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            command(a, "cancel request");
+            assertEquals("REQUEST CANCELLED", text(a));
+            release.countDown();
+            settle(400);
+            assertEquals("late proposal must not replace the cancel message", "REQUEST CANCELLED", text(a));
+            command(a, "cancel request");
+            assertEquals("NO ACTIVE REQUEST", text(a));
+        } finally {
+            cleanupDummyModel(a);
+            c.pause().stop().destroy();
+        }
     }
 
     @Test public void backgroundingCancelsInFlightRequest() throws Exception {
         ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity a = c.get();
-        final CountDownLatch started = new CountDownLatch(1);
-        final CountDownLatch release = new CountDownLatch(1);
-        selector(a).register(ProviderMode.ON_DEVICE, new ReasoningProvider() {
-            @Override public String propose(String r) {
-                started.countDown();
-                try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignore) { }
-                return TIME;
-            }
-        });
-        command(a, "provider use on-device");
-        command(a, "gibberish zzz qqq");
-        assertTrue(started.await(3, TimeUnit.SECONDS));
-        c.pause().stop();
-        assertEquals(0L, field(a, "providerRequestId"));
-        release.countDown();
-        settle(300);
-        assertFalse(text(a).contains("TIME"));
-        c.destroy();
+        installDummyActiveModel(a);
+        try {
+            final CountDownLatch started = new CountDownLatch(1);
+            final CountDownLatch release = new CountDownLatch(1);
+            selector(a).register(ProviderMode.ON_DEVICE, new ReasoningProvider() {
+                @Override public String propose(String r) {
+                    started.countDown();
+                    try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignore) { }
+                    return TIME;
+                }
+            });
+            command(a, "provider use on-device");
+            command(a, "gibberish zzz qqq");
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            c.pause().stop();
+            assertEquals(0L, field(a, "providerRequestId"));
+            release.countDown();
+            settle(300);
+            assertFalse(text(a).contains("TIME"));
+        } finally {
+            cleanupDummyModel(a);
+            c.destroy();
+        }
     }
 
     @Test public void providerCommandsParse() {
