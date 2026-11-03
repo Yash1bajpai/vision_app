@@ -2,9 +2,9 @@
 
 An offline-first Android command assistant with a separate safety boundary between understanding a request and acting on it.
 
-Vision handles supported phone commands locally. An optional, user-keyed cloud provider can propose actions for requests the offline parser does not understand. Proposals must pass strict validation; risky actions still require confirmation.
+Vision handles supported phone commands locally. An optional on-device reasoning model (embedded llama.cpp) or user-keyed cloud provider can propose actions for requests the offline parser does not understand. Proposals must pass strict validation; risky actions still require confirmation.
 
-This is a bounded command assistant, not a general-purpose Jarvis, an always-on agent, or a bundled on-device language model.
+This is a bounded command assistant, not an unconstrained chatbot or an autonomous agent.
 
 ## Why this project
 
@@ -27,6 +27,7 @@ The recording uses scripted Android instrumentation against unchanged app code, 
 - **Calendar and voice:** one-hour calendar event creation after confirmation; offline push-to-talk fills a reviewable text draft, not an automatically executed command. It requires available on-device speech recognition.
 - **Optional cloud:** Groq, OpenRouter, OpenAI, Gemini or a custom HTTPS OpenAI-compatible endpoint. Adding a key enables fallback for unknown commands; ordinary validated actions can run without another proposal-review prompt. Risky confirmations remain. Provider usage may cost money.
 - **Limited preferences:** separate opt-in for an encrypted, saved `response_style` preference with a 30-day expiry and view/delete controls. It changes battery/network/time wording, not action approval. Session-only preferences expire after 60 seconds.
+- **On-device reasoning (experimental):** embedded llama.cpp runtime for local action proposal without cloud services. The model catalog is bundled in the app (zero outbound catalog fetches); downloads occur only upon explicit user action via Android DownloadManager after license acceptance. Models live in app-specific external storage and are unloaded when backgrounded or after 5 minutes idle.
 
 ## Architecture
 
@@ -34,9 +35,9 @@ The recording uses scripted Android instrumentation against unchanged app code, 
 Typed command / reviewable voice draft
                 |
         Deterministic parser
-         | known       | unknown, cloud enabled
+         | known       | unknown, model route enabled
          |             v
-         |       Optional provider proposal
+         |       Optional provider proposal (on-device / cloud)
          |             |
          |       Strict JSON + action/plan validation
          |             |

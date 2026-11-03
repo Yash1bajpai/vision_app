@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     private Button voiceButton;
     private Runnable voiceTimeout;
     private static final int REQUEST_CODE_MIC = 104;
+    private static final int REQUEST_CODE_IMPORT_MODEL = 105;
     private TextView activityText;
     private android.widget.ScrollView activityScroll;
     private TextView statusText;
@@ -74,6 +75,8 @@ public class MainActivity extends Activity {
     private long providerRequestId;
     private OpenAiCompatibleProvider cloudProvider;
     private CloudKeyStore cloudKeyStore;
+    private ModelManager modelManager;
+    private LocalModelProvider localModelProvider;
 
     // Multi-step plan state (in-memory only, never persisted; fail-closed on lifecycle loss)
     private VisionPlan pendingPlan;
@@ -111,6 +114,9 @@ public class MainActivity extends Activity {
         cloudKeyStore = new CloudKeyStore(this);
         savedPreferenceMemory = new SavedPreferenceMemory(new PreferenceMemoryStore(this));
         restoreCloud();
+        modelManager = new ModelManager(this);
+        localModelProvider = new LocalModelProvider(this, modelManager, new LlamaBridge(), planHandler);
+        initLocalModelRoute();
         buildScreen();
         if (state != null) {
             restoreInstanceState(state);
@@ -159,6 +165,9 @@ public class MainActivity extends Activity {
         stopPlan("PLAN CANCELLED", false);
         clearSessionContext();
         clearPreferenceMemory();
+        if (localModelProvider != null) {
+            localModelProvider.unload();
+        }
         super.onDestroy();
         if (activeDialog != null) {
             if (activeDialog.isShowing()) {
@@ -176,6 +185,22 @@ public class MainActivity extends Activity {
         planStepIndex = 0;
         pendingStepCompletion = null;
         inputField = null;
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (localModelProvider != null) {
+            localModelProvider.onAppBackgrounded();
+        }
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (localModelProvider != null) {
+            localModelProvider.onTrimMemory(level);
+        }
     }
 
     private void showManagedDialog(AlertDialog dialog) {
@@ -208,6 +233,7 @@ public class MainActivity extends Activity {
         header.addView(titleBox, titleParams);
         TextView settings = label("•••", 20, MUTED);
         settings.setGravity(Gravity.CENTER);
+        settings.setOnClickListener(v -> showSettingsDialog());
         header.addView(settings, new LinearLayout.LayoutParams(dp(42), dp(42)));
         root.addView(header);
 
@@ -309,6 +335,16 @@ public class MainActivity extends Activity {
                 if (command.equalsIgnoreCase("cloud forget")) {
                     forgetCloud(); activityText.setText("CLOUD CLEARED\n\nOffline default restored. No key saved."); return;
                 }
+                if (command.equalsIgnoreCase("settings") || command.equalsIgnoreCase("on-device model")
+                        || command.equalsIgnoreCase("model setup")) {
+                    showModelManagerDialog();
+                    return;
+                }
+                if (command.toLowerCase(Locale.ROOT).trim().startsWith("provider use on-device")
+                        && (modelManager == null || modelManager.getActiveModel() == null)) {
+                    activityText.setText("No model installed. Open Settings -> On-device model to download or import one.");
+                    return;
+                }
                 String providerResult = ProviderCommands.handle(command, providerSelector);
                 if (providerResult != null) {
                     activityText.setText(providerResult);
@@ -360,6 +396,11 @@ public class MainActivity extends Activity {
                 contextExpiry = this::clearSessionContext;
                 planHandler.postDelayed(contextExpiry, VisionSessionContext.TTL_MILLIS);
                 if (modelRoute) {
+                    if (providerSelector.mode() == ProviderMode.ON_DEVICE
+                            && (modelManager == null || modelManager.getActiveModel() == null)) {
+                        activityText.setText("No model installed. Open Settings -> On-device model to download or import one.");
+                        return;
+                    }
                     startProviderRequest(command, input, providerSelector.mode() == ProviderMode.CLOUD
                             ? java.util.Collections.emptyList() : hints);
                     return;
@@ -1330,6 +1371,171 @@ public class MainActivity extends Activity {
     private static void styleCloudButtons(AlertDialog dialog) {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(0, 90, 60));
         dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(0, 90, 60));
+    }
+
+    private void initLocalModelRoute() {
+        if (modelManager != null && modelManager.getActiveModel() != null) {
+            providerSelector.register(ProviderMode.ON_DEVICE, localModelProvider);
+        } else {
+            providerSelector.unregister(ProviderMode.ON_DEVICE);
+        }
+    }
+
+    private void showSettingsDialog() {
+        String[] options = new String[] {
+                "On-device model (experimental)",
+                "Cloud setup",
+                "Saved preferences"
+        };
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Settings")
+                .setItems(options, (d, which) -> {
+                    if (which == 0) {
+                        showModelManagerDialog();
+                    } else if (which == 1) {
+                        showCloudSetup();
+                    } else if (which == 2) {
+                        activityText.setText("SAVED PREFERENCES\n\n" + savedPreferenceMemory.inspect(System.currentTimeMillis()));
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .create();
+        showManagedDialog(dialog);
+    }
+
+    private void showModelManagerDialog() {
+        if (modelManager == null) return;
+        List<ModelInfo> installed = modelManager.listInstalledModels();
+        ModelInfo active = modelManager.getActiveModel();
+        List<CatalogEntry> catalog = modelManager.loadCatalog();
+
+        StringBuilder msg = new StringBuilder();
+        msg.append("On-device reasoning runs locally using embedded llama.cpp.\n\n");
+        msg.append("Active model: ").append(active != null ? active.displayName : "None").append("\n");
+
+        ModelManager.FitStatus fit = modelManager.estimateFit(807694464L);
+        msg.append("Estimated compatibility: ")
+                .append(fit == ModelManager.FitStatus.ESTIMATED_TO_FIT ? "Estimated to fit" : "Low memory warning (may run slowly)")
+                .append("\n");
+        if (modelManager.isExternalStorageRemovable()) {
+            msg.append("Note: Storage is removable; model loading may be slower.\n");
+        }
+
+        if (installed.isEmpty()) {
+            msg.append("\nNo models installed yet. Choose a model from the bundled catalog or import a GGUF file from your device.");
+        } else {
+            msg.append("\nInstalled models:\n");
+            for (ModelInfo info : installed) {
+                msg.append("• ").append(info.displayName)
+                        .append(info.active ? " (Active)" : "")
+                        .append(" - ").append(info.sizeBytes / (1024 * 1024)).append(" MB\n");
+            }
+        }
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("On-device model (experimental)")
+                .setMessage(msg.toString())
+                .setPositiveButton("Catalog", (d, which) -> showCatalogDialog(catalog))
+                .setNeutralButton("Import GGUF", (d, which) -> openModelPicker())
+                .setNegativeButton("Close", null);
+
+        showManagedDialog(builder.create());
+    }
+
+    private void showCatalogDialog(List<CatalogEntry> catalog) {
+        if (catalog == null || catalog.isEmpty()) {
+            activityText.setText("CATALOG\n\nNo bundled catalog models available.");
+            return;
+        }
+        String[] items = new String[catalog.size()];
+        for (int i = 0; i < catalog.size(); i++) {
+            CatalogEntry e = catalog.get(i);
+            items[i] = e.displayName + " (" + (e.sizeBytes / (1024 * 1024)) + " MB) - " + e.licenseSpdx;
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Bundled Model Catalog")
+                .setItems(items, (d, which) -> {
+                    CatalogEntry selected = catalog.get(which);
+                    showLicenseDialog(selected);
+                })
+                .setNegativeButton("Back", (d, which) -> showModelManagerDialog())
+                .create();
+        showManagedDialog(dialog);
+    }
+
+    private void showLicenseDialog(CatalogEntry entry) {
+        String msg = "Before downloading " + entry.displayName + " (" + (entry.sizeBytes / (1024 * 1024)) + " MB), you must review and accept its license:\n\n"
+                + "License: " + entry.licenseSpdx + "\n"
+                + "URL: " + entry.licenseUrl + "\n\n"
+                + "Tap 'Accept & download' to proceed via Android DownloadManager.";
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("License: " + entry.licenseSpdx)
+                .setMessage(msg)
+                .setPositiveButton("Accept & download", (d, which) -> {
+                    long id = modelManager.startDownload(entry);
+                    if (id != -1) {
+                        activityText.setText("DOWNLOAD STARTED\n\nDownloading " + entry.displayName + " (" + (entry.sizeBytes / (1024 * 1024)) + " MB).\n"
+                                + "Download runs in background via system DownloadManager. Check notifications for progress.");
+                    } else {
+                        activityText.setText("DOWNLOAD FAILED\n\nCould not queue download with DownloadManager.");
+                    }
+                })
+                .setNegativeButton("Cancel", (d, which) -> showCatalogDialog(modelManager.loadCatalog()))
+                .create();
+        showManagedDialog(dialog);
+    }
+
+    private void openModelPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, REQUEST_CODE_IMPORT_MODEL);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_IMPORT_MODEL && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            importModelUri(data.getData());
+        }
+    }
+
+    private void importModelUri(android.net.Uri uri) {
+        activityText.setText("IMPORTING MODEL\n\nValidating GGUF header and copying model file. Please wait...");
+        new Thread(() -> {
+            try {
+                String name = "imported_model.gguf";
+                long size = 0;
+                android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null);
+                if (cursor != null) {
+                    try {
+                        if (cursor.moveToFirst()) {
+                            int nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                            int sizeIdx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                            if (nameIdx >= 0) name = cursor.getString(nameIdx);
+                            if (sizeIdx >= 0) size = cursor.getLong(sizeIdx);
+                        }
+                    } finally {
+                        cursor.close();
+                    }
+                }
+                InputStream is = getContentResolver().openInputStream(uri);
+                if (is == null) {
+                    throw new java.io.IOException("Could not open input stream for URI: " + uri);
+                }
+                ModelInfo info = modelManager.importModel(is, name, size);
+                modelManager.setActiveModelId(info.id);
+                initLocalModelRoute();
+                planHandler.post(() -> {
+                    activityText.setText("MODEL IMPORTED\n\nImported " + info.displayName + " (" + (info.sizeBytes / (1024 * 1024)) + " MB). Set as active on-device model.");
+                });
+            } catch (Exception e) {
+                planHandler.post(() -> {
+                    activityText.setText("IMPORT FAILED\n\n" + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     private void startProviderRequest(String command, EditText input, java.util.List<String> hints) {
