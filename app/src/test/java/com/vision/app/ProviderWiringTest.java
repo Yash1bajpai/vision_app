@@ -1,6 +1,12 @@
 package com.vision.app;
 
 import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.provider.AlarmClock;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
@@ -21,6 +27,8 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.LooperMode;
+import org.robolectric.shadows.ShadowCameraCharacteristics;
+import org.robolectric.shadows.ShadowCameraManager;
 import static org.junit.Assert.*;
 import static org.robolectric.Shadows.shadowOf;
 
@@ -78,6 +86,12 @@ public class ProviderWiringTest {
         }
     }
 
+    private static IntentFilter clockFilter() {
+        IntentFilter f = new IntentFilter(AlarmClock.ACTION_SET_ALARM);
+        f.addCategory(Intent.CATEGORY_DEFAULT);
+        return f;
+    }
+
     private static class QueueBridge implements LlamaBridgeInterface {
         final List<String> queue = new ArrayList<>();
         int generateCallCount = 0;
@@ -85,10 +99,30 @@ public class ProviderWiringTest {
         @Override public long load(String path, int ctxTokens, int threads) { return 1L; }
         @Override public String generate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs) {
             generateCallCount++;
+            beforeGenerate();
             return queue.isEmpty() ? null : queue.remove(0);
         }
+        void beforeGenerate() { }
         @Override public void unload(long handle) { }
         @Override public String formatChat(long handle, String hint, String sys, String user) { return "<f>" + user + "</f>"; }
+    }
+
+    private static class BlockingQueueBridge extends QueueBridge {
+        final CountDownLatch firstEntered = new CountDownLatch(1);
+        final CountDownLatch releaseFirst = new CountDownLatch(1);
+        BlockingQueueBridge(String first, String second) { super(first, second); }
+        @Override void beforeGenerate() {
+            if (generateCallCount == 1) {
+                firstEntered.countDown();
+                boolean interruptedWhileWaiting = false;
+                boolean released = false;
+                while (!released) {
+                    try { released = releaseFirst.await(10, TimeUnit.SECONDS); }
+                    catch (InterruptedException ie) { interruptedWhileWaiting = true; }
+                }
+                if (interruptedWhileWaiting) Thread.currentThread().interrupt();
+            }
+        }
     }
 
     private static class InlineExecutor extends java.util.concurrent.AbstractExecutorService {
@@ -241,6 +275,10 @@ public class ProviderWiringTest {
         installDummyActiveModel(a);
         LocalModelProvider p = null;
         try {
+            ComponentName clockApp = new ComponentName("com.example.clock", "com.example.clock.ClockMain");
+            shadowOf(a.getPackageManager()).addActivityIfNotPresent(clockApp);
+            shadowOf(a.getPackageManager()).addIntentFilterForActivity(
+                    clockApp, clockFilter());
             QueueBridge bridge = new QueueBridge(
                     "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}",
                     "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
@@ -253,6 +291,11 @@ public class ProviderWiringTest {
             AlertDialog d = (AlertDialog) field(a, "activeDialog");
             assertNotNull("retry-corrected CONFIRMED proposal must surface the confirmation dialog", d);
             assertTrue(d.isShowing());
+            android.widget.TextView msg = d.findViewById(android.R.id.message);
+            assertNotNull(msg);
+            String shown = msg.getText().toString();
+            assertTrue("confirmation must show the corrected time", shown.contains("18:15"));
+            assertTrue("confirmation must show the corrected label", shown.contains("call"));
             assertNull("nothing may execute while approval is pending", shadowOf(a).getNextStartedActivity());
             d.cancel();
             shadowOf(Looper.getMainLooper()).idle();
@@ -276,6 +319,23 @@ public class ProviderWiringTest {
                     "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}");
             p = realLocalProvider(a, bridge);
             selector(a).register(ProviderMode.ON_DEVICE, p);
+            CameraManager cameras = (CameraManager) a.getSystemService(android.content.Context.CAMERA_SERVICE);
+            ShadowCameraManager shadowCameras = shadowOf(cameras);
+            CameraCharacteristics flashChars = ShadowCameraCharacteristics.newCameraCharacteristics();
+            shadowOf(flashChars).set(CameraCharacteristics.FLASH_INFO_AVAILABLE, true);
+            shadowCameras.addCamera("cam0", flashChars);
+            final int[] torchChanges = {0};
+            cameras.registerTorchCallback(new CameraManager.TorchCallback() {
+                @Override public void onTorchModeChanged(String cameraId, boolean enabled) { torchChanges[0]++; }
+            }, new Handler(Looper.getMainLooper()));
+            // Positive control: this surface detects a torch mutation
+            cameras.setTorchMode("cam0", true);
+            shadowOf(Looper.getMainLooper()).idle();
+            assertTrue("positive control: torch toggle must be observable", shadowCameras.getTorchMode("cam0"));
+            assertEquals("positive control: torch callback must fire", 1, torchChanges[0]);
+            cameras.setTorchMode("cam0", false);
+            shadowOf(Looper.getMainLooper()).idle();
+            assertEquals(2, torchChanges[0]);
             command(a, "provider use on-device");
             command(a, "gibberish zzz qqq");
             settle(2500);
@@ -285,10 +345,140 @@ public class ProviderWiringTest {
             AlertDialog d = (AlertDialog) field(a, "activeDialog");
             assertTrue("no confirmation may be shown for a discarded SAFE-tier retry",
                     d == null || !d.isShowing());
+            assertFalse("retry-refused torch action must not mutate the torch", shadowCameras.getTorchMode("cam0"));
+            assertEquals("no torch mutation may occur after the retry refusal", 2, torchChanges[0]);
         } finally {
             if (p != null) p.shutdown();
             cleanupDummyModel(a);
             c.pause().stop().destroy();
+        }
+    }
+
+    @Test public void retryCorrectedConfirmedApprovalLaunchesClockIntentWithExtras() throws Exception {
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity a = c.get();
+        installDummyActiveModel(a);
+        LocalModelProvider p = null;
+        try {
+            ComponentName clockApp = new ComponentName("com.example.clock", "com.example.clock.ClockMain");
+            shadowOf(a.getPackageManager()).addActivityIfNotPresent(clockApp);
+            shadowOf(a.getPackageManager()).addIntentFilterForActivity(
+                    clockApp, clockFilter());
+            QueueBridge bridge = new QueueBridge(
+                    "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}",
+                    "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+            p = realLocalProvider(a, bridge);
+            selector(a).register(ProviderMode.ON_DEVICE, p);
+            command(a, "provider use on-device");
+            command(a, "gibberish zzz qqq");
+            settle(2500);
+            assertEquals(2, bridge.generateCallCount);
+            AlertDialog d = (AlertDialog) field(a, "activeDialog");
+            assertNotNull(d);
+            assertTrue(d.isShowing());
+            d.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            shadowOf(Looper.getMainLooper()).idle();
+            Intent launched = shadowOf(a).getNextStartedActivity();
+            assertNotNull("approval must launch the clock handoff", launched);
+            assertEquals(AlarmClock.ACTION_SET_ALARM, launched.getAction());
+            assertEquals(18, launched.getIntExtra(AlarmClock.EXTRA_HOUR, -1));
+            assertEquals(15, launched.getIntExtra(AlarmClock.EXTRA_MINUTES, -1));
+            assertEquals("call", launched.getStringExtra(AlarmClock.EXTRA_MESSAGE));
+            assertTrue(text(a).startsWith("CLOCK OPENED"));
+        } finally {
+            if (p != null) p.shutdown();
+            cleanupDummyModel(a);
+            c.pause().stop().destroy();
+        }
+    }
+
+    @Test public void supersededWorkerLateReturnDoesNotDisturbReplacementState() throws Exception {
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity a = c.get();
+        installDummyActiveModel(a);
+        LocalModelProvider p = null;
+        BlockingQueueBridge bridge = new BlockingQueueBridge(
+                "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}",
+                "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+        WorkerCapturingProvider capture = null;
+        try {
+            p = realLocalProvider(a, bridge);
+            capture = new WorkerCapturingProvider(p);
+            selector(a).register(ProviderMode.ON_DEVICE, capture);
+            command(a, "provider use on-device");
+            command(a, "gibberish zzz qqq");
+            assertTrue(text(a).startsWith("THINKING"));
+            assertTrue("first request inside generation", bridge.firstEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(capture.awaitWorkers(1, 5000));
+            Thread staleWorker = capture.worker(0);
+            long staleId = ((Long) field(a, "providerRequestId")).longValue();
+            assertTrue(staleId != 0L);
+            command(a, "gibberish qqq zzz");
+            long replacementId = ((Long) field(a, "providerRequestId")).longValue();
+            assertTrue("replacement must supersede the in-flight request",
+                    replacementId != 0L && replacementId != staleId);
+            assertTrue(text(a).startsWith("THINKING"));
+            assertTrue("replacement worker captured", capture.awaitWorkers(2, 5000));
+            Thread replacementWorker = capture.worker(1);
+            bridge.releaseFirst.countDown();
+            // Bounded joins BEFORE host drain: the superseded worker must have finished its
+            // (suppressed) delivery attempt, and the replacement worker must be done.
+            staleWorker.join(5000);
+            assertFalse("superseded worker must finish its delivery attempt", staleWorker.isAlive());
+            replacementWorker.join(5000);
+            assertFalse("replacement worker must finish", replacementWorker.isAlive());
+            shadowOf(Looper.getMainLooper()).idle();
+            AlertDialog d = (AlertDialog) field(a, "activeDialog");
+            assertNotNull("replacement confirmation must survive the superseded worker's late return", d);
+            assertTrue(d.isShowing());
+            assertEquals("superseded worker must not retry; one generation per request",
+                    2, bridge.generateCallCount);
+            assertFalse("stale cancelled outcome must not surface", text(a).startsWith("REQUEST CANCELLED"));
+            assertFalse("stale malformed outcome must not surface", text(a).startsWith("REQUEST NOT RECOGNIZED"));
+            assertEquals(0L, ((Long) field(a, "providerRequestId")).longValue());
+        } finally {
+            // Release latches first, then bounded-join every worker the capture recorded
+            // (not only locals assigned before a failure), collecting join interruptions
+            // and termination failures. Potentially blocking teardown (provider shutdown,
+            // activity destroy) runs only when every captured worker is confirmed dead,
+            // so a surviving worker can never block cleanup before failures are reported.
+            // Interrupt status is restored in the outermost finally even if teardown throws.
+            boolean[] wasInterrupted = { false };
+            StringBuilder cleanupProblems = new StringBuilder();
+            try {
+                bridge.releaseFirst.countDown();
+                boolean workersTerminated = true;
+                if (capture != null) {
+                    for (Thread wkr : capture.capturedWorkers()) {
+                        try {
+                            wkr.join(5000);
+                        } catch (InterruptedException ie) {
+                            wasInterrupted[0] = true;
+                            cleanupProblems.append("join interrupted; ");
+                        }
+                    }
+                    for (Thread wkr : capture.capturedWorkers()) {
+                        if (wkr.isAlive()) {
+                            workersTerminated = false;
+                            cleanupProblems.append("worker survived bounded join; ");
+                        }
+                    }
+                }
+                if (workersTerminated) {
+                    if (p != null) p.shutdown();
+                    c.pause().stop().destroy();
+                } else {
+                    cleanupProblems.append("blocking provider/activity teardown skipped; ");
+                }
+                cleanupDummyModel(a);
+            } finally {
+                if (wasInterrupted[0]) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (cleanupProblems.length() > 0) {
+                throw new AssertionError("cleanup: " + cleanupProblems);
+            }
         }
     }
 

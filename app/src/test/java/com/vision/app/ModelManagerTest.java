@@ -15,6 +15,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.CopyOption;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -36,6 +41,7 @@ public class ModelManagerTest {
 
     @After
     public void cleanup() {
+        ModelManager.setFileMoverForTesting(null);
         if (modelsDir != null && modelsDir.exists()) {
             File[] files = modelsDir.listFiles();
             if (files != null) {
@@ -419,5 +425,229 @@ public class ModelManagerTest {
         // Huge size exceeding device memory yields warning
         ModelManager.FitStatus fitHuge = modelManager.estimateFit(100L * 1024L * 1024L * 1024L);
         assertEquals(ModelManager.FitStatus.WARN_LOW_MEMORY, fitHuge);
+    }
+
+    // Deterministic failure injection for the fail-closed models.json publication.
+    // preMoveFailure throws before any move: publication provably unchanged. postMoveFailure
+    // performs the real move, then throws: simulates an uncertain publication report and
+    // proves the save neither misreports success nor destructively "repairs" the outcome.
+    private static final class FakeFileMover implements ModelManager.FileMover {
+        IOException preMoveFailure;
+        IOException postMoveFailure;
+
+        @Override public void move(Path source, Path target, CopyOption... options) throws IOException {
+            if (preMoveFailure != null) {
+                throw preMoveFailure;
+            }
+            Files.move(source, target, options);
+            if (postMoveFailure != null) {
+                throw postMoveFailure;
+            }
+        }
+    }
+
+    private List<ModelInfo> oneModel(String id, String fileName) throws Exception {
+        // listInstalledModels only returns models whose file exists.
+        new File(modelsDir, fileName).createNewFile();
+        List<ModelInfo> list = new ArrayList<>();
+        list.add(new ModelInfo(id, "Name " + id, fileName, 100L,
+                null, "import", "custom", System.currentTimeMillis(), false, true, "llama3"));
+        return list;
+    }
+
+    private String expectedJson(List<ModelInfo> models) throws Exception {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        for (ModelInfo m : models) {
+            arr.put(m.toJson());
+        }
+        return arr.toString();
+    }
+
+    private String readBytes(File f) throws Exception {
+        return new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+    }
+
+    @Test
+    public void preMoveAtomicRejectionLeavesPublicationUnchanged() throws Exception {
+        List<ModelInfo> base = oneModel("base", "base.gguf");
+        modelManager.saveInstalledModels(base);
+        FakeFileMover mover = new FakeFileMover();
+        mover.preMoveFailure = new AtomicMoveNotSupportedException("tmp", "models.json", "simulated");
+        ModelManager.setFileMoverForTesting(mover);
+
+        try {
+            modelManager.saveInstalledModels(oneModel("newer", "newer.gguf"));
+            fail("rejection before the move must fail the save");
+        } catch (IOException expected) {
+        }
+
+        // No move occurred: exact previous bytes, and the temp holds the complete new metadata.
+        assertEquals(expectedJson(base), readBytes(new File(modelsDir, "models.json")));
+        org.json.JSONArray tmpArr = new org.json.JSONArray(readBytes(new File(modelsDir, "models.json.tmp")));
+        assertEquals(1, tmpArr.length());
+        assertEquals("newer", ModelInfo.fromJson(tmpArr.getJSONObject(0)).id);
+        assertEquals("base", new ModelManager(context).listInstalledModels().get(0).id);
+        assertFalse("no backup protocol exists", new File(modelsDir, "models.json.bak").exists());
+    }
+
+    @Test
+    public void moveThenThrowReportsFailureWithoutDestructiveRepair() throws Exception {
+        List<ModelInfo> base = oneModel("base", "base.gguf");
+        modelManager.saveInstalledModels(base);
+        List<ModelInfo> newer = oneModel("newer", "newer.gguf");
+        FakeFileMover mover = new FakeFileMover();
+        mover.postMoveFailure = new IOException("simulated post-move failure");
+        ModelManager.setFileMoverForTesting(mover);
+
+        IOException thrown = null;
+        try {
+            modelManager.saveInstalledModels(newer);
+            fail("a reported move failure must fail the save");
+        } catch (IOException expected) {
+            thrown = expected;
+        }
+
+        // The injected failure is preserved as the cause.
+        assertNotNull("the original failure must be preserved as the cause", thrown.getCause());
+        assertEquals("simulated post-move failure", thrown.getCause().getMessage());
+
+        // This injector deterministically completed the move before throwing: the target
+        // holds the exact new bytes, the temp is gone, and a fresh manager sees the new
+        // identity. Production cannot distinguish this from a genuine pre-publication
+        // failure, and critically it did not "repair" by deleting or reverting anything.
+        assertEquals(expectedJson(newer), readBytes(new File(modelsDir, "models.json")));
+        assertFalse("the completed move consumed the temp",
+                new File(modelsDir, "models.json.tmp").exists());
+        List<ModelInfo> loaded = new ModelManager(context).listInstalledModels();
+        assertEquals(1, loaded.size());
+        assertEquals("newer", loaded.get(0).id);
+    }
+
+    @Test
+    public void preMoveIoFailureLeavesPublicationUnchanged() throws Exception {
+        List<ModelInfo> base = oneModel("base", "base.gguf");
+        modelManager.saveInstalledModels(base);
+        FakeFileMover mover = new FakeFileMover();
+        mover.preMoveFailure = new IOException("simulated storage failure");
+        ModelManager.setFileMoverForTesting(mover);
+
+        try {
+            modelManager.saveInstalledModels(oneModel("newer", "newer.gguf"));
+            fail("failure before the move must fail the save");
+        } catch (IOException expected) {
+        }
+
+        assertEquals(expectedJson(base), readBytes(new File(modelsDir, "models.json")));
+        // A later successful save overwrites the diagnostic temp and commits normally.
+        ModelManager.setFileMoverForTesting(null);
+        List<ModelInfo> latest = oneModel("latest", "latest.gguf");
+        modelManager.saveInstalledModels(latest);
+        assertEquals(expectedJson(latest), readBytes(new File(modelsDir, "models.json")));
+        assertFalse(new File(modelsDir, "models.json.tmp").exists());
+    }
+
+    @Test
+    public void freshSavePreMoveRejectionLeavesNoTarget() throws Exception {
+        FakeFileMover mover = new FakeFileMover();
+        mover.preMoveFailure = new AtomicMoveNotSupportedException("tmp", "models.json", "simulated");
+        ModelManager.setFileMoverForTesting(mover);
+
+        try {
+            modelManager.saveInstalledModels(oneModel("fresh", "fresh.gguf"));
+            fail("rejection before the move must fail the save");
+        } catch (IOException expected) {
+        }
+
+        assertFalse(new File(modelsDir, "models.json").exists());
+        org.json.JSONArray tmpArr = new org.json.JSONArray(readBytes(new File(modelsDir, "models.json.tmp")));
+        assertEquals(1, tmpArr.length());
+        assertEquals("fresh", ModelInfo.fromJson(tmpArr.getJSONObject(0)).id);
+        assertTrue("no recovery from diagnostic temp is claimed",
+                new ModelManager(context).listInstalledModels().isEmpty());
+    }
+
+    @Test
+    public void concurrentManagersSameDirectoryNeverInterleaveTempWrites() throws Exception {
+        final ModelManager other = new ModelManager(context);
+        final List<ModelInfo> a = oneModel("writer-a", "writer_a.gguf");
+        final List<ModelInfo> b = oneModel("writer-b", "writer_b.gguf");
+        final java.util.List<Throwable> errors = java.util.Collections.synchronizedList(new ArrayList<Throwable>());
+
+        final Runnable loopA = new Runnable() {
+            @Override public void run() {
+                for (int i = 0; i < 50; i++) {
+                    try {
+                        modelManager.saveInstalledModels(a);
+                    } catch (IOException e) {
+                        errors.add(e);
+                    }
+                }
+            }
+        };
+        final Runnable loopB = new Runnable() {
+            @Override public void run() {
+                for (int i = 0; i < 50; i++) {
+                    try {
+                        other.saveInstalledModels(b);
+                    } catch (IOException e) {
+                        errors.add(e);
+                    }
+                }
+            }
+        };
+        Thread t1 = new Thread(loopA);
+        Thread t2 = new Thread(loopB);
+        t1.start();
+        t2.start();
+        boolean wasInterrupted = false;
+        StringBuilder cleanupProblems = new StringBuilder();
+        try {
+            try {
+                t1.join(30000);
+            } catch (InterruptedException ie) {
+                wasInterrupted = true;
+            }
+            try {
+                t2.join(30000);
+            } catch (InterruptedException ie) {
+                wasInterrupted = true;
+            }
+            assertFalse("writer A must finish", t1.isAlive());
+            assertFalse("writer B must finish", t2.isAlive());
+            assertTrue("no save may fail under in-process concurrency: " + errors, errors.isEmpty());
+
+            // Stress check: the final target parses as exactly one writer's complete
+            // transaction (the last publication wins), never interleaved bytes.
+            String content = readBytes(new File(modelsDir, "models.json"));
+            boolean completeA = content.equals(expectedJson(a));
+            boolean completeB = content.equals(expectedJson(b));
+            assertTrue("final metadata must be exactly one complete transaction",
+                    completeA || completeB);
+            assertFalse(new File(modelsDir, "models.json.tmp").exists());
+        } finally {
+            boolean[] wasInterruptedFinally = { wasInterrupted };
+            try {
+                try {
+                    t1.join(5000);
+                } catch (InterruptedException ie) {
+                    wasInterruptedFinally[0] = true;
+                }
+                try {
+                    t2.join(5000);
+                } catch (InterruptedException ie) {
+                    wasInterruptedFinally[0] = true;
+                }
+                if (t1.isAlive() || t2.isAlive()) {
+                    cleanupProblems.append("writer thread survived bounded joins; ");
+                }
+            } finally {
+                if (wasInterruptedFinally[0]) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (cleanupProblems.length() > 0) {
+                throw new AssertionError("cleanup: " + cleanupProblems);
+            }
+        }
     }
 }

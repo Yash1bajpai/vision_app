@@ -30,6 +30,9 @@ public class LocalModelProviderTest {
     private FakeBridge fakeBridge;
     private Handler handler;
     private LocalModelProvider provider;
+    // Set when a bounded cleanup join left a provider worker alive; the @After must then
+    // skip monitor-acquiring provider teardown or it would hang behind the survivor.
+    private volatile boolean workerSurvivedCleanup;
     private DirectExecutorService directExecutor;
     private MutableClock clock;
 
@@ -124,11 +127,19 @@ public class LocalModelProviderTest {
             seenPrompts.add(prompt);
             if (blockOnFirstGenerate && generateCallCount == 1) {
                 firstGenerateEntered.countDown();
-                try {
-                    releaseFirstGenerate.await(10, java.util.concurrent.TimeUnit.SECONDS);
-                } catch (InterruptedException ie) {
-                    // Preserve the interrupt for the provider's cancellation checkpoints,
-                    // like a blocking native call that propagates interruption.
+                // Only the latch controls the generation's return; cancellation interrupts
+                // are remembered and restored after the wait, like a blocking native call
+                // that reports interruption without returning early.
+                boolean interruptedWhileWaiting = false;
+                boolean released = false;
+                while (!released) {
+                    try {
+                        released = releaseFirstGenerate.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (InterruptedException ie) {
+                        interruptedWhileWaiting = true;
+                    }
+                }
+                if (interruptedWhileWaiting) {
                     Thread.currentThread().interrupt();
                 }
             }
@@ -193,7 +204,10 @@ public class LocalModelProviderTest {
 
     @After
     public void cleanup() {
-        if (provider != null) {
+        // Skip monitor-acquiring teardown when a bounded cleanup join left a worker alive:
+        // shutdown would block behind the survivor. The survivor was already reported by
+        // the test's cleanup; remaining teardown here is independent and non-blocking.
+        if (provider != null && !workerSurvivedCleanup) {
             provider.shutdown();
         }
         if (directExecutor != null) {
@@ -628,65 +642,135 @@ public class LocalModelProviderTest {
         }
     }
 
-    // 26. Monitor contention + queued cancel: the runner cancels while the provider holds
-    // its setup monitor inside a blocked first generation. The cancel outcome is delivered,
-    // the retry never fires after the interrupt, the late result is suppressed, a contending
-    // synchronized caller waits and then proceeds, and the monitor is left usable.
+    // 26. Queued cancellation and supersession with worker identity. A holds the provider
+    // monitor inside a latch-blocked first generation; B is submitted (superseding A) and
+    // its specific worker is captured by the wrapper BEFORE it blocks on the monitor. B is
+    // cancelled while queued; only then is A's generation released. Both workers are joined
+    // with bounds before any count assertion. The counts prove no additional bridge load or
+    // generation occurs after the queued cancellation (the entry and post-load interrupt
+    // checks together provide this; the test does not isolate which one fires).
     @Test
-    public void cancelDuringFirstGenerateSuppressesRetryAndLateResult() throws Exception {
+    public void queuedRequestCancelledWhileBlockedPerformsNoBridgeWork() throws Exception {
         fakeBridge.blockOnFirstGenerate = true;
         fakeBridge.returnTextQueue.add("{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
         fakeBridge.returnTextQueue.add("{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
 
         AsyncReasoningRunner runner = new AsyncReasoningRunner(60000, 200, 500);
+        WorkerCapturingProvider capture = new WorkerCapturingProvider(provider);
         try {
-            final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-            final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
-            final ProviderOutcome[] box = new ProviderOutcome[1];
-            runner.submit(provider, "do not let me forget the 18:15 call", null,
+            final java.util.concurrent.CountDownLatch doneA = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.CountDownLatch doneB = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.CountDownLatch doneC = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicInteger callsA = new java.util.concurrent.atomic.AtomicInteger();
+            final java.util.concurrent.atomic.AtomicInteger callsB = new java.util.concurrent.atomic.AtomicInteger();
+            final java.util.concurrent.atomic.AtomicInteger callsC = new java.util.concurrent.atomic.AtomicInteger();
+            final ProviderOutcome[] boxA = new ProviderOutcome[1];
+            final ProviderOutcome[] boxB = new ProviderOutcome[1];
+            final ProviderOutcome[] boxC = new ProviderOutcome[1];
+
+            runner.submit(capture, "do not let me forget the 18:15 call", null,
                     new AsyncReasoningRunner.Callback() {
                         @Override public void onOutcome(long id, ProviderOutcome o) {
-                            calls.incrementAndGet();
-                            box[0] = o;
-                            done.countDown();
+                            callsA.incrementAndGet(); boxA[0] = o; doneA.countDown();
                         }
                     });
-            assertTrue("first generation entered (provider monitor held)",
+            assertTrue("first generation entered with the provider monitor held",
                     fakeBridge.firstGenerateEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(capture.awaitWorkers(1, 5000));
+            Thread workerA = capture.worker(0);
 
-            // A contending synchronized caller must block while generation holds the monitor
-            final java.util.concurrent.atomic.AtomicBoolean contenderDone =
-                    new java.util.concurrent.atomic.AtomicBoolean(false);
-            Thread contender = new Thread(new Runnable() {
-                @Override public void run() {
-                    provider.isLoaded();
-                    contenderDone.set(true);
-                }
-            });
-            contender.start();
-            Thread.sleep(200);
-            assertFalse("contending caller must wait on the provider monitor", contenderDone.get());
+            // Supersede: A is cancelled in flight, B queues behind the provider monitor.
+            runner.submit(capture, "what time is it", null,
+                    new AsyncReasoningRunner.Callback() {
+                        @Override public void onOutcome(long id, ProviderOutcome o) {
+                            callsB.incrementAndGet(); boxB[0] = o; doneB.countDown();
+                        }
+                    });
+            assertTrue("superseded request must be cancelled", doneA.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(ProviderOutcome.Status.CANCELLED, boxA[0].status);
+            assertTrue("replacement worker captured", capture.awaitWorkers(2, 5000));
+            Thread workerB = capture.worker(1);
 
+            // The specific replacement worker is parked on the provider monitor.
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline && workerB.getState() != Thread.State.BLOCKED) {
+                Thread.sleep(10);
+            }
+            assertEquals("replacement worker must be BLOCKED on the provider monitor",
+                    Thread.State.BLOCKED, workerB.getState());
+            assertEquals("no generation beyond the blocked first one yet", 1, fakeBridge.generateCallCount);
+
+            // Cancel B while it is queued; interrupting must not release monitor contention.
             runner.cancel();
-            assertTrue("cancel outcome expected", done.await(5, java.util.concurrent.TimeUnit.SECONDS));
-            assertEquals(ProviderOutcome.Status.CANCELLED, box[0].status);
+            assertTrue("queued request must be cancelled", doneB.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(ProviderOutcome.Status.CANCELLED, boxB[0].status);
+            assertEquals("cancel must not release the queued worker from the monitor",
+                    Thread.State.BLOCKED, workerB.getState());
 
-            // Release the blocked generation; interrupt must stop the retry
+            // Only now release A's generation.
             fakeBridge.releaseFirstGenerate.countDown();
-            contender.join(5000);
-            assertTrue("contender proceeds once the monitor is released", contenderDone.get());
-            Thread.sleep(300);
-            assertEquals("late outcome must be suppressed", 1, calls.get());
-            assertEquals("retry generation must not fire after cancel", 1, fakeBridge.generateCallCount);
+            workerA.join(5000);
+            assertFalse("superseded worker must finish its delivery attempt", workerA.isAlive());
+            workerB.join(5000);
+            assertFalse("cancelled queued worker must finish", workerB.isAlive());
 
-            // The provider monitor is not wedged: a fresh request works
+            assertEquals("superseded request reported exactly once", 1, callsA.get());
+            assertEquals("queued request reported exactly once", 1, callsB.get());
+            assertEquals("A's interrupted output must not retry; B cancelled before entry must never generate",
+                    1, fakeBridge.generateCallCount);
+            assertEquals("B must never reach model load", 1, fakeBridge.loadCallCount);
+
+            // The provider remains usable: a fresh request completes normally.
             fakeBridge.returnTextQueue.clear();
-            fakeBridge.returnText = "{\"type\":\"READ_TIME\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
-            assertNotNull("provider must serve a fresh request after the contended cancel",
-                    provider.propose("what time is it"));
+            String timeOut = "{\"type\":\"READ_TIME\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
+            fakeBridge.returnText = timeOut;
+            runner.submit(capture, "what time is it", null,
+                    new AsyncReasoningRunner.Callback() {
+                        @Override public void onOutcome(long id, ProviderOutcome o) {
+                            callsC.incrementAndGet(); boxC[0] = o; doneC.countDown();
+                        }
+                    });
+            assertTrue("fresh outcome expected", doneC.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(ProviderOutcome.Status.PROPOSAL, boxC[0].status);
+            assertEquals(timeOut, boxC[0].raw);
+            assertTrue(capture.awaitWorkers(3, 5000));
+            Thread workerC = capture.worker(2);
+            workerC.join(5000);
+            assertFalse(workerC.isAlive());
+            assertEquals(1, callsC.get());
+            assertEquals(2, fakeBridge.generateCallCount);
         } finally {
-            runner.shutdown();
+            // Release latches first, then interrupt-driven shutdown, then bounded-join every
+            // worker the capture recorded (not only locals assigned before a failure),
+            // collecting join interruptions and termination failures. Interrupt status is
+            // restored in the outermost finally even if any cleanup step throws.
+            boolean[] wasInterrupted = { false };
+            StringBuilder cleanupProblems = new StringBuilder();
+            try {
+                fakeBridge.releaseFirstGenerate.countDown();
+                runner.shutdown();
+                for (Thread wkr : capture.capturedWorkers()) {
+                    try {
+                        wkr.join(5000);
+                    } catch (InterruptedException ie) {
+                        wasInterrupted[0] = true;
+                        cleanupProblems.append("join interrupted; ");
+                    }
+                }
+                for (Thread wkr : capture.capturedWorkers()) {
+                    if (wkr.isAlive()) {
+                        workerSurvivedCleanup = true;
+                        cleanupProblems.append("worker survived bounded join; ");
+                    }
+                }
+            } finally {
+                if (wasInterrupted[0]) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (cleanupProblems.length() > 0) {
+                throw new AssertionError("cleanup: " + cleanupProblems);
+            }
         }
     }
-
 }
