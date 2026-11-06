@@ -63,7 +63,7 @@ Actual emulator captures from the approved recording branch, with production cod
 
 <img src="docs/demo/01-time.png" width="220" alt="Successful local device time read"> <img src="docs/demo/02-multi-action-refusal.png" width="220" alt="Full refusal of the chained app request"> <img src="docs/demo/04-cancelled.png" width="220" alt="Calendar confirmation cancelled with Android Back">
 
-These are real Android 9 emulator screens, not mockups. The app still contains hardcoded greeting/name text. Full originals and the confirmation capture are in [docs/demo](docs/demo).
+These are real Android 9 emulator screens, not mockups. They preserve the recorded baseline's personalized greeting/name text; current code uses a neutral welcome and confirmation titles. Full originals and the confirmation capture are in [docs/demo](docs/demo).
 
 ## Verification
 
@@ -72,6 +72,8 @@ Current documentation baseline: main `6387cfca2383fce8a93ca7b92acaf57bdf793792` 
 - [Linux and Windows checks](https://github.com/Yash1bajpai/vision_app/actions/runs/40640583526) passed unit-test/build/lint jobs on this commit.
 - [Android emulator safety checks](https://github.com/Yash1bajpai/vision_app/actions/runs/40640583550) passed on this commit. The workflow requires exactly 15 passing instrumented tests, with no failures or skips. These cover selected key/preference, voice-lifecycle, dialog-cancellation, help, multi-action and clock-handoff wording paths.
 - The [temporary demo capture run](https://github.com/Yash1bajpai/vision_app/actions/runs/40297383437) passed one dedicated Android instrumentation flow on capture commit `617134f` (no production-code changes from the baseline). It checked device time, refusal and Android Back cancellation. Calendar-write permission stayed denied throughout. This is new emulator evidence, not a real-phone or cloud test. The full original suite was not rerun by that dedicated flow. It does not prove every provider, OEM, microphone, battery or hardware-backed Keystore behavior.
+
+Local UI follow-up (2026-11-06): cancellation now replaces an active listening status without overwriting completed drafts, calendar confirmation buttons use dark text on white, and greeting/confirmation copy does not assume a name or time of day. The focused voice, core-app and plan-lifecycle JVM suites passed 80 tests; debug build and lint passed with 0 errors and 64 warnings. Safe physical-phone checks on an I2219 running Android 16 confirmed status commands, both requested multi-action refusals, calendar Back/background cancellation, and actual microphone shutdown with consistent cancellation text. No calendar write, cloud request or full instrumentation suite was run. Rotation/recreation remains unverified on this portrait-locked build.
 
 ## Known limitations
 

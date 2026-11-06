@@ -4,7 +4,7 @@ This is a scripted demonstration of the real app on a fresh Android 9/API 28 x86
 
 The flow checks device time, the bounded multi-action refusal, and Back cancellation of a calendar confirmation. Calendar-write permission is denied throughout, and the confirmation never reaches its permission/write branch. A reply, message, call or calendar event was not sent/created by this demonstration.
 
-The video adds explanatory captions outside the app display. Original captures and test outcome evidence are preserved separately. No app screen text is replaced. The product still shows the hardcoded "Good evening, Yash" greeting during morning device time and "Tony" in the confirmation title; those are existing UI details, not capture defects fixed here.
+The video adds explanatory captions outside the app display. Original captures and test outcome evidence are preserved separately. No app screen text is replaced. The recorded baseline shows "Good evening, Yash" during morning device time and "Tony" in the confirmation title. Those historical captures remain unchanged; the subsequent UI follow-up uses a neutral welcome and confirmation titles.
 
 No cloud key or paid API was used. No app source was changed. The temporary capture branch contains workflow and instrumentation changes; those are not part of this documentation update. The reviewed recording and screenshots are included in this repository, not a new app release.
 

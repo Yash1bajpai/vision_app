@@ -75,7 +75,7 @@ public final class VisionRiskPolicy {
     }
 
     public static String formatReplyConfirmationTitle() {
-        return "Tony, may I send this message?";
+        return "May I send this message?";
     }
 
     public static String formatReplyConfirmationMessage(String destination, String replyText) {

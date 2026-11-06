@@ -61,8 +61,28 @@ public class VisionVoiceUiTest {
 
     @Test public void pauseAloneStopsMicrophoneAndRejectsLateResult()throws Exception {
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();FakeVoice v=install(a);begin(a);
-        c.pause();assertTrue(v.cancelled);v.callback.result("help");
-        assertEquals("",((EditText)field(a,"inputField")).getText().toString());c.stop().destroy();
+        android.widget.TextView output=(android.widget.TextView)field(a,"activityText");
+        String listeningOutput=output.getText().toString();
+        String listeningButton=((android.widget.Button)field(a,"voiceButton")).getText().toString();
+        c.pause();assertTrue(v.cancelled);
+        String cancelledOutput=output.getText().toString();
+        assertNotEquals(listeningOutput,cancelledOutput);
+        assertNotEquals(listeningButton,((android.widget.Button)field(a,"voiceButton")).getText().toString());
+        v.callback.result("help");
+        assertEquals(cancelledOutput,output.getText().toString());
+        assertEquals("",((EditText)field(a,"inputField")).getText().toString());
+        assertNull(shadowOf(a).getNextStartedActivity());
+        c.stop().destroy();
+    }
+    @Test public void backgroundPreservesCompletedDraftAndItsStatus()throws Exception {
+        ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();FakeVoice v=install(a);begin(a);v.callback.result("what time is it");
+        android.widget.TextView output=(android.widget.TextView)field(a,"activityText");
+        String draftOutput=output.getText().toString();
+        c.pause().stop().start().resume();
+        assertEquals("what time is it",((EditText)field(a,"inputField")).getText().toString());
+        assertEquals(draftOutput,output.getText().toString());
+        assertNull(shadowOf(a).getNextStartedActivity());
+        c.pause().stop().destroy();
     }
     @Test public void availabilityFailureStaysLocalAndDoesNotCrash()throws Exception {
         ActivityController<MainActivity> c=Robolectric.buildActivity(MainActivity.class).setup();MainActivity a=c.get();

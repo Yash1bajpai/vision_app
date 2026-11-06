@@ -211,7 +211,7 @@ public class MainActivity extends Activity {
         header.addView(settings, new LinearLayout.LayoutParams(dp(42), dp(42)));
         root.addView(header);
 
-        TextView greeting = label("Good evening, Yash", 28, TEXT);
+        TextView greeting = label("Welcome", 28, TEXT);
         greeting.setTypeface(null, android.graphics.Typeface.BOLD);
         LinearLayout.LayoutParams greetingParams = new LinearLayout.LayoutParams(-1, -2);
         greetingParams.setMargins(0, dp(38), 0, dp(4));
@@ -506,11 +506,15 @@ public class MainActivity extends Activity {
     }
 
     private void cancelVoice() {
+        boolean wasActive = voiceSession.isActive();
         voiceSession.cancel();
         if (voiceTimeout!=null) planHandler.removeCallbacks(voiceTimeout);
         voiceTimeout=null;
         try { voiceInput.cancel(); } catch (Exception ignored) { }
         if (voiceButton!=null) voiceButton.setText("Hold to talk");
+        if (wasActive && activityText != null) {
+            activityText.setText("VOICE CANCELLED\n\nListening stopped. No command ran. Hold to talk again or type your request.");
+        }
     }
 
     private void clearPreferenceMemory() {
@@ -892,7 +896,7 @@ public class MainActivity extends Activity {
         pendingEventWriteCompletion = null;
         String when = formatEventTimeForDisplay(action.replyText);
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Tony, may I create this event?")
+                .setTitle("May I create this event?")
                 .setMessage("I am ready to add this event to your calendar:\n\n\""
                         + action.target + "\"\n" + when + "\n\nMay I proceed?")
                 .setNegativeButton("Deny", (d, which) -> {
@@ -939,6 +943,8 @@ public class MainActivity extends Activity {
                 })
                 .create();
         showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }
 
     /**
@@ -1458,7 +1464,7 @@ public class MainActivity extends Activity {
                 + destDisplay + ":\n\n\"" + action.replyText + "\"\n\n"
                 + "The message will not be reported as sent until you send it in that app.\n\nMay I proceed?";
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Tony, may I prepare this message?")
+                .setTitle("May I prepare this message?")
                 .setMessage(confirmation)
                 .setNegativeButton("Deny", (d, which) -> {
                     if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
