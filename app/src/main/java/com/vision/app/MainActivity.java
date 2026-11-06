@@ -1432,6 +1432,11 @@ public class MainActivity extends Activity {
         showManagedDialog(dialog);
     }
 
+    // Lint UnspecifiedRegisterReceiverFlag: the two-arg fallback is only reachable below
+    // SDK 34, where no export flag is required (the flags overload exists from API 33 but is
+    // optional there); the 34+ path passes Context.RECEIVER_EXPORTED explicitly per current
+    // Android broadcast guidance for system-broadcast listeners.
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void setupDownloadReceiver() {
         IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         downloadReceiver = new BroadcastReceiver() {

@@ -17,6 +17,11 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.CopyOption;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -46,6 +51,28 @@ public class ModelManager {
     private final Context context;
     private final File modelsDir;
     private final File metadataFile;
+    /** Test seam only: deterministic failure injection for the metadata replace. */
+    interface FileMover {
+        void move(Path source, Path target, CopyOption... options) throws IOException;
+    }
+    private static final FileMover DEFAULT_FILE_MOVER = new FileMover() {
+        @Override public void move(Path source, Path target, CopyOption... options) throws IOException {
+            Files.move(source, target, options);
+        }
+    };
+    private static volatile FileMover fileMover = DEFAULT_FILE_MOVER;
+    static void setFileMoverForTesting(FileMover mover) {
+        fileMover = mover != null ? mover : DEFAULT_FILE_MOVER;
+    }
+
+    // Serializes temporary-file creation, write, close, and publication across ModelManager
+    // instances sharing this process, preventing publishers from overwriting each other's
+    // shared temporary file. This is partial-file avoidance only, NOT cross-manager
+    // read-modify-write coherence: two callers publishing different complete replacements
+    // race, and the last publication wins. In-process only: no cross-process coordination
+    // is claimed. Never call provider callbacks under this lock.
+    private static final Object METADATA_FILE_LOCK = new Object();
+
     private final SharedPreferences prefs;
     private final AtomicBoolean modelInUse = new AtomicBoolean(false);
 
@@ -147,14 +174,30 @@ public class ModelManager {
                 throw new IOException("Failed serializing model to JSON", e);
             }
         }
-        File tmpFile = new File(modelsDir, "models.json.tmp");
-        try (FileOutputStream fos = new FileOutputStream(tmpFile)) {
-            fos.write(arr.toString().getBytes(StandardCharsets.UTF_8));
-            fos.flush();
-        }
-        if (!tmpFile.renameTo(metadataFile)) {
-            tmpFile.delete();
-            throw new IOException("Failed to rename temporary models.json");
+        // Fail-closed atomic publication. The temp file is fully written and closed first
+        // (complete write), then published with one same-volume ATOMIC_MOVE | REPLACE_EXISTING
+        // move, so readers observe either the complete old or the complete new metadata -
+        // never a partially written file. There is deliberately no non-atomic fallback or
+        // backup/restore protocol. An IOException from the move leaves the publication state
+        // UNCERTAIN: the move may have completed before the failure was reported, so this
+        // method neither deletes artifacts nor claims the previous metadata survived; the
+        // target holds one of the two complete states and a diagnostic temp may remain.
+        // Crash/power-loss durability is NOT claimed (no fsync).
+        synchronized (METADATA_FILE_LOCK) {
+            File tmpFile = new File(modelsDir, "models.json.tmp");
+            try (FileOutputStream fos = new FileOutputStream(tmpFile)) {
+                fos.write(arr.toString().getBytes(StandardCharsets.UTF_8));
+                fos.flush();
+            }
+            try {
+                fileMover.move(tmpFile.toPath(), metadataFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                // Do not delete or "repair" anything: the publication state is uncertain.
+                throw new IOException("models.json save failed; publication state uncertain - the "
+                        + "target holds either the previous or the new complete metadata; diagnostic "
+                        + "temp may exist at " + tmpFile.getAbsolutePath(), e);
+            }
         }
     }
 
