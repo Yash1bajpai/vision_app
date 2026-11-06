@@ -31,6 +31,17 @@ public class LocalModelProviderTest {
     private Handler handler;
     private LocalModelProvider provider;
     private DirectExecutorService directExecutor;
+    private MutableClock clock;
+
+    private static class MutableClock implements LocalModelProvider.ClockSource {
+        long nowMs = 0;
+        long advancePerReadMs = 0; // simulates descheduling between checkpoints
+        @Override public long elapsedRealtimeMs() {
+            long t = nowMs;
+            nowMs += advancePerReadMs;
+            return t;
+        }
+    }
 
     private static class DirectExecutorService extends java.util.concurrent.AbstractExecutorService {
         private volatile boolean shutdown = false;
@@ -79,11 +90,26 @@ public class LocalModelProviderTest {
         String returnText = null;
         String returnFormatChat = "<formatted>";
         boolean simulateTimeout = false;
+        boolean interruptOnNextGenerate = false;
+        boolean interruptOnLoad = false;
         long lastTimeoutMs = 0;
+        MutableClock clock = null;
+        long advanceClockOnNextGenerateMs = 0;
+        long advanceClockOnLoadMs = 0;
+        final java.util.List<String> returnTextQueue = new java.util.ArrayList<>();
+        final java.util.List<String> seenPrompts = new java.util.ArrayList<>();
 
         @Override
         public long load(String path, int ctxTokens, int threads) {
             loadCallCount++;
+            if (interruptOnLoad) {
+                interruptOnLoad = false;
+                Thread.currentThread().interrupt();
+            }
+            if (advanceClockOnLoadMs > 0 && clock != null) {
+                clock.nowMs += advanceClockOnLoadMs;
+                advanceClockOnLoadMs = 0;
+            }
             loadedHandle = nextHandle++;
             return loadedHandle;
         }
@@ -92,8 +118,20 @@ public class LocalModelProviderTest {
         public String generate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs) {
             generateCallCount++;
             lastTimeoutMs = timeoutMs;
+            seenPrompts.add(prompt);
+            if (interruptOnNextGenerate) {
+                interruptOnNextGenerate = false;
+                Thread.currentThread().interrupt();
+            }
+            if (advanceClockOnNextGenerateMs > 0 && clock != null) {
+                clock.nowMs += advanceClockOnNextGenerateMs;
+                advanceClockOnNextGenerateMs = 0;
+            }
             if (simulateTimeout) {
                 return null;
+            }
+            if (!returnTextQueue.isEmpty()) {
+                return returnTextQueue.remove(0);
             }
             return returnText;
         }
@@ -120,7 +158,8 @@ public class LocalModelProviderTest {
         fakeBridge = new FakeBridge();
         handler = new Handler(Looper.getMainLooper());
         directExecutor = new DirectExecutorService();
-        provider = new LocalModelProvider(context, modelManager, fakeBridge, handler, directExecutor);
+        clock = new MutableClock();
+        provider = new LocalModelProvider(context, modelManager, fakeBridge, handler, directExecutor, clock);
 
         // Install a dummy active model
         File dummyFile = new File(modelManager.getModelsDir(), "active-model.gguf");
@@ -136,6 +175,7 @@ public class LocalModelProviderTest {
         list.add(info);
         modelManager.saveInstalledModels(list);
         modelManager.setActiveModelId("active-1");
+        fakeBridge.clock = clock;
     }
 
     @After
@@ -279,5 +319,267 @@ public class LocalModelProviderTest {
         String result = provider.propose("turn on torch");
         assertNull("formatChat failure must fail closed and return null", result);
         assertEquals(0, fakeBridge.generateCallCount);
+    }
+
+    // 13. One bounded self-correction retry: rejected first proposal, valid confirmation-tier retry
+    @Test
+    public void retryCorrectsRejectedProposal() {
+        fakeBridge.returnTextQueue.add("{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+        String corrected = "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(corrected);
+
+        String result = provider.propose("do not let me forget the 18:15 call");
+        assertEquals("Valid confirmation-tier retry output must be returned", corrected, result);
+        assertEquals(2, fakeBridge.generateCallCount);
+        assertTrue("Retry prompt must carry the violated rule",
+                fakeBridge.seenPrompts.get(1).contains("type must be one of"));
+        assertTrue("Retry prompt must repeat the user request",
+                fakeBridge.seenPrompts.get(1).contains("do not let me forget the 18:15 call"));
+    }
+
+    // 13b. SAFETY INVARIANT: a retry that corrects into a SAFE-tier (automatic) type is
+    // discarded - a retry can never turn a formerly refused request into an automatic action
+    @Test
+    public void retryIntoSafeTierTypeIsDiscarded() {
+        String first = "{\"type\":\"PLAY_MUSIC\",\"target\":\"x\",\"text\":\"\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(first);
+        fakeBridge.returnTextQueue.add("{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}");
+
+        String result = provider.propose("play some music");
+        assertEquals("SAFE-tier retry output must be discarded; original returned for refusal",
+                first, result);
+        assertEquals(2, fakeBridge.generateCallCount);
+        assertNull(ReasoningProposalValidator.validate(StrictJson.parseObject(result)).action);
+    }
+
+    // 14. Retry exhausted: both proposals rejected -> original output returned unchanged
+    @Test
+    public void retryExhaustedReturnsOriginalOutput() {
+        String first = "{\"type\":\"PLAY_MUSIC\",\"target\":\"x\",\"text\":\"\",\"channel\":\"\"}";
+        String second = "{\"type\":\"SING\",\"target\":\"\",\"text\":\"la\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(first);
+        fakeBridge.returnTextQueue.add(second);
+
+        String result = provider.propose("play some music");
+        assertEquals("Failed retry must return the original output for the coordinator to reject",
+                first, result);
+        assertEquals(2, fakeBridge.generateCallCount);
+    }
+
+    // 15. Valid first proposal: no retry
+    @Test
+    public void validFirstProposalSkipsRetry() {
+        String valid = "{\"type\":\"READ_BATTERY\",\"target\":\"battery\",\"text\":\"\",\"channel\":\"\"}";
+        fakeBridge.returnText = valid;
+        String result = provider.propose("how much battery");
+        assertEquals(valid, result);
+        assertEquals(1, fakeBridge.generateCallCount);
+    }
+
+    // 16. Plan-array output is left to the downstream plan validator; no retry
+    @Test
+    public void planArrayOutputSkipsRetry() {
+        String plan = "[{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}]";
+        fakeBridge.returnText = plan;
+        String result = provider.propose("turn on torch then off");
+        assertEquals(plan, result);
+        assertEquals(1, fakeBridge.generateCallCount);
+    }
+
+    // 17a. REGRESSION counterexample: a valid-typed proposal that violates field rules
+    // (pause-music intent mapped to TOGGLE_TORCH with an invalid target) must NOT be retried
+    // with corrective feedback - repairing its fields could launder a wrong intent into a
+    // valid SAFE-tier action that executes without confirmation.
+    @Test
+    public void fieldRuleRejectionOnValidTypeSkipsRetry() {
+        String wrongIntent = "{\"type\":\"TOGGLE_TORCH\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(wrongIntent);
+
+        String result = provider.propose("pause music");
+        assertEquals("Field-rule rejection on a valid type must return the original output",
+                wrongIntent, result);
+        assertEquals("No retry may fire for field-rule violations", 1, fakeBridge.generateCallCount);
+        // Downstream the coordinator still rejects it fail-closed
+        Map<String, String> fields = StrictJson.parseObject(result);
+        assertNull(ReasoningProposalValidator.validate(fields).action);
+    }
+
+    // 17b. Field-rule rejections of other kinds also never retry
+    @Test
+    public void invalidTextAndChannelRejectionsSkipRetry() {
+        fakeBridge.returnTextQueue.add("{\"type\":\"SET_ALARM\",\"target\":\"07:30\",\"text\":\"wake\",\"channel\":\"\"}");
+        String result = provider.propose("set alarm for 7:30");
+        assertEquals(1, fakeBridge.generateCallCount);
+        assertNull(ReasoningProposalValidator.validate(StrictJson.parseObject(result)).action);
+    }
+
+    // 17c. SIZE_LIMIT can only occur on confirmation-tier text fields; retry is allowed
+    // and a corrected shorter message is accepted (it still requires user confirmation)
+    @Test
+    public void sizeLimitRetriesOnce() {
+        StringBuilder longText = new StringBuilder();
+        for (int i = 0; i < 210; i++) longText.append("0123456789");
+        String tooLong = "{\"type\":\"SEND_MESSAGE_DIRECT\",\"target\":\"+15555550123\",\"text\":\""
+                + longText + "\",\"channel\":\"sms\"}";
+        String corrected = "{\"type\":\"SEND_MESSAGE_DIRECT\",\"target\":\"+15555550123\",\"text\":\"on my way\",\"channel\":\"sms\"}";
+        fakeBridge.returnTextQueue.add(tooLong);
+        fakeBridge.returnTextQueue.add(corrected);
+
+        String result = provider.propose("send sms to +15555550123 saying I am on my way");
+        assertEquals(corrected, result);
+        assertEquals(2, fakeBridge.generateCallCount);
+    }
+
+    // 17. Truthful refusal shape (explicit UNKNOWN type) is honored WITHOUT a retry:
+    // a refused request must never be coerced into an unrelated action confirmation dialog
+    @Test
+    public void explicitUnknownRefusalSkipsRetry() {
+        String unknown = "{\"type\":\"UNKNOWN\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(unknown);
+
+        String result = provider.propose("tell me a joke");
+        assertEquals("Refusal-shaped output must pass through for the fail-closed coordinator",
+                unknown, result);
+        assertEquals("Explicit UNKNOWN refusal must not trigger a retry", 1, fakeBridge.generateCallCount);
+        // Coordinator-side check: UNKNOWN still fails closed through the real validator
+        Map<String, String> fields = StrictJson.parseObject(result);
+        assertNull(ReasoningProposalValidator.validate(fields).action);
+    }
+
+    // 19. Cancellation: interrupt after the first generation skips the retry and the
+    // interrupt flag is left set for the caller (never cleared by the provider)
+    @Test
+    public void interruptBetweenPhasesSkipsRetry() {
+        try {
+            String invalid = "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+            fakeBridge.returnTextQueue.add(invalid);
+            fakeBridge.interruptOnNextGenerate = true;
+
+            String result = provider.propose("do not let me forget the 18:15 call");
+            assertEquals("Interrupted request must return the original output without retry",
+                    invalid, result);
+            assertEquals("No retry may fire after interrupt", 1, fakeBridge.generateCallCount);
+            assertTrue("Interrupt flag must remain set for the caller",
+                    Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted(); // clear flag so the shared runner thread stays usable
+        }
+    }
+
+    // 20. Queued-then-interrupted worker: an interrupt already pending at entry must
+    // prevent all setup and generation for the stale request
+    @Test
+    public void queuedInterruptSkipsSetupAndGeneration() {
+        try {
+            Thread.currentThread().interrupt();
+            String result = provider.propose("turn on torch");
+            assertNull("Interrupted queued request must produce no proposal", result);
+            assertEquals(0, fakeBridge.loadCallCount);
+            assertEquals(0, fakeBridge.generateCallCount);
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    // 21. Interrupt raised during model load: no generation is started
+    @Test
+    public void interruptDuringLoadSkipsGeneration() {
+        try {
+            fakeBridge.interruptOnLoad = true;
+            String result = provider.propose("turn on torch");
+            assertNull(result);
+            assertEquals(1, fakeBridge.loadCallCount);
+            assertEquals(0, fakeBridge.generateCallCount);
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    // 22. Expired first result: a blocking generation that returns after the cooperative
+    // budget is spent yields NO proposal, even when the output would have been valid
+    @Test
+    public void expiredFirstResultIsNoProposal() {
+        fakeBridge.returnText = "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}";
+        fakeBridge.advanceClockOnNextGenerateMs = LocalModelProvider.RETRY_TOTAL_BUDGET_MS + 1;
+        String result = provider.propose("turn on torch");
+        assertNull("Expired first result must be no proposal", result);
+        assertEquals(1, fakeBridge.generateCallCount);
+    }
+
+    // 23. Expired retry result: first result on time, retry generation crosses the budget
+    @Test
+    public void expiredRetryStrict() {
+        final String first = "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+        final String corrected = "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(first);
+        fakeBridge.returnTextQueue.add(corrected);
+        // Advance the clock past the budget only on the second generate call
+        fakeBridge = replaceBridgeWithExpiringRetry(fakeBridge, clock);
+        String result = provider.propose("do not let me forget the 18:15 call");
+        assertEquals("Expired retry result must not replace the original output", first, result);
+        assertNull(ReasoningProposalValidator.validate(StrictJson.parseObject(result)).action);
+    }
+
+    // 24. Final-acceptance expiry: a valid first proposal that only crosses the budget
+    // during post-generation parsing/validation is NO proposal, never a late acceptance
+    @Test
+    public void expiredAtFirstAcceptanceIsNoProposal() {
+        fakeBridge.returnText = "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}";
+        clock.advancePerReadMs = 5000; // anchor 0, budget 9000, post-gen 4000, pre-accept -1000
+        String result = provider.propose("turn on torch");
+        assertNull("Proposal validated past the budget must be no proposal", result);
+        assertEquals(1, fakeBridge.generateCallCount);
+    }
+
+    // 25. Final-acceptance expiry on the retry path: a corrected proposal that crosses the
+    // budget during validation can never replace the rejected original
+    @Test
+    public void expiredAtRetryAcceptanceReturnsOriginal() {
+        String first = "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+        String corrected = "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add(first);
+        fakeBridge.returnTextQueue.add(corrected);
+        clock.advancePerReadMs = 2500; // stays positive until the pre-acceptance checkpoint
+        String result = provider.propose("do not let me forget the 18:15 call");
+        assertEquals("Expired corrected proposal must not replace the original output", first, result);
+        assertNull(ReasoningProposalValidator.validate(StrictJson.parseObject(result)).action);
+    }
+
+    // 26. Setup budget consumption: time spent in model load/formatting counts against the
+    // same cooperative budget; when it is spent, no generation is attempted
+    @Test
+    public void setupConsumptionSkipsGeneration() {
+        fakeBridge.advanceClockOnLoadMs = LocalModelProvider.RETRY_TOTAL_BUDGET_MS + 1;
+        String result = provider.propose("turn on torch");
+        assertNull("Budget spent during setup must yield no proposal", result);
+        assertEquals(1, fakeBridge.loadCallCount);
+        assertEquals(0, fakeBridge.generateCallCount);
+    }
+
+    private FakeBridge replaceBridgeWithExpiringRetry(FakeBridge old, MutableClock clock) {
+        // Rebuild the provider with a bridge that expires the budget during the retry call
+        FakeBridge b = new FakeBridge() {
+            @Override
+            public String generate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs) {
+                String out = super.generate(handle, prompt, gbnfGrammar, maxTokens, timeoutMs);
+                if (generateCallCount == 2) {
+                    clock.nowMs += LocalModelProvider.RETRY_TOTAL_BUDGET_MS + 1;
+                }
+                return out;
+            }
+        };
+        b.clock = clock;
+        b.returnTextQueue.addAll(old.returnTextQueue);
+        provider = new LocalModelProvider(context, modelManager, b, handler, directExecutor, clock);
+        return b;
+    }
+
+    // 18. Timeout on first generation: no retry, null as before
+    @Test
+    public void timeoutSkipsRetry() {
+        fakeBridge.simulateTimeout = true;
+        String result = provider.propose("turn on torch");
+        assertNull(result);
+        assertEquals(1, fakeBridge.generateCallCount);
     }
 }
