@@ -1,5 +1,7 @@
 package com.vision.app;
 
+import android.app.AlertDialog;
+import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
@@ -75,6 +77,37 @@ public class ProviderWiringTest {
             mm.setActiveModelId(null);
         }
     }
+
+    private static class QueueBridge implements LlamaBridgeInterface {
+        final List<String> queue = new ArrayList<>();
+        int generateCallCount = 0;
+        QueueBridge(String first, String second) { queue.add(first); queue.add(second); }
+        @Override public long load(String path, int ctxTokens, int threads) { return 1L; }
+        @Override public String generate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs) {
+            generateCallCount++;
+            return queue.isEmpty() ? null : queue.remove(0);
+        }
+        @Override public void unload(long handle) { }
+        @Override public String formatChat(long handle, String hint, String sys, String user) { return "<f>" + user + "</f>"; }
+    }
+
+    private static class InlineExecutor extends java.util.concurrent.AbstractExecutorService {
+        private volatile boolean off = false;
+        @Override public void shutdown() { off = true; }
+        @Override public java.util.List<Runnable> shutdownNow() { off = true; return java.util.Collections.emptyList(); }
+        @Override public boolean isShutdown() { return off; }
+        @Override public boolean isTerminated() { return off; }
+        @Override public boolean awaitTermination(long t, TimeUnit u) { return true; }
+        @Override public void execute(Runnable r) { r.run(); }
+    }
+
+    private LocalModelProvider realLocalProvider(MainActivity a, LlamaBridgeInterface bridge) throws Exception {
+        ModelManager mm = (ModelManager) field(a, "modelManager");
+        return new LocalModelProvider(a, mm, bridge, new Handler(Looper.getMainLooper()),
+                new InlineExecutor(),
+                new LocalModelProvider.ClockSource() { @Override public long elapsedRealtimeMs() { return 0L; } });
+    }
+
     @Test public void defaultModeIsDeterministicAndModelModesAreRefused() throws Exception {
         ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity a = c.get();
@@ -202,4 +235,61 @@ public class ProviderWiringTest {
         assertTrue(ProviderCommands.handle("provider use off", s).startsWith("PROVIDER SET"));
         assertEquals(ProviderMode.DETERMINISTIC_ONLY, s.mode());
     }
+    @Test public void retryCorrectedConfirmedProposalWaitsApprovalAndDismissHasNoEffect() throws Exception {
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity a = c.get();
+        installDummyActiveModel(a);
+        LocalModelProvider p = null;
+        try {
+            QueueBridge bridge = new QueueBridge(
+                    "{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}",
+                    "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+            p = realLocalProvider(a, bridge);
+            selector(a).register(ProviderMode.ON_DEVICE, p);
+            command(a, "provider use on-device");
+            command(a, "gibberish zzz qqq");
+            settle(2500);
+            assertEquals("malformed first output must trigger exactly one retry", 2, bridge.generateCallCount);
+            AlertDialog d = (AlertDialog) field(a, "activeDialog");
+            assertNotNull("retry-corrected CONFIRMED proposal must surface the confirmation dialog", d);
+            assertTrue(d.isShowing());
+            assertNull("nothing may execute while approval is pending", shadowOf(a).getNextStartedActivity());
+            d.cancel();
+            shadowOf(Looper.getMainLooper()).idle();
+            assertNull("dismissal must not execute anything", shadowOf(a).getNextStartedActivity());
+            assertFalse(text(a).startsWith("CLOCK OPENED"));
+        } finally {
+            if (p != null) p.shutdown();
+            cleanupDummyModel(a);
+            c.pause().stop().destroy();
+        }
+    }
+
+    @Test public void retryIntoSafeTierSurfacesRefusalAtActivity() throws Exception {
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
+        MainActivity a = c.get();
+        installDummyActiveModel(a);
+        LocalModelProvider p = null;
+        try {
+            QueueBridge bridge = new QueueBridge(
+                    "{\"type\":\"PLAY_MUSIC\",\"target\":\"x\",\"text\":\"\",\"channel\":\"\"}",
+                    "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}");
+            p = realLocalProvider(a, bridge);
+            selector(a).register(ProviderMode.ON_DEVICE, p);
+            command(a, "provider use on-device");
+            command(a, "gibberish zzz qqq");
+            settle(2500);
+            assertEquals(2, bridge.generateCallCount);
+            assertTrue("SAFE-tier retry output must end in refusal, not auto-execution",
+                    text(a).startsWith("REQUEST NOT RECOGNIZED"));
+            AlertDialog d = (AlertDialog) field(a, "activeDialog");
+            assertTrue("no confirmation may be shown for a discarded SAFE-tier retry",
+                    d == null || !d.isShowing());
+        } finally {
+            if (p != null) p.shutdown();
+            cleanupDummyModel(a);
+            c.pause().stop().destroy();
+        }
+    }
+
 }

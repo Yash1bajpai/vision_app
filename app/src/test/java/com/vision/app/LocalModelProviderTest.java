@@ -97,6 +97,9 @@ public class LocalModelProviderTest {
         long advanceClockOnNextGenerateMs = 0;
         long advanceClockOnLoadMs = 0;
         final java.util.List<String> returnTextQueue = new java.util.ArrayList<>();
+        volatile boolean blockOnFirstGenerate = false;
+        final java.util.concurrent.CountDownLatch firstGenerateEntered = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch releaseFirstGenerate = new java.util.concurrent.CountDownLatch(1);
         final java.util.List<String> seenPrompts = new java.util.ArrayList<>();
 
         @Override
@@ -119,6 +122,16 @@ public class LocalModelProviderTest {
             generateCallCount++;
             lastTimeoutMs = timeoutMs;
             seenPrompts.add(prompt);
+            if (blockOnFirstGenerate && generateCallCount == 1) {
+                firstGenerateEntered.countDown();
+                try {
+                    releaseFirstGenerate.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    // Preserve the interrupt for the provider's cancellation checkpoints,
+                    // like a blocking native call that propagates interruption.
+                    Thread.currentThread().interrupt();
+                }
+            }
             if (interruptOnNextGenerate) {
                 interruptOnNextGenerate = false;
                 Thread.currentThread().interrupt();
@@ -582,4 +595,98 @@ public class LocalModelProviderTest {
         assertNull(result);
         assertEquals(1, fakeBridge.generateCallCount);
     }
+    // 25. End-to-end through the real AsyncReasoningRunner: malformed first output is
+    // retried inside the provider and exactly one corrected CONFIRMED-tier proposal is
+    // delivered to the runner callback
+    @Test
+    public void retryCorrectionFlowsThroughRealRunnerOnce() throws Exception {
+        String corrected = "{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}";
+        fakeBridge.returnTextQueue.add("{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+        fakeBridge.returnTextQueue.add(corrected);
+
+        AsyncReasoningRunner runner = new AsyncReasoningRunner(10000, 200, 500);
+        try {
+            final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            final ProviderOutcome[] box = new ProviderOutcome[1];
+            runner.submit(provider, "do not let me forget the 18:15 call", null,
+                    new AsyncReasoningRunner.Callback() {
+                        @Override public void onOutcome(long id, ProviderOutcome o) {
+                            calls.incrementAndGet();
+                            box[0] = o;
+                            done.countDown();
+                        }
+                    });
+            assertTrue("runner outcome expected", done.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(ProviderOutcome.Status.PROPOSAL, box[0].status);
+            assertEquals("runner must deliver the corrected proposal", corrected, box[0].raw);
+            assertEquals("exactly one retry generation", 2, fakeBridge.generateCallCount);
+            Thread.sleep(200);
+            assertEquals("outcome delivered exactly once", 1, calls.get());
+        } finally {
+            runner.shutdown();
+        }
+    }
+
+    // 26. Monitor contention + queued cancel: the runner cancels while the provider holds
+    // its setup monitor inside a blocked first generation. The cancel outcome is delivered,
+    // the retry never fires after the interrupt, the late result is suppressed, a contending
+    // synchronized caller waits and then proceeds, and the monitor is left usable.
+    @Test
+    public void cancelDuringFirstGenerateSuppressesRetryAndLateResult() throws Exception {
+        fakeBridge.blockOnFirstGenerate = true;
+        fakeBridge.returnTextQueue.add("{\"type\":\"REMIND\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+        fakeBridge.returnTextQueue.add("{\"type\":\"SET_REMINDER\",\"target\":\"18:15\",\"text\":\"call\",\"channel\":\"\"}");
+
+        AsyncReasoningRunner runner = new AsyncReasoningRunner(60000, 200, 500);
+        try {
+            final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            final ProviderOutcome[] box = new ProviderOutcome[1];
+            runner.submit(provider, "do not let me forget the 18:15 call", null,
+                    new AsyncReasoningRunner.Callback() {
+                        @Override public void onOutcome(long id, ProviderOutcome o) {
+                            calls.incrementAndGet();
+                            box[0] = o;
+                            done.countDown();
+                        }
+                    });
+            assertTrue("first generation entered (provider monitor held)",
+                    fakeBridge.firstGenerateEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            // A contending synchronized caller must block while generation holds the monitor
+            final java.util.concurrent.atomic.AtomicBoolean contenderDone =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            Thread contender = new Thread(new Runnable() {
+                @Override public void run() {
+                    provider.isLoaded();
+                    contenderDone.set(true);
+                }
+            });
+            contender.start();
+            Thread.sleep(200);
+            assertFalse("contending caller must wait on the provider monitor", contenderDone.get());
+
+            runner.cancel();
+            assertTrue("cancel outcome expected", done.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(ProviderOutcome.Status.CANCELLED, box[0].status);
+
+            // Release the blocked generation; interrupt must stop the retry
+            fakeBridge.releaseFirstGenerate.countDown();
+            contender.join(5000);
+            assertTrue("contender proceeds once the monitor is released", contenderDone.get());
+            Thread.sleep(300);
+            assertEquals("late outcome must be suppressed", 1, calls.get());
+            assertEquals("retry generation must not fire after cancel", 1, fakeBridge.generateCallCount);
+
+            // The provider monitor is not wedged: a fresh request works
+            fakeBridge.returnTextQueue.clear();
+            fakeBridge.returnText = "{\"type\":\"READ_TIME\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
+            assertNotNull("provider must serve a fresh request after the contended cancel",
+                    provider.propose("what time is it"));
+        } finally {
+            runner.shutdown();
+        }
+    }
+
 }
