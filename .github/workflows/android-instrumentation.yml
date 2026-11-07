@@ -63,10 +63,19 @@ jobs:
 
           stage "start emulator"
           # swiftshader_indirect is the supported software GPU; plain swiftshader is not.
+          # -qemu -cpu host (KVM passthrough) so the guest exposes the host's
+          # real ISA; the default virtual CPU model masks AVX2/FMA/BMI2, which
+          # kept the scoped SIMD diagnostic from ever engaging. -cpu is a QEMU
+          # option, not an emulator-wrapper option: per the emulator command
+          # line documentation it must follow -qemu, and -qemu must be the LAST
+          # wrapper argument (everything after it is QEMU-specific). The
+          # guest-ISA gate below re-verifies the six features and falls back to
+          # the baseline scalar build on any host whose guest still lacks them.
           "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test \
             -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
             -accel on -gpu swiftshader_indirect -feature -Vulkan \
             -camera-back none -camera-front none -memory 3072 -partition-size 4096 \
+            -qemu -cpu host \
             > emulator-evidence/emulator.log 2>&1 &
           EMULATOR_PID=$!
 
