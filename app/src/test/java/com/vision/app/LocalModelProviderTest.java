@@ -89,6 +89,7 @@ public class LocalModelProviderTest {
         int loadCallCount = 0;
         int unloadCallCount = 0;
         int generateCallCount = 0;
+        int lastLoadThreads = -1;
 
         String returnText = null;
         String returnFormatChat = "<formatted>";
@@ -108,6 +109,7 @@ public class LocalModelProviderTest {
         @Override
         public long load(String path, int ctxTokens, int threads) {
             loadCallCount++;
+            lastLoadThreads = threads;
             if (interruptOnLoad) {
                 interruptOnLoad = false;
                 Thread.currentThread().interrupt();
@@ -215,6 +217,39 @@ public class LocalModelProviderTest {
         modelManager.saveInstalledModels(list);
         modelManager.setActiveModelId("active-1");
         fakeBridge.clock = clock;
+    }
+
+    @Test
+    public void loadThreadCountDefaultsToDerivedAndHonorsTestingOverride() {
+        // Default: the production formula derives the count from device cores.
+        provider.propose("turn on torch");
+        assertEquals(1, fakeBridge.loadCallCount);
+        assertEquals(Math.max(2, Runtime.getRuntime().availableProcessors() - 2),
+                fakeBridge.lastLoadThreads);
+
+        // Per-instance override: honored verbatim, and a fresh provider is
+        // unaffected - instance scoping leaves no class-wide state to leak.
+        LocalModelProvider second = new LocalModelProvider(context, modelManager, fakeBridge,
+                handler, new DirectExecutorService(), clock);
+        try {
+            second.setForcedLoadThreadsForTesting(7);
+            second.propose("turn on torch");
+            assertEquals(2, fakeBridge.loadCallCount);
+            assertEquals(7, fakeBridge.lastLoadThreads);
+
+            LocalModelProvider third = new LocalModelProvider(context, modelManager, fakeBridge,
+                    handler, new DirectExecutorService(), clock);
+            try {
+                third.propose("turn on torch");
+                assertEquals(3, fakeBridge.loadCallCount);
+                assertEquals(Math.max(2, Runtime.getRuntime().availableProcessors() - 2),
+                        fakeBridge.lastLoadThreads);
+            } finally {
+                third.shutdown();
+            }
+        } finally {
+            second.shutdown();
+        }
     }
 
     @After

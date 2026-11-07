@@ -77,6 +77,13 @@ public class RealModelInstrumentedTest {
     private static final String CATALOG_ID = "qwen2.5-1.5b-instruct-q4_k_m";
     // The identical prompt production uses: built from the registry by the provider.
     private static final String SYSTEM_PROMPT = LocalModelProvider.buildSystemPrompt();
+    // Thread count for real-model loads in these diagnostics: every processor the
+    // test device exposes (the CI workflow sizes the emulator per dispatch and
+    // fail-closed checks the guest count, so this matches the intended
+    // configuration). Production derives its own count in LocalModelProvider.
+    // Each native load logs its received value (VisionLlama nativeLoad line).
+    private static final int DIAGNOSTIC_LOAD_THREADS =
+            Math.max(2, Runtime.getRuntime().availableProcessors());
 
     private static ModelInfo installed;
     private static File installedFile;
@@ -104,6 +111,11 @@ public class RealModelInstrumentedTest {
         String[] names = mm.getModelsDir().list();
         preexistingFiles = new HashSet<>(names != null ? Arrays.asList(names) : java.util.Collections.<String>emptyList());
         preexistingActiveModelId = mm.getActiveModelId();
+        // Java-side evidence of the thread argument these diagnostics pass; the
+        // authoritative applied value is each nativeLoad log's threads= field.
+        System.out.println("RealModelSmoke diagnostic load threads (Java argument): "
+                + DIAGNOSTIC_LOAD_THREADS + " on "
+                + Runtime.getRuntime().availableProcessors() + " guest processors");
     }
 
     private static org.json.JSONObject catalogEntry() throws Exception {
@@ -182,7 +194,7 @@ public class RealModelInstrumentedTest {
         assertNotNull("test1 must install the model first", installedFile);
         String grammar = readAsset("grammar/action_proposal.gbnf");
         LlamaBridge bridge = new LlamaBridge();
-        long handle = bridge.load(installedFile.getAbsolutePath(), 1024, 2);
+        long handle = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue("real model must load through the JNI bridge", handle != 0L);
         try {
             String prompt = bridge.formatChat(handle, templateHint, SYSTEM_PROMPT, "turn on the torch");
@@ -211,10 +223,10 @@ public class RealModelInstrumentedTest {
         assertNotNull("test1 must install the model first", installedFile);
         String grammar = readAsset("grammar/action_proposal.gbnf");
         LlamaBridge bridge = new LlamaBridge();
-        long first = bridge.load(installedFile.getAbsolutePath(), 1024, 2);
+        long first = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue(first != 0L);
         bridge.unload(first);
-        long second = bridge.load(installedFile.getAbsolutePath(), 1024, 2);
+        long second = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue("reload after unload must succeed", second != 0L);
         try {
             String prompt = bridge.formatChat(second, templateHint, SYSTEM_PROMPT, "what time is it");
@@ -244,7 +256,7 @@ public class RealModelInstrumentedTest {
         assertNotNull("test1 must install the model first", installedFile);
         String grammar = readAsset("grammar/action_proposal.gbnf");
         LlamaBridge bridge = new LlamaBridge();
-        long handle = bridge.load(installedFile.getAbsolutePath(), 1024, 2);
+        long handle = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue("real model must load through the JNI bridge", handle != 0L);
         try {
             // Warm-up on the same resident handle (resident weights/context
@@ -332,6 +344,7 @@ public class RealModelInstrumentedTest {
         LocalModelProvider provider = new LocalModelProvider(ctx, mm, new LlamaBridge(),
                 new android.os.Handler(android.os.Looper.getMainLooper()));
         try {
+            provider.setForcedLoadThreadsForTesting(DIAGNOSTIC_LOAD_THREADS);
             mm.setActiveModelId(installed.id);
 
             String rawTorch = provider.propose("turn on the torch");

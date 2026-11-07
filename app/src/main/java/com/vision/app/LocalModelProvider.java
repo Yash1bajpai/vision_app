@@ -50,6 +50,20 @@ public class LocalModelProvider implements ReasoningProvider {
     public static final long RETRY_TOTAL_BUDGET_MS = 14000L;
     public static final long MIN_RETRY_BUDGET_MS = 1500L;
 
+    /**
+     * Test-only per-instance override for the native load thread count. Null (the
+     * production default) keeps the derived max(2, availableProcessors() - 2)
+     * value below. Instance-scoped so no class-wide state can leak into a later
+     * provider in the same process; app code never sets it and it is never
+     * persisted.
+     */
+    private volatile Integer forcedLoadThreadsForTesting;
+
+    /** Test-only: override the load thread count for this instance; null restores the derived default. */
+    void setForcedLoadThreadsForTesting(Integer threads) {
+        this.forcedLoadThreadsForTesting = threads;
+    }
+
     /** Time source for the cooperative per-request budget; injectable for tests. */
     interface ClockSource {
         long elapsedRealtimeMs();
@@ -199,7 +213,10 @@ public class LocalModelProvider implements ReasoningProvider {
 
             // Lazy-load model if not currently loaded
             if (nativeHandle == 0) {
-                int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
+                Integer forcedThreads = forcedLoadThreadsForTesting;
+                int threads = forcedThreads != null
+                        ? forcedThreads
+                        : Math.max(2, Runtime.getRuntime().availableProcessors() - 2);
                 Log.i(TAG, "Lazy-loading local model: " + modelFile.getName() + " (threads=" + threads + ")");
                 nativeHandle = bridge.load(modelFile.getAbsolutePath(), CTX_TOKENS, threads);
                 if (nativeHandle == 0) {

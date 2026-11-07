@@ -55,6 +55,15 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -accel-check || true
+          # The production-timeout diagnostic measures whether more CPU lets the
+          # real-provider call fit the unchanged 8000ms budget; only that opt-in
+          # dispatch boots a 4-core guest. Every other trigger keeps 2 cores,
+          # pinned explicitly (the avdmanager default observed on prior runs).
+          EMULATOR_CORES=2
+          if [ "${{ inputs.production_smoke }}" = "true" ]; then
+            EMULATOR_CORES=4
+          fi
+          echo "emulator cores for this run: $EMULATOR_CORES"
           # avdmanager and emulator versions disagree on default home discovery.
           # Give both tools the same explicit AVD root and fail before boot if absent.
           export ANDROID_AVD_HOME="$RUNNER_TEMP/vision-avd"
@@ -80,6 +89,7 @@ jobs:
             -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
             -accel on -gpu swiftshader_indirect -feature -Vulkan \
             -camera-back none -camera-front none -memory 3072 -partition-size 4096 \
+            -cores "$EMULATOR_CORES" \
             -qemu -cpu host \
             > emulator-evidence/emulator.log 2>&1 &
           EMULATOR_PID=$!
@@ -139,6 +149,19 @@ jobs:
           # guest actually exposes the features; otherwise the run keeps the
           # baseline scalar config instead of risking SIGILL.
           timeout -k 5 30 adb shell cat /proc/cpuinfo | tr -d '\r' > emulator-evidence/cpuinfo.txt || true
+          nproc | tee emulator-evidence/host-nproc.txt
+          # Fail closed on any guest core-count mismatch: the thread diagnostic
+          # must measure the intended configuration, never a silent fallback.
+          # This count is configuration intent only - the evidence of the actual
+          # applied thread count is each nativeLoad log's threads= value plus the
+          # test class's printed Java-side argument, and host nproc is a logical
+          # CPU count, not proof of physical cores.
+          guest_cpus=$(grep -c '^processor' emulator-evidence/cpuinfo.txt || true)
+          echo "guest processors: $guest_cpus (expected $EMULATOR_CORES)"
+          if [ "$guest_cpus" != "$EMULATOR_CORES" ]; then
+            echo "guest core count mismatch: refusing to run the diagnostic on an unintended configuration"
+            exit 1
+          fi
           SIMD_GRADLE_ARGS=""
           # The CMake block enables SSE4.2/AVX/AVX2/FMA/F16C/BMI2, so the gate
           # must verify ALL of them in the guest - AVX2 alone does not entail
