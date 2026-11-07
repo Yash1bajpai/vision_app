@@ -43,6 +43,24 @@ else()
     message(STATUS "VISION_CI_X86_SIMD not applicable for ${CMAKE_ANDROID_ARCH_ABI}: unchanged config")
 endif()
 
+# Scoped CI production-timeout diagnostic, opt-in only, x86_64 emulator ONLY
+# (mirrors the VISION_CI_X86_SIMD scoping above): the debug-variant -O0 native
+# build is not production-representative, so the production-timeout measured
+# leg runs against optimized code. ARM64 is untouched by this block. Later
+# flags override the toolchain's earlier -O0. Default OFF: production/local
+# builds are byte-for-byte the previous config.
+option(VISION_PRODUCTION_SMOKE "CI-only: optimize x86_64 native code for the production-timeout diagnostic" OFF)
+if (CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+    if (VISION_PRODUCTION_SMOKE)
+        add_compile_options(-O3 -DNDEBUG)
+        message(STATUS "VISION_PRODUCTION_SMOKE=ON for ${CMAKE_ANDROID_ARCH_ABI}: -O3 -DNDEBUG")
+    else()
+        message(STATUS "VISION_PRODUCTION_SMOKE=OFF for ${CMAKE_ANDROID_ARCH_ABI}: baseline optimization config")
+    endif()
+else()
+    message(STATUS "VISION_PRODUCTION_SMOKE not applicable for ${CMAKE_ANDROID_ARCH_ABI}: unchanged config")
+endif()
+
 # Build only needed targets for Android library
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "disable tests" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "disable tools" FORCE)

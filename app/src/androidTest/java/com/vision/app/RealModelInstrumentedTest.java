@@ -34,9 +34,31 @@ import static org.junit.Assert.*;
  * Scoped evidence: x86_64 emulator ABI, greedy+grammar generation; arm64 coverage
  * is an unverified route not selected here.
  *
- * Budget: the workflow's outer `timeout -k 30 1200 gradle` is the hard process
- * bound (native calls do not honor thread interrupts reliably); the per-test
- * JUnit timeouts below (300+200+200=700s worst case) stay well under it.
+ * One further case (test4) is the production-timeout diagnostic: it runs only
+ * in the workflow's opt-in production_smoke configuration (optimized x86_64
+ * native build) and skips itself otherwise. Its measured scope is a single
+ * bridge.generate call on a resident handle, bounded by the production
+ * constant LocalModelProvider.TIMEOUT_MS - it does NOT measure the provider's
+ * full request path (queueing, model load, prompt formatting, retry budget,
+ * validation are all excluded), and it is not a warm-KV measurement: the
+ * native bridge resets the KV state on every generate call, so the warm-up
+ * below only reflects production's kept-resident weights/context, never
+ * prompt KV reuse. All of load, warm-up, measured leg and unload happen in
+ * one body with a single try/finally so the handle can never leak across
+ * tests. Structured evidence (elapsed, raw proposal, validator outcome) is
+ * printed BEFORE any assertion so over-budget or null results are preserved
+ * in the log either way; the asserts gate the budget only - this stage is a
+ * latency diagnostic, not semantic or production-readiness evidence.
+ *
+ * Budget: the workflow's outer `timeout -k 30 1200 gradle` is the only hard
+ * process bound (native calls do not honor thread interrupts reliably, and a
+ * native worker can outlive its JUnit timeout). The per-test JUnit timeouts
+ * below (300+200+200+200=900s worst case) are accounting that stays under
+ * that bound, not enforcement. Inside test4 the warm-up generate carries its
+ * own 60s bound (about 3x the warm ~20s measured on the Debug SIMD build in
+ * run 42348802184: 11.5s prefill + ~1.06s/token), reserving the rest of the
+ * 200s for the measured leg; the 8s production deadline is llama.cpp's
+ * COOPERATIVE abort callback, not an absolute wall-clock guarantee.
  * Cleanup: teardown deletes only the unique import-model/.part names this
  * class's import could create that were absent before the class ran, so a
  * failure between the import file move and the metadata save still leaves no
@@ -190,6 +212,64 @@ public class RealModelInstrumentedTest {
                     VisionAction.Type.READ_TIME, vr.action.type);
         } finally {
             bridge.unload(second);
+        }
+    }
+
+    @Test(timeout = 200_000)
+    public void test4_warmGenerationMeasuredAgainstProductionTimeout() throws Exception {
+        org.junit.Assume.assumeTrue(
+                "production-timeout diagnostic requires -PvisionProductionSmoke",
+                "true".equals(InstrumentationRegistry.getArguments()
+                        .getString("visionProductionSmoke")));
+        assertNotNull("test1 must install the model first", installedFile);
+        String grammar = readAsset("grammar/action_proposal.gbnf");
+        LlamaBridge bridge = new LlamaBridge();
+        long handle = bridge.load(installedFile.getAbsolutePath(), 1024, 2);
+        assertTrue("real model must load through the JNI bridge", handle != 0L);
+        try {
+            // Warm-up on the same resident handle (resident weights/context
+            // only; the bridge resets KV state every call, so this is not
+            // prompt KV reuse), bounded well inside this test's 200s so the
+            // measured leg below has reserved time: 60s is roughly 3x the
+            // warm cost measured on the Debug SIMD build in run 42348802184
+            // logcat (11.5s prefill + ~1.06s/token x 8). A warm-up failure
+            // fails the case closed - no measured claim.
+            String warmupPrompt = bridge.formatChat(handle, templateHint, SYSTEM_PROMPT, "turn on the torch");
+            assertNotNull("formatChat must produce a prompt", warmupPrompt);
+            assertNotNull("warm-up generation must complete within its 60s bound",
+                    bridge.generate(handle, warmupPrompt, grammar, 8, 60_000));
+
+            String prompt = bridge.formatChat(handle, templateHint, SYSTEM_PROMPT, "turn on the torch");
+            assertNotNull("formatChat must produce a prompt", prompt);
+            long startNanos = System.nanoTime();
+            String raw = bridge.generate(handle, prompt, grammar, 256, LocalModelProvider.TIMEOUT_MS);
+            long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            // Structured evidence FIRST, before any assertion, so a null or
+            // over-budget-but-non-null result is preserved in the log.
+            System.out.println("RealModelSmoke production-timeout leg: elapsedMs=" + elapsedMs
+                    + " budgetMs=" + LocalModelProvider.TIMEOUT_MS
+                    + " returned=" + (raw != null ? "non-null" : "null"));
+            if (raw != null) {
+                System.out.println("RealModelSmoke raw proposal: "
+                        + raw.replace('\n', ' ').replace('\r', ' '));
+                Map<String, String> fields = StrictJson.parseObject(raw);
+                if (fields != null) {
+                    ReasoningProposalValidator.ValidationResult vr =
+                            ReasoningProposalValidator.validate(fields);
+                    System.out.println("RealModelSmoke validator outcome: type=" + fields.get("type")
+                            + " accepted=" + (vr != null && vr.action != null)
+                            + (vr != null && vr.reason != null ? " reason=" + vr.reason : ""));
+                } else {
+                    System.out.println("RealModelSmoke validator outcome: unparseable proposal");
+                }
+            }
+            // Budget gate only (evidence above is unconditional).
+            assertNotNull("generation returned null: output did not complete within the production "
+                    + "timeout (" + LocalModelProvider.TIMEOUT_MS + "ms) on the optimized build", raw);
+            assertTrue("wall-clock " + elapsedMs + "ms exceeded the production timeout "
+                    + LocalModelProvider.TIMEOUT_MS + "ms", elapsedMs <= LocalModelProvider.TIMEOUT_MS);
+        } finally {
+            bridge.unload(handle);
         }
     }
 

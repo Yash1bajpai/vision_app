@@ -8,6 +8,11 @@ on:
     branches: [main]
     paths: ['.github/workflows/android-instrumentation.yml', 'app/**']
   workflow_dispatch:
+    inputs:
+      production_smoke:
+        description: 'Optimized x86_64 native build (-O3) plus the production-timeout (8s) diagnostic case; default runs keep the baseline config and skip it'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -148,9 +153,18 @@ jobs:
           stage "run instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
           # wedged device or main looper into a fast failure instead of a silent hang.
+          PROD_SMOKE_GRADLE_ARGS=""
+          # Opt-in per dispatch: optimized x86_64 native build plus the
+          # production-timeout diagnostic case. Every other trigger keeps the
+          # baseline -O0 config and the case skips itself.
+          if [ "${{ inputs.production_smoke }}" = "true" ]; then
+            echo "production-smoke configuration: optimized x86_64 native build + production-timeout diagnostic"
+            PROD_SMOKE_GRADLE_ARGS="-PvisionProductionSmoke"
+          fi
           timeout -k 30 1200 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
             $SIMD_GRADLE_ARGS \
+            $PROD_SMOKE_GRADLE_ARGS \
             connectedDebugAndroidTest
           stage "instrumentation finished"
 
@@ -165,10 +179,24 @@ jobs:
           path: emulator-evidence/
           if-no-files-found: ignore
           retention-days: 7
+      - name: Upload raw instrumentation result XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumentation-results
+          path: app/build/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Print test evidence without stored artifacts
         if: always()
         shell: bash
         run: |
+          # 34 test cases exist: the 33 baseline cases plus the
+          # production-timeout diagnostic case. The diagnostic case executes
+          # only on production_smoke dispatches; every other trigger skips
+          # it. This step only prints evidence; enforcement lives in the
+          # final gate step so a failed gate can never suppress the prints,
+          # the evidence cats below, or the always() XML artifact upload.
           python3 - <<'PYTHON'
           import glob, xml.etree.ElementTree as ET
           paths = glob.glob('app/build/outputs/androidTest-results/connected/**/*.xml', recursive=True)
@@ -176,11 +204,33 @@ jobs:
           total = sum(int(s.get('tests', 0)) for s in suites)
           failures = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
           skipped = sum(int(s.get('skipped', 0)) for s in suites)
-          print('Android instrumentation:', total, 'tests;', failures, 'failures/errors')
+          print('Android instrumentation:', total, 'tests;', failures, 'failures/errors;', skipped, 'skipped')
           for suite in suites:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
-          if total != 33 or failures or skipped:
-              raise SystemExit('Expected exactly thirty-three passing Android safety instrumentation tests')
           PYTHON
           cat emulator-evidence/android-version.txt
+      - name: Enforce instrumentation count gate
+        if: always()
+        shell: bash
+        run: |
+          # 34 total cases; the diagnostic case is skipped unless this is a
+          # production_smoke dispatch, so the expected skip count is
+          # conditional. Kept separate from evidence printing/uploading so a
+          # red gate stays honest without suppressing diagnostics.
+          EXPECTED_SKIPPED=1
+          if [ "${{ inputs.production_smoke }}" = "true" ]; then
+            EXPECTED_SKIPPED=0
+          fi
+          export EXPECTED_SKIPPED
+          python3 - <<'PYTHON'
+          import glob, os, xml.etree.ElementTree as ET
+          paths = glob.glob('app/build/outputs/androidTest-results/connected/**/*.xml', recursive=True)
+          suites = [ET.parse(path).getroot() for path in paths]
+          total = sum(int(s.get('tests', 0)) for s in suites)
+          failures = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
+          skipped = sum(int(s.get('skipped', 0)) for s in suites)
+          expected_skipped = int(os.environ['EXPECTED_SKIPPED'])
+          if total != 34 or failures or skipped != expected_skipped:
+              raise SystemExit('Expected exactly thirty-four Android safety instrumentation tests with %d skipped, zero failures' % expected_skipped)
+          PYTHON
