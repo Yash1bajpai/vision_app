@@ -119,11 +119,29 @@ jobs:
           } | tr -d '\r' > emulator-evidence/android-version.txt
           cat emulator-evidence/android-version.txt
 
+          stage "verify emulator guest ISA for scoped SIMD diagnostic"
+          # The scoped x86_64 SIMD build (VISION_CI_X86_SIMD, see
+          # app/src/main/cpp/CMakeLists.txt) is enabled ONLY when the emulator
+          # guest actually exposes the features; otherwise the run keeps the
+          # baseline scalar config instead of risking SIGILL.
+          timeout -k 5 30 adb shell cat /proc/cpuinfo | tr -d '\r' > emulator-evidence/cpuinfo.txt || true
+          SIMD_GRADLE_ARGS=""
+          # The CMake block enables SSE4.2/AVX/AVX2/FMA/F16C/BMI2, so the gate
+          # must verify ALL of them in the guest - AVX2 alone does not entail
+          # BMI2 or the rest; a partial match keeps the baseline scalar build.
+          if grep -qw sse4_2 emulator-evidence/cpuinfo.txt && grep -qw avx emulator-evidence/cpuinfo.txt && grep -qw avx2 emulator-evidence/cpuinfo.txt && grep -qw fma emulator-evidence/cpuinfo.txt && grep -qw f16c emulator-evidence/cpuinfo.txt && grep -qw bmi2 emulator-evidence/cpuinfo.txt; then
+            echo "guest exposes sse4_2/avx/avx2/fma/f16c/bmi2: enabling scoped x86_64 SIMD diagnostic"
+            SIMD_GRADLE_ARGS="-PvisionCiX86Simd"
+          else
+            echo "guest lacks one or more of sse4_2/avx/avx2/fma/f16c/bmi2: keeping baseline scalar native config"
+          fi
+
           stage "run instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
           # wedged device or main looper into a fast failure instead of a silent hang.
           timeout -k 30 1200 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
+            $SIMD_GRADLE_ARGS \
             connectedDebugAndroidTest
           stage "instrumentation finished"
 
@@ -154,6 +172,6 @@ jobs:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
           if total != 33 or failures or skipped:
-              raise SystemExit('Expected exactly thirty-two passing Android safety instrumentation tests')
+              raise SystemExit('Expected exactly thirty-three passing Android safety instrumentation tests')
           PYTHON
           cat emulator-evidence/android-version.txt

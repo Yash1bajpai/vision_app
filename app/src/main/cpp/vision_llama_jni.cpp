@@ -324,7 +324,14 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         }
         size_t chunk_size = std::min((size_t)n_batch, prompt_tokens.size() - i);
         llama_batch batch = llama_batch_get_one(prompt_tokens.data() + i, (int32_t)chunk_size);
+        auto chunk_start = std::chrono::steady_clock::now();
         int decode_rc = llama_decode(handle->ctx, batch);
+        auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - chunk_start).count();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start_time).count();
+        LOGI("nativeGenerate: prompt chunk tokens=%d in %ld ms (cumulative %ld ms)",
+                (int)chunk_size, (long)chunk_ms, (long)elapsed_ms);
         if (decode_rc != 0) {
             if (decode_rc == 2) {
                 LOGW("prompt evaluation aborted at deadline");

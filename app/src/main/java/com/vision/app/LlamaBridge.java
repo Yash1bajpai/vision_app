@@ -268,9 +268,12 @@ public class LlamaBridge implements LlamaBridgeInterface {
     }
 
     // A pointer whose registration failed (e.g. the token mint refused on
-    // sequence wrap) is owned by this call and must not leak: dispose it
-    // immediately, through the test hook when one supplied it, never by
-    // leaving it untracked without a map entry.
+    // sequence wrap) is owned by this call and is disposed here on a
+    // best-effort basis: disposal is attempted immediately, through the test
+    // hook when one supplied it, but a failing unload is swallowed because it
+    // cannot be reported from this path and must never mask the registration
+    // failure - release is therefore NOT guaranteed if native unload itself
+    // fails.
     private static void releaseOwnedPointer(long nativePointer, NativeUnloadHook unloadHook) {
         try {
             if (unloadHook != null) {
