@@ -19,7 +19,7 @@ concurrency:
 jobs:
   android-safety-instrumentation:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,7 +38,7 @@ jobs:
           gradle-version: '8.7'
           cache-disabled: true
       - name: Boot headless emulator and run Android safety instrumentation
-        timeout-minutes: 28
+        timeout-minutes: 33
         shell: bash
         run: |
           set -euo pipefail
@@ -66,7 +66,7 @@ jobs:
           "$ANDROID_HOME/emulator/emulator" -avd vision_preference_test \
             -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
             -accel on -gpu swiftshader_indirect -feature -Vulkan \
-            -camera-back none -camera-front none -memory 2048 \
+            -camera-back none -camera-front none -memory 3072 -partition-size 4096 \
             > emulator-evidence/emulator.log 2>&1 &
           EMULATOR_PID=$!
 
@@ -83,7 +83,7 @@ jobs:
             timeout -k 5 30 adb emu kill || true
             kill "$EMULATOR_PID" 2>/dev/null || true
           }
-          trap cleanup EXIT
+          trap cleanup EXIT INT TERM
 
           stage "wait for emulator to appear in adb"
           seen=0
@@ -120,7 +120,7 @@ jobs:
           stage "run instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
           # wedged device or main looper into a fast failure instead of a silent hang.
-          timeout -k 30 720 gradle --console=plain \
+          timeout -k 30 1200 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
             connectedDebugAndroidTest
           stage "instrumentation finished"
@@ -151,7 +151,7 @@ jobs:
           for suite in suites:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
-          if total != 23 or failures or skipped:
-              raise SystemExit('Expected exactly twenty-three passing Android safety instrumentation tests')
+          if total != 26 or failures or skipped:
+              raise SystemExit('Expected exactly twenty-six passing Android safety instrumentation tests')
           PYTHON
           cat emulator-evidence/android-version.txt
