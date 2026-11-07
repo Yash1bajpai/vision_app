@@ -191,12 +191,12 @@ jobs:
         if: always()
         shell: bash
         run: |
-          # 34 test cases exist: the 33 baseline cases plus the
-          # production-timeout diagnostic case. The diagnostic case executes
-          # only on production_smoke dispatches; every other trigger skips
-          # it. This step only prints evidence; enforcement lives in the
-          # final gate step so a failed gate can never suppress the prints,
-          # the evidence cats below, or the always() XML artifact upload.
+          # 35 test cases exist: the 33 baseline cases plus the
+          # production-timeout diagnostic case (production_smoke dispatches
+          # only) and the provider/coordinator fail-closed case (all runs).
+          # This step only prints evidence; enforcement lives in the final
+          # gate step so a failed gate can never suppress the prints, the
+          # evidence cats below, or the always() XML artifact upload.
           python3 - <<'PYTHON'
           import glob, xml.etree.ElementTree as ET
           paths = glob.glob('app/build/outputs/androidTest-results/connected/**/*.xml', recursive=True)
@@ -209,15 +209,43 @@ jobs:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
           PYTHON
+          # Raw native-flag evidence from the actual build tree: whether the
+          # optimized configuration was in effect is independently verifiable
+          # from the run log itself (baseline builds show OFF/zero counts).
+          echo "== native flag evidence =="
+          find app/.cxx -name CMakeCache.txt -exec grep -H "^VISION_PRODUCTION_SMOKE" {} + 2>/dev/null || echo "no CMakeCache flag found"
+          # Raw compile-command evidence: print one representative native
+          # command per build tree (grep counts only summarize). The full
+          # compile_commands.json files are uploaded as an artifact below so
+          # the exact flag lists stay independently verifiable.
+          # Copy the compile databases out of the hidden app/.cxx tree first:
+          # actions/upload-artifact v4 excludes hidden paths by default, so the
+          # upload below reads from a non-hidden evidence directory.
+          mkdir -p native-evidence
+          find app/.cxx -name compile_commands.json 2>/dev/null | while read -r f; do
+            dest="native-evidence/$(echo "$f" | tr '/' '_' )"
+            cp "$f" "$dest"
+            echo "--- $f (representative raw compile command)"
+            python3 -c "import json,sys; e=json.load(open(sys.argv[1])); print('entries:', len(e)); s=([x for x in e if 'ggml-cpu' in x.get('file','')] or e)[0]; print('file:', s['file']); print(s['command'])" "$f"
+          done
           cat emulator-evidence/android-version.txt
+      - name: Upload raw compile commands
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-compile-commands
+          path: native-evidence/
+          if-no-files-found: ignore
       - name: Enforce instrumentation count gate
         if: always()
         shell: bash
         run: |
-          # 34 total cases; the diagnostic case is skipped unless this is a
-          # production_smoke dispatch, so the expected skip count is
-          # conditional. Kept separate from evidence printing/uploading so a
-          # red gate stays honest without suppressing diagnostics.
+          # 38 total cases (35 smoke + 3 native countTokens contract cases);
+          # the diagnostic case is skipped unless this is a production_smoke
+          # dispatch (the provider/coordinator case runs in every
+          # configuration), so the expected skip count is conditional.
+          # Kept separate from evidence printing/uploading so a red gate
+          # stays honest without suppressing diagnostics.
           EXPECTED_SKIPPED=1
           if [ "${{ inputs.production_smoke }}" = "true" ]; then
             EXPECTED_SKIPPED=0
@@ -231,6 +259,6 @@ jobs:
           failures = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
           skipped = sum(int(s.get('skipped', 0)) for s in suites)
           expected_skipped = int(os.environ['EXPECTED_SKIPPED'])
-          if total != 34 or failures or skipped != expected_skipped:
-              raise SystemExit('Expected exactly thirty-four Android safety instrumentation tests with %d skipped, zero failures' % expected_skipped)
+          if total != 38 or failures or skipped != expected_skipped:
+              raise SystemExit('Expected exactly thirty-eight Android safety instrumentation tests with %d skipped, zero failures' % expected_skipped)
           PYTHON

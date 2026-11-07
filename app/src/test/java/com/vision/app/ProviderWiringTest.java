@@ -105,6 +105,7 @@ public class ProviderWiringTest {
         void beforeGenerate() { }
         @Override public void unload(long handle) { }
         @Override public String formatChat(long handle, String hint, String sys, String user) { return "<f>" + user + "</f>"; }
+        @Override public int countTokens(long handle, String text) { return 1; }
     }
 
     private static class BlockingQueueBridge extends QueueBridge {

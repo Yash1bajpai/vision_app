@@ -59,8 +59,39 @@ public class LocalModelProvider implements ReasoningProvider {
         @Override public long elapsedRealtimeMs() { return SystemClock.elapsedRealtime(); }
     };
 
-    private static final String DEFAULT_SYSTEM_PROMPT =
-            "You are an on-device Android assistant. Convert the user command into a single JSON object with exact keys \"type\", \"target\", \"text\", \"channel\".";
+    // Built from VisionToolRegistry (meanings, ALL field rules including the
+    // empty ones, and examples) so prompt and validator vocabulary share one
+    // source; SystemPromptContractTest pins the content contract. Compact
+    // positional encoding keeps the formatted initial and retry prompts within
+    // CTX_TOKENS=1024 with the full MAX_TOKENS=256 reserved (exact pinned-GGUF
+    // tokenizer counts in the review package). The grammar's type string stays
+    // unconstrained on purpose: an enum grammar could force a plausible
+    // executable action for a request that should be refused.
+    private static final String DEFAULT_SYSTEM_PROMPT = buildSystemPrompt();
+
+    /** Package-visible so the instrumented smoke uses the identical production prompt. */
+    static String buildSystemPrompt() {
+        StringBuilder sb = new StringBuilder(
+                "Convert the user command into one JSON object with exactly these keys: "
+                + "\"type\",\"target\",\"text\",\"channel\". Reply with one JSON object only.\n"
+                + "One type per line: NAME ~ meaning ~ target rule ~ text rule ~ channel rule. "
+                + "A rule of - means the field must be \"\".\n");
+        for (VisionToolRegistry.Tool tool : VisionToolRegistry.all()) {
+            sb.append(tool.type.name()).append(" ~ ").append(tool.description)
+                    .append(" ~ ").append(promptRule(tool.targetRule))
+                    .append(" ~ ").append(promptRule(tool.textRule))
+                    .append(" ~ ").append(promptRule(tool.channelRule)).append('\n');
+        }
+        sb.append("Unsupported, ambiguous, or more than one action -> "
+                + "{\"type\":\"UNKNOWN\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}\n");
+        sb.append("\"turn torch on\" -> "
+                + "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}");
+        return sb.toString();
+    }
+
+    private static String promptRule(String rule) {
+        return "empty".equals(rule) ? "-" : rule;
+    }
 
     private final Context context;
     private final ModelManager modelManager;
@@ -182,25 +213,53 @@ public class LocalModelProvider implements ReasoningProvider {
                 return null;
             }
 
-            // Prepare prompt with chat template
-            String formattedPrompt = null;
-            String systemPrompt = DEFAULT_SYSTEM_PROMPT;
-            if (recentRequests != null && !recentRequests.isEmpty()) {
-                StringBuilder sb = new StringBuilder(systemPrompt);
-                sb.append("\nRecent context:");
+            // Prepare prompt with chat template. Context-fit policy is
+            // ALL-OR-NOTHING, the conservative choice: the full available
+            // recent context plus the user request must fit CTX_TOKENS with
+            // the full MAX_TOKENS generation reserve, measured with the EXACT
+            // native token count (same llama_tokenize flags as generation).
+            // There is no selective context dropping - dropping an entry could
+            // silently strip a referent the request depends on, and guessing
+            // which entry matters is an intent heuristic this provider does
+            // not make. The user request is never truncated or altered. If the
+            // assembly cannot fit, the call fails closed with no generation;
+            // the coordinator treats null as no-proposal, never as a refusal
+            // or an action. Generation can therefore never receive an
+            // over-long prompt: the bundled llama.cpp KV slot lookup rejects
+            // overflow rather than truncating, and every decode failure path
+            // in the JNI returns null with no partial text, so a context
+            // overflow can never surface as a valid-looking but wrong action.
+            StringBuilder systemSb = new StringBuilder(DEFAULT_SYSTEM_PROMPT);
+            if (recentRequests != null) {
+                boolean any = false;
                 for (String r : recentRequests) {
                     if (r != null && !r.trim().isEmpty()) {
-                        sb.append("\n- ").append(r.trim());
+                        if (!any) {
+                            systemSb.append("\nRecent context:");
+                            any = true;
+                        }
+                        systemSb.append("\n- ").append(r.trim());
                     }
                 }
-                systemPrompt = sb.toString();
             }
-
-            formattedPrompt = bridge.formatChat(nativeHandle, activeModel.templateHint, systemPrompt, userRequest.trim());
+            String systemPrompt = systemSb.toString();
+            String formattedPrompt = bridge.formatChat(nativeHandle, activeModel.templateHint,
+                    systemPrompt, userRequest.trim());
             if (formattedPrompt == null) {
                 // N4: When nativeFormatChat returns null, do NOT silently fall back to plain formatting.
                 // Treat as generation setup failure: log LOGE, return null fail-closed.
                 Log.e(TAG, "Chat template formatting failed for model: " + activeModel.displayName);
+                return null;
+            }
+            int promptTokenCount = bridge.countTokens(nativeHandle, formattedPrompt);
+            if (promptTokenCount < 0) {
+                Log.e(TAG, "Token counting failed; refusing to generate without an exact fit check");
+                return null;
+            }
+            if (promptTokenCount > CTX_TOKENS - MAX_TOKENS) {
+                Log.w(TAG, "Prompt (" + promptTokenCount + " tokens) exceeds CTX_TOKENS=" + CTX_TOKENS
+                        + " with the MAX_TOKENS=" + MAX_TOKENS
+                        + " reserve; failing closed with full context intact (no dropping, no truncation)");
                 return null;
             }
 
@@ -286,6 +345,16 @@ public class LocalModelProvider implements ReasoningProvider {
                     systemPrompt, retryMessage(userRequest.trim(), reason));
             if (retryPrompt == null) {
                 Log.e(TAG, "Chat template formatting failed for retry; returning original output");
+                return trimmed;
+            }
+            // Exact fit check for the retry too: never generate from an
+            // over-long prompt (the retry suffix can push a long request over
+            // the context budget). Fail closed by returning the original
+            // rejected output; the request is never truncated.
+            int retryTokenCount = bridge.countTokens(nativeHandle, retryPrompt);
+            if (retryTokenCount < 0 || retryTokenCount > CTX_TOKENS - MAX_TOKENS) {
+                Log.w(TAG, "Retry prompt does not fit the context budget (tokens="
+                        + retryTokenCount + "); returning original rejected output");
                 return trimmed;
             }
             retryBudgetMs = remainingMs(requestStartMs);

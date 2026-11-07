@@ -53,8 +53,13 @@ import static org.junit.Assert.*;
  * Budget: the workflow's outer `timeout -k 30 1200 gradle` is the only hard
  * process bound (native calls do not honor thread interrupts reliably, and a
  * native worker can outlive its JUnit timeout). The per-test JUnit timeouts
- * below (300+200+200+200=900s worst case) are accounting that stays under
- * that bound, not enforcement. Inside test4 the warm-up generate carries its
+ * below (300+200+200+200+200=1100s worst case) are accounting that stays under
+ * that bound, not enforcement. test5 exercises the real provider and
+ * coordinator (not direct bridge) for positive, unsupported, ambiguous and
+ * compound requests with exactly one provider call per request. The
+ * production generation (8s) and retry (14s) budgets are COOPERATIVE and do
+ * not bound model load or chat formatting, which are unbounded in the
+ * source; the workflow's outer timeout remains the only hard bound. Inside test4 the warm-up generate carries its
  * own 60s bound (about 3x the warm ~20s measured on the Debug SIMD build in
  * run 42348802184: 11.5s prefill + ~1.06s/token), reserving the rest of the
  * 200s for the measured leg; the 8s production deadline is llama.cpp's
@@ -70,16 +75,27 @@ import static org.junit.Assert.*;
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class RealModelInstrumentedTest {
     private static final String CATALOG_ID = "qwen2.5-1.5b-instruct-q4_k_m";
-    // Keep in sync with LocalModelProvider.DEFAULT_SYSTEM_PROMPT (private there).
-    private static final String SYSTEM_PROMPT =
-            "You are an on-device Android assistant. Convert the user command into a single JSON "
-            + "object with exact keys \"type\", \"target\", \"text\", \"channel\".";
+    // The identical prompt production uses: built from the registry by the provider.
+    private static final String SYSTEM_PROMPT = LocalModelProvider.buildSystemPrompt();
 
     private static ModelInfo installed;
     private static File installedFile;
     private static String templateHint;
     private static Set<String> preexistingFiles;
     private static String expectedSafeBase;
+    private static String preexistingActiveModelId;
+    // Set only when the test5 teardown barrier observed a PROVEN unload
+    // (callback fired AND the provider reports not loaded). AfterClass deletes
+    // the imported model file only on proof; on any ambiguous outcome the file
+    // is preserved rather than deleted under a live handle.
+    private static volatile boolean modelUnloadProven = false;
+    // Normal completion markers for every model-touching test. A test that
+    // timed out or failed before its final statement has no marker, so
+    // AfterClass treats the run as ambiguous and preserves the model file -
+    // a timed-out native worker can outlive its test (cooperative deadlines)
+    // and the file must not be deleted from under it.
+    private static final java.util.Set<String> completedModelTests =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
 
     @BeforeClass
     public static void snapshotModelsDir() {
@@ -87,6 +103,7 @@ public class RealModelInstrumentedTest {
                 InstrumentationRegistry.getInstrumentation().getTargetContext());
         String[] names = mm.getModelsDir().list();
         preexistingFiles = new HashSet<>(names != null ? Arrays.asList(names) : java.util.Collections.<String>emptyList());
+        preexistingActiveModelId = mm.getActiveModelId();
     }
 
     private static org.json.JSONObject catalogEntry() throws Exception {
@@ -157,6 +174,7 @@ public class RealModelInstrumentedTest {
         assertTrue("downloaded model file must exist", installedFile.exists());
         assertEquals("size must match the catalog pin", expectedSize, installedFile.length());
         assertEquals("sha256 must match the catalog pin", catalogSha256, sha256Of(installedFile));
+        completedModelTests.add("test1");
     }
 
     @Test(timeout = 200_000)
@@ -185,6 +203,7 @@ public class RealModelInstrumentedTest {
         } finally {
             bridge.unload(handle);
         }
+        completedModelTests.add("test2");
     }
 
     @Test(timeout = 200_000)
@@ -213,6 +232,7 @@ public class RealModelInstrumentedTest {
         } finally {
             bridge.unload(second);
         }
+        completedModelTests.add("test3");
     }
 
     @Test(timeout = 200_000)
@@ -271,6 +291,157 @@ public class RealModelInstrumentedTest {
         } finally {
             bridge.unload(handle);
         }
+        completedModelTests.add("test4");
+    }
+
+    /** Capturing wrapper: the logged raw IS the single result the coordinator consumed. */
+    private static final class CapturingProvider implements ReasoningProvider {
+        private final LocalModelProvider real;
+        String raw;
+        int calls;
+        CapturingProvider(LocalModelProvider real) {
+            this.real = real;
+        }
+        @Override public String propose(String request) {
+            calls++;
+            raw = real.propose(request);
+            return raw;
+        }
+        @Override public String propose(String request, java.util.List<String> recent) {
+            calls++;
+            raw = real.propose(request, recent);
+            return raw;
+        }
+    }
+
+    @Test(timeout = 200_000)
+    public void test5_realProviderPositiveAndRefusalEvidence() throws Exception {
+        // Real-provider evidence (NOT direct bridge): positives assert the
+        // provider's single propose() result re-validated through the app
+        // strict parser + validator with full field checks; refusals go
+        // through the coordinator with a capturing wrapper (exactly one
+        // provider call per request; the printed raw is what the coordinator
+        // consumed); a parser-recognized compound must be refused with zero
+        // provider calls. A null provider result is printed as "null" with no
+        // cause claim - per LocalModelProvider's source, null has several
+        // fail-closed causes (budget, setup, formatting, interrupt) and this
+        // log line alone does not establish which.
+        assertNotNull("test1 must install the model first", installedFile);
+        android.content.Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        ModelManager mm = new ModelManager(ctx);
+        LocalModelProvider provider = new LocalModelProvider(ctx, mm, new LlamaBridge(),
+                new android.os.Handler(android.os.Looper.getMainLooper()));
+        try {
+            mm.setActiveModelId(installed.id);
+
+            String rawTorch = provider.propose("turn on the torch");
+            System.out.println("RealModelSmoke provider raw [turn on the torch]: "
+                    + (rawTorch == null ? "null" : rawTorch.replace('\n', ' ').replace('\r', ' ')));
+            assertNotNull("real provider must return a proposal for a torch command", rawTorch);
+            Map<String, String> torchFields = StrictJson.parseObject(rawTorch);
+            assertNotNull("torch proposal must parse through the app strict JSON parser", torchFields);
+            ReasoningProposalValidator.ValidationResult torchVr =
+                    ReasoningProposalValidator.validate(torchFields);
+            assertNotNull("the app validator must accept the torch proposal"
+                    + (torchVr.reason != null ? "; rejected: " + torchVr.reason : ""), torchVr.action);
+            assertEquals(VisionAction.Type.TOGGLE_TORCH, torchVr.action.type);
+            assertEquals("on", torchVr.action.target);
+            assertEquals("torch text must be empty", "", torchFields.get("text"));
+            assertEquals("torch channel must be empty", "", torchFields.get("channel"));
+
+            String rawTime = provider.propose("what time is it");
+            System.out.println("RealModelSmoke provider raw [what time is it]: "
+                    + (rawTime == null ? "null" : rawTime.replace('\n', ' ').replace('\r', ' ')));
+            assertNotNull("real provider must return a proposal for a time query", rawTime);
+            Map<String, String> timeFields = StrictJson.parseObject(rawTime);
+            assertNotNull(timeFields);
+            ReasoningProposalValidator.ValidationResult timeVr =
+                    ReasoningProposalValidator.validate(timeFields);
+            assertNotNull("the app validator must accept the time proposal"
+                    + (timeVr.reason != null ? "; rejected: " + timeVr.reason : ""), timeVr.action);
+            assertEquals(VisionAction.Type.READ_TIME, timeVr.action.type);
+            assertEquals("time text must be empty", "", timeFields.get("text"));
+            assertEquals("time channel must be empty", "", timeFields.get("channel"));
+
+            for (String request : new String[]{"order a pizza", "do it"}) {
+                CapturingProvider capturing = new CapturingProvider(provider);
+                ReasoningCoordinator.CoordinationResult result =
+                        ReasoningCoordinator.coordinateFull(request, capturing);
+                assertEquals("exactly one provider call per request", 1, capturing.calls);
+                System.out.println("RealModelSmoke coordinator-consumed raw [" + request + "]: "
+                        + (capturing.raw == null ? "null"
+                           : capturing.raw.replace('\n', ' ').replace('\r', ' ')));
+                assertNotNull("model must emit a refusal proposal for: " + request, capturing.raw);
+                Map<String, String> refusal = StrictJson.parseObject(capturing.raw);
+                assertNotNull("refusal must parse through the app strict JSON parser", refusal);
+                // Key-set exactness, not only value checks: a raw refusal with
+                // missing keys could otherwise be masked by the coordinator's
+                // null-fallback reads, and extra keys must not slip through.
+                assertEquals("refusal must carry exactly the keys {type,target,text,channel}",
+                        new HashSet<>(Arrays.asList("type", "target", "text", "channel")),
+                        refusal.keySet());
+                assertEquals("model refusal must be UNKNOWN", "UNKNOWN", refusal.get("type"));
+                assertEquals("refusal target must be empty", "", refusal.get("target"));
+                assertEquals("refusal text must be empty", "", refusal.get("text"));
+                assertEquals("refusal channel must be empty", "", refusal.get("channel"));
+                assertEquals("coordinator must fail closed as UNKNOWN",
+                        VisionAction.Type.UNKNOWN, result.action.type);
+                assertNull("no plan may come from an unsupported/ambiguous request", result.plan);
+            }
+
+            CapturingProvider compoundCapture = new CapturingProvider(provider);
+            ReasoningCoordinator.CoordinationResult compound = ReasoningCoordinator.coordinateFull(
+                    "open Telegram and then open Gmail", compoundCapture);
+            assertEquals("parser-recognized compound must not reach the provider",
+                    0, compoundCapture.calls);
+            assertEquals(VisionAction.Type.UNSUPPORTED_MULTI_ACTION, compound.action.type);
+            assertNull(compound.plan);
+        } finally {
+            // provider.shutdown() only queues work; the unloadAsync callback is
+            // the completion barrier, and it must pass BEFORE teardown may
+            // delete the imported model file. Per LocalModelProvider.unloadAsync
+            // source the callback fires from a finally block even if unload()
+            // throws, so a fired latch alone is not proof: unload is proven only
+            // when the latch fired AND the provider reports not loaded. On any
+            // ambiguous outcome (timeout, interrupt, still-loaded) the model
+            // file is PRESERVED rather than deleted under a possibly live
+            // handle. shutdown() runs unconditionally.
+            final java.util.concurrent.CountDownLatch unloaded = new java.util.concurrent.CountDownLatch(1);
+            boolean proven = false;
+            try {
+                provider.unloadAsync(new Runnable() {
+                    @Override public void run() {
+                        unloaded.countDown();
+                    }
+                });
+                // isLoaded() alone would not prove native disposal:
+                // LlamaBridge.unload clears the provider's handle after a call
+                // that can time out its bounded wait and DELEGATE disposal to a
+                // running operation's exit path. Here the proof chain is
+                // source-grounded: every propose() above has returned (the
+                // provider is synchronized and single-threaded in this test),
+                // so no operation is in flight, the bridge's tryLock acquires
+                // immediately, and nativeUnload runs synchronously before the
+                // callback. The delegated path requires an in-flight operation,
+                // which cannot exist at this point. Native disposal failing via
+                // a catchable Java exception is not a real path (the JNI unload
+                // does not throw; a native crash would kill the process and
+                // fail the run loudly). Timeout/interrupt/still-loaded remain
+                // ambiguous and preserve the file.
+                proven = unloaded.await(60, java.util.concurrent.TimeUnit.SECONDS)
+                        && !provider.isLoaded();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            } finally {
+                modelUnloadProven = proven;
+                provider.shutdown();
+            }
+            if (!proven) {
+                System.out.println("RealModelSmoke teardown: unload NOT proven; "
+                        + "imported model file will be preserved");
+            }
+        }
+        completedModelTests.add("test5");
     }
 
     private static String readAsset(String name) throws Exception {
@@ -290,6 +461,19 @@ public class RealModelInstrumentedTest {
     public static void removeOwnedArtifacts() throws Exception {
         ModelManager mm = new ModelManager(
                 InstrumentationRegistry.getInstrumentation().getTargetContext());
+        // Restore the exact pre-existing active id, including null.
+        mm.setActiveModelId(preexistingActiveModelId);
+        // Delete the imported model only when test5 PROVED the provider unload;
+        // an ambiguous teardown preserves the file (and its catalog entry)
+        // rather than deleting under a possibly live native handle.
+        boolean allCompleted = completedModelTests.containsAll(java.util.Arrays.asList(
+                "test1", "test2", "test3", "test4", "test5"));
+        if (!modelUnloadProven || !allCompleted) {
+            System.out.println("RealModelSmoke cleanup: unloadProven=" + modelUnloadProven
+                    + " completedModelTests=" + completedModelTests
+                    + " - ambiguous cleanup; preserving imported model file");
+            return;
+        }
         if (installed != null) {
             mm.deleteModel(installed);
         }

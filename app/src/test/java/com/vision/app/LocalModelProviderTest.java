@@ -168,10 +168,25 @@ public class LocalModelProviderTest {
             }
         }
 
+        final java.util.List<String> seenSystemPrompts = new java.util.ArrayList<>();
         @Override
         public String formatChat(long handle, String templateHint, String systemPrompt, String userMessage) {
             if (returnFormatChat == null) return null;
+            seenSystemPrompts.add(systemPrompt);
             return returnFormatChat + userMessage + "</formatted>";
+        }
+        final java.util.List<Integer> countTokensQueue = new java.util.ArrayList<>();
+        final java.util.List<String> seenCountTexts = new java.util.ArrayList<>();
+        @Override public int countTokens(long handle, String text) {
+            // JVM fake: no tokenizer; scripted counts keep the exact-fit gate
+            // exercised without simulating tokenization. Default 1 fits.
+            seenCountTexts.add(text);
+            synchronized (countTokensQueue) {
+                if (!countTokensQueue.isEmpty()) {
+                    return countTokensQueue.remove(0);
+                }
+            }
+            return 1;
         }
     }
 
@@ -772,5 +787,75 @@ public class LocalModelProviderTest {
                 throw new AssertionError("cleanup: " + cleanupProblems);
             }
         }
+    }
+
+    // 14. Exact-fit gate: countTokens failure fails closed before any generation
+    @Test
+    public void countTokensFailureFailsClosedWithoutGeneration() {
+        fakeBridge.countTokensQueue.add(-1);
+        String result = provider.propose("turn on torch");
+        assertNull("token-count failure must fail closed", result);
+        assertEquals("generation must never run without an exact fit check",
+                0, fakeBridge.generateCallCount);
+    }
+
+    // 15. Exact-fit gate: over-budget request with no recent context fails
+    // closed; the request is never truncated to fit.
+    @Test
+    public void overBudgetWithNoRecentFailsClosedWithoutTruncation() {
+        fakeBridge.countTokensQueue.add(LocalModelProvider.CTX_TOKENS);
+        String result = provider.propose("turn on torch");
+        assertNull("an over-budget prompt must fail closed", result);
+        assertEquals(0, fakeBridge.generateCallCount);
+        assertEquals("exactly one formatted prompt must have been counted",
+                1, fakeBridge.seenCountTexts.size());
+        assertTrue("the counted prompt must carry the full, untruncated request",
+                fakeBridge.seenCountTexts.get(0).contains("turn on torch"));
+    }
+
+    // 16. Context-fit policy is all-or-nothing: when the full recent context
+    // plus request cannot fit, the call fails closed with NO selective
+    // dropping - a dropped entry could silently strip a referent the request
+    // depends on. Generation never runs over budget.
+    @Test
+    public void overBudgetWithRecentFailsClosedWithoutDropping() {
+        fakeBridge.countTokensQueue.add(LocalModelProvider.CTX_TOKENS); // full context: over
+        String result = provider.propose("turn on torch",
+                java.util.Arrays.asList("oldest referent xyz", "newest referent abc"));
+        assertNull("over-budget full context must fail closed, not drop entries", result);
+        assertEquals("generation must never run over budget", 0, fakeBridge.generateCallCount);
+        assertEquals("exactly one formatted prompt must have been counted (no retry of variants)",
+                1, fakeBridge.seenCountTexts.size());
+        String countedSystem = fakeBridge.seenSystemPrompts.get(fakeBridge.seenSystemPrompts.size() - 1);
+        assertTrue("the full context must be presented to the fit check intact",
+                countedSystem.contains("oldest referent xyz")
+                        && countedSystem.contains("newest referent abc"));
+    }
+
+    // 16b. Full context that fits is sent intact.
+    @Test
+    public void fittingRecentContextIsSentIntact() {
+        fakeBridge.returnText = "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}";
+        String result = provider.propose("turn on torch",
+                java.util.Arrays.asList("oldest referent xyz", "newest referent abc"));
+        assertNotNull(result);
+        String sentSystem = fakeBridge.seenSystemPrompts.get(fakeBridge.seenSystemPrompts.size() - 1);
+        assertTrue(sentSystem.contains("oldest referent xyz")
+                && sentSystem.contains("newest referent abc"));
+    }
+
+    // 17. Retry fit: when the retry suffix pushes the prompt over budget, the
+    // provider returns the original rejected output instead of generating from
+    // an over-long prompt.
+    @Test
+    public void retryOverBudgetReturnsOriginalRejectedOutput() {
+        fakeBridge.returnTextQueue.add("garbage not json");
+        fakeBridge.countTokensQueue.add(100);                            // initial fits
+        fakeBridge.countTokensQueue.add(LocalModelProvider.CTX_TOKENS);  // retry over
+        String result = provider.propose("turn on torch");
+        assertEquals("the original rejected output must be returned when the retry cannot fit",
+                "garbage not json", result);
+        assertEquals("the retry must never reach generation over budget",
+                1, fakeBridge.generateCallCount);
     }
 }

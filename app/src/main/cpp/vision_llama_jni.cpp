@@ -176,6 +176,30 @@ Java_com_vision_app_LlamaBridge_nativeUnload(
     delete handle;
 }
 
+JNIEXPORT jint JNICALL
+Java_com_vision_app_LlamaBridge_nativeCountTokens(
+        JNIEnv* env,
+        jclass /* clazz */,
+        jlong handleVal,
+        jstring textStr) {
+    if (handleVal == 0 || textStr == nullptr) {
+        return -1;
+    }
+    auto* handle = reinterpret_cast<VisionLlamaHandle*>(handleVal);
+    if (handle->ctx == nullptr) {
+        return -1;
+    }
+    const llama_vocab* vocab = llama_model_get_vocab(handle->model);
+    JniStringChars text(env, textStr);
+    if (text.c_str() == nullptr) {
+        return -1;
+    }
+    // Same flags as nativeGenerate's prompt tokenization so the count is exact
+    // for what generation would consume.
+    int n = -llama_tokenize(vocab, text.c_str(), (int)strlen(text.c_str()), nullptr, 0, true, true);
+    return n > 0 ? n : -1;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_vision_app_LlamaBridge_nativeFormatChat(
         JNIEnv* env,

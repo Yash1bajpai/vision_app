@@ -75,6 +75,7 @@ public class LlamaBridge implements LlamaBridgeInterface {
     // state.
     static volatile long unloadDisposalWaitMsForTesting = -1;
     interface NativeUnloadHook { void unload(long handle); }
+    interface NativeCountHook { int count(long handle, String text); }
     interface NativeGenerateHook {
         byte[] generate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs);
     }
@@ -91,19 +92,24 @@ public class LlamaBridge implements LlamaBridgeInterface {
         // Test-only hooks and admission barrier; null in production.
         final NativeGenerateHook generateHook;
         final NativeUnloadHook unloadHook;
+        final NativeCountHook countHook;
         volatile java.util.concurrent.CountDownLatch preLockReachedForTesting;
         volatile java.util.concurrent.CountDownLatch preLockBarrierForTesting;
 
         HandleState(long nativePointer) {
-            this.nativePointer = nativePointer;
-            this.generateHook = null;
-            this.unloadHook = null;
+            this(nativePointer, null, null, null);
         }
 
         HandleState(long nativePointer, NativeGenerateHook generateHook, NativeUnloadHook unloadHook) {
+            this(nativePointer, generateHook, unloadHook, null);
+        }
+
+        HandleState(long nativePointer, NativeGenerateHook generateHook, NativeUnloadHook unloadHook,
+                NativeCountHook countHook) {
             this.nativePointer = nativePointer;
             this.generateHook = generateHook;
             this.unloadHook = unloadHook;
+            this.countHook = countHook;
         }
     }
     private static final ConcurrentHashMap<Long, HandleState> HANDLE_STATES = new ConcurrentHashMap<>();
@@ -135,17 +141,27 @@ public class LlamaBridge implements LlamaBridgeInterface {
     // to a freshly minted token here and only here.
     private static long registerLoadedPointer(long nativePointer, NativeGenerateHook generateHook,
             NativeUnloadHook unloadHook) {
+        return registerLoadedPointer(nativePointer, generateHook, unloadHook, null);
+    }
+
+    private static long registerLoadedPointer(long nativePointer, NativeGenerateHook generateHook,
+            NativeUnloadHook unloadHook, NativeCountHook countHook) {
         long token = nextToken();
-        HANDLE_STATES.put(token, new HandleState(nativePointer, generateHook, unloadHook));
+        HANDLE_STATES.put(token, new HandleState(nativePointer, generateHook, unloadHook, countHook));
         return token;
     }
 
     static long registerLoadedPointerForTesting(long nativePointer, NativeGenerateHook generateHook,
             NativeUnloadHook unloadHook) {
+        return registerLoadedPointerForTesting(nativePointer, generateHook, unloadHook, null);
+    }
+
+    static long registerLoadedPointerForTesting(long nativePointer, NativeGenerateHook generateHook,
+            NativeUnloadHook unloadHook, NativeCountHook countHook) {
         // Same mint and map as production registration; hooks receive the
         // STORED pointer (exactly what native code would receive), so tests
         // verify pointer identity without any real JNI entry.
-        return registerLoadedPointer(nativePointer, generateHook, unloadHook);
+        return registerLoadedPointer(nativePointer, generateHook, unloadHook, countHook);
     }
 
     // Test seam (package-private instance field, null in production): replaces
@@ -362,6 +378,43 @@ public class LlamaBridge implements LlamaBridgeInterface {
         }
     }
 
+    /**
+     * Exact token count for text as nativeGenerate would tokenize it (same
+     * llama_tokenize flags). Returns -1 on any failure so callers fail closed.
+     */
+    @Override
+    public int countTokens(long handle, String text) {
+        if (!libraryLoaded || handle == 0 || text == null) return -1;
+        HandleState state = HANDLE_STATES.get(handle);
+        if (state == null || state.closing) return -1;
+        // Same admission pattern as generate(): a caller queued before the
+        // lock must re-check closing under it.
+        if (state.preLockReachedForTesting != null) {
+            state.preLockReachedForTesting.countDown();
+            try {
+                state.preLockBarrierForTesting.await(15_000, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return -1;
+            }
+        }
+        state.lock.lock();
+        try {
+            if (state.closing) return -1;
+            try {
+                if (state.countHook != null) {
+                    return state.countHook.count(state.nativePointer, text);
+                }
+                return nativeCountTokens(state.nativePointer, text);
+            } catch (Throwable t) {
+                return -1;
+            }
+        } finally {
+            state.lock.unlock();
+            maybeDelegatedDispose(handle, state);
+        }
+    }
+
     @Override
     public String formatChat(long handle, String templateHint, String systemPrompt, String userMessage) {
         if (!libraryLoaded || handle == 0) return null;
@@ -386,4 +439,5 @@ public class LlamaBridge implements LlamaBridgeInterface {
     private static native byte[] nativeGenerate(long handle, String prompt, String gbnfGrammar, int maxTokens, long timeoutMs);
     private static native void nativeUnload(long handle);
     private static native byte[] nativeFormatChat(long handle, String templateHint, String systemPrompt, String userMessage);
+    private static native int nativeCountTokens(long nativePointer, String text);
 }

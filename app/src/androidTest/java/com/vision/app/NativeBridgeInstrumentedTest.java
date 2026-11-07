@@ -354,4 +354,79 @@ public class NativeBridgeInstrumentedTest {
             Thread.currentThread().interrupt();
         }
     }
+
+    @Test
+    public void countTokensUnknownHandleAndHookFailureReturnMinusOne() {
+        LlamaBridge bridge = new LlamaBridge();
+        assertEquals(-1, bridge.countTokens(0L, "x"));
+        assertEquals(-1, bridge.countTokens(987654321L, "x"));
+        assertEquals(-1, bridge.countTokens(987654321L, null));
+        long handle = LlamaBridge.registerLoadedPointerForTesting(
+                0xDDDD0004L, null, h -> { }, (h, text) -> { throw new RuntimeException("boom"); });
+        assertEquals("a throwing count path must fail closed as -1",
+                -1, bridge.countTokens(handle, "x"));
+        bridge.unload(handle);
+    }
+
+    @Test
+    public void countTokensQueuedBeforeCloseRejectsWithoutReachingNative() throws Exception {
+        // Mirrors operationsRejectedAfterCloseAndDisposalIsSingle: a running
+        // generate holds the handle lock; a countTokens call is
+        // deterministically prefetched before the lock; after close it must
+        // reject on the post-lock closing check without reaching the count hook.
+        java.util.concurrent.CountDownLatch opRunning = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseOp = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch prefetched = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch admitPrefetch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger countCalls = new java.util.concurrent.atomic.AtomicInteger();
+        LlamaBridge.NativeGenerateHook generateHook = (h, p, g, m, t) -> {
+            opRunning.countDown();
+            awaitQuietly(releaseOp);
+            return null;
+        };
+        long handle = LlamaBridge.registerLoadedPointerForTesting(
+                0xEEEE0005L, generateHook, h -> { },
+                (h, text) -> { countCalls.incrementAndGet(); return 7; });
+        LlamaBridge bridge = new LlamaBridge();
+        Thread runningOp = new Thread(() -> bridge.generate(handle, "p", null, 8, 1_000));
+        runningOp.start();
+        assertTrue("first generate must be running", await(opRunning));
+
+        LlamaBridge.armAdmissionBarrierForTesting(handle, prefetched, admitPrefetch);
+        final int[] queuedResult = new int[1];
+        Thread queuedCount = new Thread(() -> queuedResult[0] = bridge.countTokens(handle, "x"));
+        queuedCount.start();
+        assertTrue("queued count must have prefetched the state", await(prefetched));
+
+        Thread unloader = new Thread(() -> bridge.unload(handle));
+        unloader.start();
+        assertTrue("unload must remove the state", awaitUnregistered(handle));
+        assertEquals("count submitted after close must be rejected",
+                -1, bridge.countTokens(handle, "x"));
+
+        admitPrefetch.countDown();
+        releaseOp.countDown();
+        runningOp.join(15_000);
+        queuedCount.join(15_000);
+        unloader.join(15_000);
+        assertFalse(runningOp.isAlive());
+        assertFalse(queuedCount.isAlive());
+        assertFalse(unloader.isAlive());
+        assertEquals("the queued count must reject on the post-lock closing check",
+                -1, queuedResult[0]);
+        assertEquals("the count hook must never be reached after close", 0, countCalls.get());
+    }
+
+    @Test
+    public void countTokensOnLiveHandleUsesStoredPointer() {
+        java.util.concurrent.atomic.AtomicLong seenPointer = new java.util.concurrent.atomic.AtomicLong(-1);
+        long handle = LlamaBridge.registerLoadedPointerForTesting(
+                0xFFFF0006L, null, h -> { },
+                (h, text) -> { seenPointer.set(h); return 42; });
+        LlamaBridge bridge = new LlamaBridge();
+        assertEquals(42, bridge.countTokens(handle, "hello"));
+        assertEquals("the stored pointer, not the caller token, must cross to native",
+                0xFFFF0006L, seenPointer.get());
+        bridge.unload(handle);
+    }
 }
