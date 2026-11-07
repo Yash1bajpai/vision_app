@@ -14,6 +14,33 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// Deadline abort: when a generate call carries timeoutMs > 0, this callback is
+// installed on the context for the duration of that call. Returning true aborts
+// llama_decode (CPU execution) mid-evaluation, which is what actually bounds a
+// single decode; the between-decode timeout checks below only fire between
+// calls. The callback data lives on the caller's stack, so the callback MUST be
+// cleared before the generate returns (AbortGuard).
+struct GenerateAbortState {
+    std::chrono::steady_clock::time_point deadline;
+};
+
+static bool generate_abort_callback(void* data) {
+    auto* state = static_cast<GenerateAbortState*>(data);
+    return std::chrono::steady_clock::now() >= state->deadline;
+}
+
+struct AbortGuard {
+    llama_context* ctx;
+    explicit AbortGuard(llama_context* c) : ctx(c) {}
+    ~AbortGuard() {
+        if (ctx != nullptr) {
+            llama_set_abort_callback(ctx, nullptr, nullptr);
+        }
+    }
+    AbortGuard(const AbortGuard&) = delete;
+    AbortGuard& operator=(const AbortGuard&) = delete;
+};
+
 static std::once_flag s_backend_init_flag;
 
 // R1: Initialize backend exactly once before first model load. Process lifetime: never free.
@@ -90,6 +117,7 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
     // R1: Ensure backend is initialized before loading any model
     ensure_backend_init();
 
+    auto load_start = std::chrono::steady_clock::now();
     try {
         llama_model_params mparams = llama_model_default_params();
         llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
@@ -110,6 +138,10 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
             return 0;
         }
 
+        auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - load_start).count();
+        LOGI("nativeLoad completed: %ld ms, n_ctx=%d, threads=%d",
+                (long)load_ms, (int)cparams.n_ctx, (int)cparams.n_threads);
         auto* handle = new VisionLlamaHandle();
         handle->model = model;
         handle->ctx = ctx;
@@ -232,6 +264,13 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
 
     auto start_time = std::chrono::steady_clock::now();
 
+    GenerateAbortState abort_state{start_time + std::chrono::milliseconds(
+            timeoutMs > 0 ? timeoutMs : 0)};
+    AbortGuard abort_guard(timeoutMs > 0 ? handle->ctx : nullptr);
+    if (timeoutMs > 0) {
+        llama_set_abort_callback(handle->ctx, generate_abort_callback, &abort_state);
+    }
+
     // 1. Tokenize prompt
     int prompt_len = (int)strlen(prompt.c_str());
     int n_tokens = -llama_tokenize(vocab, prompt.c_str(), prompt_len, nullptr, 0, true, true);
@@ -248,6 +287,8 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         return nullptr;
     }
     prompt_tokens.resize(token_count);
+    LOGI("nativeGenerate: prompt tokens=%d, maxTokens=%d, timeoutMs=%ld",
+            token_count, (int)maxTokens, (long)timeoutMs);
 
     // 2. Initialize sampler chain with greedy/dist and mandatory GBNF grammar
     llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -267,7 +308,11 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
     llama_memory_seq_rm(llama_get_memory(handle->ctx), -1, -1, -1);
 
     // 3. Process the prompt
-    uint32_t n_batch = 512;
+    // Chunk small enough that the between-decode timeout check below actually
+    // preempts prompt evaluation: a single llama_decode cannot be interrupted,
+    // so one oversized chunk (e.g. 512 tokens) can outlive the whole timeout
+    // budget on slow CPUs. Worst-case overrun is now one 32-token decode.
+    uint32_t n_batch = 32;
     for (size_t i = 0; i < prompt_tokens.size(); i += n_batch) {
         if (timeoutMs > 0) {
             auto now = std::chrono::steady_clock::now();
@@ -279,16 +324,26 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         }
         size_t chunk_size = std::min((size_t)n_batch, prompt_tokens.size() - i);
         llama_batch batch = llama_batch_get_one(prompt_tokens.data() + i, (int32_t)chunk_size);
-        if (llama_decode(handle->ctx, batch) != 0) {
-            LOGE("llama_decode failed on prompt evaluation");
+        int decode_rc = llama_decode(handle->ctx, batch);
+        if (decode_rc != 0) {
+            if (decode_rc == 2) {
+                LOGW("prompt evaluation aborted at deadline");
+            } else {
+                LOGE("llama_decode failed on prompt evaluation: %d", decode_rc);
+            }
             llama_sampler_free(smpl);
             return nullptr;
         }
     }
 
+    auto prompt_eval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time).count();
+    LOGI("nativeGenerate: prompt evaluation completed in %ld ms", (long)prompt_eval_ms);
+
     // 4. Generation token loop with timeout check on each token
     std::string result_text;
     int limit = maxTokens > 0 ? maxTokens : 256;
+    int generated_tokens = 0;
 
     for (int step = 0; step < limit; ++step) {
         if (timeoutMs > 0) {
@@ -305,6 +360,18 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         if (llama_vocab_is_eog(vocab, token)) {
             break;
         }
+        // Deadline before acceptance: never accept a token sampled after the
+        // deadline, so a timed-out call can never return a complete-looking
+        // proposal assembled past its budget.
+        if (timeoutMs > 0) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+            if (elapsed >= timeoutMs) {
+                LOGW("Generation timeout reached before accepting token: %ld ms", (long)elapsed);
+                llama_sampler_free(smpl);
+                return nullptr;
+            }
+        }
 
         char piece_buf[128];
         int piece_len = llama_token_to_piece(vocab, token, piece_buf, sizeof(piece_buf), 0, false);
@@ -319,10 +386,31 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         }
 
         llama_batch batch = llama_batch_get_one(&token, 1);
-        if (llama_decode(handle->ctx, batch) != 0) {
-            LOGE("llama_decode failed during token generation loop");
-            break;
+        int decode_rc = llama_decode(handle->ctx, batch);
+        if (decode_rc != 0) {
+            if (decode_rc == 2) {
+                // Deadline abort: partial output is never an acceptable result.
+                LOGW("token generation aborted at deadline after %d tokens", generated_tokens);
+            } else {
+                LOGE("llama_decode failed during token generation loop: %d", decode_rc);
+            }
+            llama_sampler_free(smpl);
+            return nullptr;
         }
+        generated_tokens++;
+    }
+
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time).count();
+    LOGI("nativeGenerate: generated %d tokens in %ld ms total", generated_tokens, (long)total_ms);
+
+    // Deadline before every success return: an end-of-generation token or a
+    // final decode completing past the deadline must not yield a
+    // complete-looking proposal assembled outside the budget.
+    if (timeoutMs > 0 && total_ms >= timeoutMs) {
+        LOGW("Generation completed past deadline: %ld ms, discarding result", (long)total_ms);
+        llama_sampler_free(smpl);
+        return nullptr;
     }
 
     llama_sampler_free(smpl);

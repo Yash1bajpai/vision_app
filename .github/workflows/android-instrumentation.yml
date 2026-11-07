@@ -80,6 +80,8 @@ jobs:
             timeout -k 5 30 adb devices -l || true
             echo "===== logcat tail ====="
             timeout -k 5 60 adb logcat -d 2>/dev/null | tail -n 80 || true
+            echo "===== VisionLlama/RealModelSmoke logcat ====="
+            timeout -k 5 60 adb logcat -d 2>/dev/null | grep -iE "VisionLlama|RealModelSmoke" | tail -n 200 || true
             timeout -k 5 30 adb emu kill || true
             kill "$EMULATOR_PID" 2>/dev/null || true
           }
@@ -151,7 +153,7 @@ jobs:
           for suite in suites:
               for case in suite.iter('testcase'):
                   print(case.get('classname'), case.get('name'), 'FAILED' if case.find('failure') is not None or case.find('error') is not None else 'passed')
-          if total != 26 or failures or skipped:
-              raise SystemExit('Expected exactly twenty-six passing Android safety instrumentation tests')
+          if total != 33 or failures or skipped:
+              raise SystemExit('Expected exactly thirty-two passing Android safety instrumentation tests')
           PYTHON
           cat emulator-evidence/android-version.txt
