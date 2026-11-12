@@ -99,13 +99,18 @@ jobs:
           cleanup() {
             echo "===== emulator-evidence/emulator.log ====="
             cat emulator-evidence/emulator.log 2>/dev/null || true
-            timeout -k 5 30 adb pull /sdcard/Android/data/com.vision.app/files/. emulator-evidence/ 2>/dev/null || true
+            for f in after-recreate.png fail-closed-message.png calendar-read-ok.png; do
+              timeout -k 5 30 adb shell run-as com.vision.app cat "/sdcard/Android/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
+              [ -s "emulator-evidence/$f" ] || timeout -k 5 30 adb shell run-as com.vision.app cat "/data/data/com.vision.app/files/$f" > "emulator-evidence/$f" 2>/dev/null || true
+            done
             echo "===== adb devices ====="
             timeout -k 5 30 adb devices -l || true
             echo "===== logcat tail ====="
             timeout -k 5 60 adb logcat -d 2>/dev/null | tail -n 80 || true
             echo "===== VisionLlama/RealModelSmoke logcat ====="
             timeout -k 5 60 adb logcat -d 2>/dev/null | grep -iE "VisionLlama|RealModelSmoke" | tail -n 200 || true
+            timeout -k 5 60 adb logcat -d > emulator-evidence/logcat.txt 2>/dev/null || true
+            tail -n 80 emulator-evidence/logcat.txt 2>/dev/null || true
             timeout -k 5 30 adb emu kill || true
             kill "$EMULATOR_PID" 2>/dev/null || true
           }
@@ -172,6 +177,20 @@ jobs:
           else
             echo "guest lacks one or more of sse4_2/avx/avx2/fma/f16c/bmi2: keeping baseline scalar native config"
           fi
+          stage "start frame + logcat capture"
+          # Gradle uninstalls the app after the test run, which deletes Android/data:
+          # in-test screenshot files never survive to a post-test pull. Capture frames
+          # and logcat on the HOST during the run instead; selection happens later.
+          mkdir -p emulator-evidence/frames
+          timeout -k 2 10 adb logcat -c 2>/dev/null || true
+          ( adb logcat > emulator-evidence/logcat-full.txt 2>/dev/null ) &
+          LOGCAT_PID=$!
+          ( while :; do
+              ts=$(date +%s%3N)
+              timeout -k 2 8 adb exec-out screencap -p > "emulator-evidence/frames/$ts.png" 2>/dev/null || true
+              sleep 1
+            done ) &
+          CAPTURE_PID=$!
 
           stage "run instrumentation"
           # --console=plain keeps Gradle line-buffered; the outer timeout turns a
@@ -191,9 +210,43 @@ jobs:
             connectedDebugAndroidTest
           stage "instrumentation finished"
 
-          stage "pull screenshot evidence"
-          timeout -k 5 30 adb pull /sdcard/Android/data/com.vision.app/files/. emulator-evidence/ 2>/dev/null || true
-          timeout -k 5 30 adb pull /storage/emulated/0/Android/data/com.vision.app/files/. emulator-evidence/ 2>/dev/null || true
+          stage "stop frame + logcat capture"
+          kill $CAPTURE_PID 2>/dev/null || true
+          kill $LOGCAT_PID 2>/dev/null || true
+          sleep 1
+      - name: Select evidence frames from capture
+        if: always()
+        shell: bash
+        run: |
+          pkill -f 'adb exec-out screencap' 2>/dev/null || true
+          pkill -f 'adb logcat' 2>/dev/null || true
+          sleep 1
+          python3 - <<'PYTHON'
+          import base64, os, re, shutil
+          log = open('emulator-evidence/logcat-full.txt', errors='ignore').read()
+          want = ('after-recreate.png', 'fail-closed-message.png', 'calendar-read-ok.png',
+                  'after-recreate-render.png', 'fail-closed-message-render.png', 'calendar-read-ok-render.png')
+          chunks = re.findall(r'EVIDENCE (\S+\.png) (\d+)/(\d+) (\S+)', log)
+          byfile = {}
+          for name, i, total, data in chunks:
+              byfile.setdefault(name, {})[int(i)] = data
+          totals = dict(re.findall(r'EVIDENCE-BEGIN (\S+\.png) chunks=(\d+)', log))
+          ok = True
+          for wanted in want:
+              if wanted not in byfile or wanted not in totals:
+                  print('EVIDENCE MISSING (no logcat payload):', wanted); ok = False; continue
+              total = int(totals[wanted]); parts = byfile[wanted]
+              if sorted(parts) != list(range(total)):
+                  print('EVIDENCE INCOMPLETE:', wanted, len(parts), 'of', total, 'chunks'); ok = False; continue
+              data = base64.b64decode(''.join(parts[i] for i in range(total)))
+              if len(data) < 100 or data[:8] != b'\x89PNG\r\n\x1a\n':
+                  print('EVIDENCE CORRUPT (not a PNG):', wanted, len(data), 'bytes'); ok = False; continue
+              open(os.path.join('emulator-evidence', wanted), 'wb').write(data)
+              print('reassembled exact bytes:', wanted, len(data), 'bytes')
+          shutil.rmtree('emulator-evidence/frames', ignore_errors=True)
+          if not ok:
+              raise SystemExit('Required screenshot evidence missing, incomplete, or corrupt')
+          PYTHON
       - name: Upload emulator diagnostics and visual evidence
         if: always()
         uses: actions/upload-artifact@v4
