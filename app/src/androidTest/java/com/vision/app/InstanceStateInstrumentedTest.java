@@ -316,4 +316,4 @@ public class InstanceStateInstrumentedTest {
             takeScreenshot("calendar-read-ok.png");
         }
     }
-    }
+}
