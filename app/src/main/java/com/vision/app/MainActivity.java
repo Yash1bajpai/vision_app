@@ -75,6 +75,8 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CODE_IMPORT_MODEL = 105;
     private TextView activityText;
     private android.widget.ScrollView activityScroll;
+    private int maxRootHeight;
+    private boolean softKeyboardOpen;
     private TextView statusText;
     private AlertDialog activeDialog;
     private VisionAction pendingContactAction;
@@ -247,7 +249,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(BG);
 
         LinearLayout header = row();
-        TextView mark = label("V", 18, MINT);
+        TextView mark = label("V", 18, BG); // dark glyph on mint circle (was mint-on-mint)
         mark.setGravity(Gravity.CENTER);
         mark.setTypeface(null, android.graphics.Typeface.BOLD);
         mark.setBackground(round(MINT, 18));
@@ -266,7 +268,7 @@ public class MainActivity extends Activity {
         header.addView(settings, new LinearLayout.LayoutParams(dp(42), dp(42)));
         root.addView(header);
 
-        TextView greeting = label("Good evening, Yash", 28, TEXT);
+        TextView greeting = label("Welcome", 28, TEXT);
         greeting.setTypeface(null, android.graphics.Typeface.BOLD);
         LinearLayout.LayoutParams greetingParams = new LinearLayout.LayoutParams(-1, -2);
         greetingParams.setMargins(0, dp(38), 0, dp(4));
@@ -302,8 +304,22 @@ public class MainActivity extends Activity {
         activityScroll.setFillViewport(true);
         activityScroll.setSaveEnabled(false);
         activityScroll.setVerticalScrollBarEnabled(true);
+        // Let the last log line scroll fully above the fold instead of clipping at the edge.
+        activityScroll.setClipToPadding(false);
+        activityScroll.setPadding(0, 0, 0, dp(12));
         activityText.setGravity(Gravity.CENTER);
         activityText.setPadding(dp(20), dp(26), dp(20), dp(26));
+        activityText.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            @Override public void afterTextChanged(android.text.Editable s) {
+                if (softKeyboardOpen) {
+                    // The soft keyboard shrinks the log viewport (adjustResize); keep the
+                    // newest lines above the fold instead of clipping them at the bottom edge.
+                    activityScroll.post(() -> activityScroll.fullScroll(View.FOCUS_DOWN));
+                }
+            }
+        });
         LinearLayout.LayoutParams activityParams = new LinearLayout.LayoutParams(-1, 0, 1);
         activityParams.setMargins(0, dp(8), 0, dp(16));
         activityScroll.addView(activityText, new android.widget.ScrollView.LayoutParams(-1, -2));
@@ -457,6 +473,17 @@ public class MainActivity extends Activity {
             return true;
         });
         voiceButton.setOnClickListener(v -> { });
+        root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            int h = root.getHeight();
+            if (h > maxRootHeight) maxRootHeight = h;
+            boolean open = maxRootHeight - h > dp(120);
+            if (open && !softKeyboardOpen) {
+                // Soft keyboard opened (adjustResize shrank the window): bring the newest
+                // log lines above the fold.
+                activityScroll.post(() -> activityScroll.fullScroll(View.FOCUS_DOWN));
+            }
+            softKeyboardOpen = open;
+        });
         root.addView(voiceButton, new LinearLayout.LayoutParams(-1, dp(44)));
         root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         setContentView(root);
@@ -576,11 +603,15 @@ public class MainActivity extends Activity {
     }
 
     private void cancelVoice() {
+        boolean wasActive = voiceSession.isActive();
         voiceSession.cancel();
         if (voiceTimeout!=null) planHandler.removeCallbacks(voiceTimeout);
         voiceTimeout=null;
         try { voiceInput.cancel(); } catch (Exception ignored) { }
         if (voiceButton!=null) voiceButton.setText("Hold to talk");
+        if (wasActive && activityText != null) {
+            activityText.setText("VOICE CANCELLED\n\nListening stopped. No command ran. Hold to talk again or type your request.");
+        }
     }
 
     private void clearPreferenceMemory() {
@@ -962,7 +993,7 @@ public class MainActivity extends Activity {
         pendingEventWriteCompletion = null;
         String when = formatEventTimeForDisplay(action.replyText);
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Tony, may I create this event?")
+                .setTitle("May I create this event?")
                 .setMessage("I am ready to add this event to your calendar:\n\n\""
                         + action.target + "\"\n" + when + "\n\nMay I proceed?")
                 .setNegativeButton("Deny", (d, which) -> {
@@ -1009,6 +1040,8 @@ public class MainActivity extends Activity {
                 })
                 .create();
         showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }
 
     /**
@@ -1875,7 +1908,7 @@ public class MainActivity extends Activity {
                 + destDisplay + ":\n\n\"" + action.replyText + "\"\n\n"
                 + "The message will not be reported as sent until you send it in that app.\n\nMay I proceed?";
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Tony, may I prepare this message?")
+                .setTitle("May I prepare this message?")
                 .setMessage(confirmation)
                 .setNegativeButton("Deny", (d, which) -> {
                     if (isFinishing() || isDestroyed() || !mayExecutePendingAction(actionPlanToken)) return;
@@ -1917,6 +1950,8 @@ public class MainActivity extends Activity {
                 })
                 .create();
         showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }
 
     @Override
@@ -2061,6 +2096,8 @@ public class MainActivity extends Activity {
                     })
                     .create();
             showManagedDialog(dialog);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
             activityText.setText("FAILED\n\nNotification access is not enabled.");
             if (onComplete != null) onComplete.run();
             return;
@@ -2134,6 +2171,8 @@ public class MainActivity extends Activity {
                 })
                 .create();
         showManagedDialog(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
     }
 
     private void executeBoundNotificationReply(VisionAction action, VisionNotificationListener.NotificationReplyCapability boundCap, String destDisplay) {
@@ -2171,6 +2210,8 @@ public class MainActivity extends Activity {
                     })
                     .create();
             showManagedDialog(dialog);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
             activityText.setText("FAILED\n\nNotification access is not enabled.");
             if (onComplete != null) onComplete.run();
             return;
@@ -2253,6 +2294,8 @@ public class MainActivity extends Activity {
                     })
                     .create();
             showManagedDialog(dialog);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Color.rgb(23, 99, 74));
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Color.rgb(23, 99, 74));
             return;
         }
         VisionNotificationListener.NotificationSnapshot snapshot = VisionNotificationListener.getLatestNotification();
