@@ -97,4 +97,4 @@ public class VisionVoiceUiTest {
         button.dispatchTouchEvent(event);event.recycle();assertTrue(v.cancelled);v.callback.result("help");
         assertEquals("",((EditText)field(a,"inputField")).getText().toString());c.pause().stop().destroy();
     }
-            }
+}
