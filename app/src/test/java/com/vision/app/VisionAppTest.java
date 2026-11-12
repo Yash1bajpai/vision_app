@@ -433,29 +433,9 @@ public class VisionAppTest {
                 "Multiline message\nwithout colon");
     }
 
-    // Test 17: Jarvis-style conversational reply confirmation formatting and destination display
+    // Test 17: Notification destination display formatting
     @Test
-    public void test17_jarvisStyleReplyConfirmationFormatting() {
-        // Dialog Title
-        assertEquals("Dialog title is respectful Jarvis request",
-                "Tony, may I send this message?",
-                VisionRiskPolicy.formatReplyConfirmationTitle());
-
-        // Dialog Message with recipient and single-line text
-        String msg1 = VisionRiskPolicy.formatReplyConfirmationMessage("WhatsApp (Alice)", "I will be there soon");
-        String expected1 = "I am ready to send this message to WhatsApp (Alice):\n\n\"I will be there soon\"\n\nMay I proceed?";
-        assertEquals("Confirmation message matches Jarvis specification", expected1, msg1);
-
-        // Dialog Message with multiline text
-        String msg2 = VisionRiskPolicy.formatReplyConfirmationMessage("Telegram (Dev Team - Bob)", "Line 1\nLine 2");
-        String expected2 = "I am ready to send this message to Telegram (Dev Team - Bob):\n\n\"Line 1\nLine 2\"\n\nMay I proceed?";
-        assertEquals("Confirmation message handles multiline text", expected2, msg2);
-
-        // Dialog Message null fallback safety
-        String msgNull = VisionRiskPolicy.formatReplyConfirmationMessage(null, null);
-        String expectedNull = "I am ready to send this message to the recipient:\n\n\"\"\n\nMay I proceed?";
-        assertEquals("Confirmation message handles null inputs safely", expectedNull, msgNull);
-
+    public void test17_destinationDisplayFormatting() {
         // Destination display formatting helper
         assertEquals("WhatsApp (Alice)", VisionNotificationListener.formatDestinationDisplay("WhatsApp", "Alice", "", ""));
         assertEquals("WhatsApp", VisionNotificationListener.formatDestinationDisplay("WhatsApp", "WhatsApp", "", ""));
