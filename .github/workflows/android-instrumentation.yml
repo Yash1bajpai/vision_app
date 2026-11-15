@@ -43,7 +43,9 @@ jobs:
           gradle-version: '8.7'
           cache-disabled: true
       - name: Boot headless emulator and run Android safety instrumentation
-        timeout-minutes: 33
+        # 33 was enough for the main run; production_smoke dispatches add two
+        # diagnostic chunk legs (rebuild + real-model rerun each).
+        timeout-minutes: 55
         shell: bash
         run: |
           set -euo pipefail
@@ -203,17 +205,42 @@ jobs:
             echo "production-smoke configuration: optimized x86_64 native build + production-timeout diagnostic"
             PROD_SMOKE_GRADLE_ARGS="-PvisionProductionSmoke"
           fi
+          INSTRUMENTATION_RC=0
           timeout -k 30 1200 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
             $SIMD_GRADLE_ARGS \
             $PROD_SMOKE_GRADLE_ARGS \
-            connectedDebugAndroidTest
-          stage "instrumentation finished"
+            connectedDebugAndroidTest || INSTRUMENTATION_RC=$?
+          stage "instrumentation finished (rc=$INSTRUMENTATION_RC)"
+
+          # Diagnostic-only measured legs (production_smoke dispatches only):
+          # rebuild the JNI wrapper with larger prompt-eval chunks and re-run
+          # only the real-model class to measure the speed vs timeout-preemption
+          # tradeoff. These legs never gate: failures are logged, not fatal,
+          # and the job result still comes from the main run + count gate.
+          if [ "${{ inputs.production_smoke }}" = "true" ]; then
+            for CHUNK in 128 256; do
+              stage "chunk diagnostic leg: ${CHUNK}-token prompt-eval chunks (diagnostic only, not gated)"
+              timeout -k 30 1500 gradle --console=plain \
+                "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
+                $SIMD_GRADLE_ARGS \
+                -PvisionProductionSmoke \
+                "-PvisionCiEvalChunk=$CHUNK" \
+                connectedDebugAndroidTest \
+                "-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.RealModelInstrumentedTest" \
+                || echo "chunk-$CHUNK leg failed (diagnostic only, not gated)"
+              timeout -k 5 60 adb logcat -d 2>/dev/null | grep -E "prompt chunk tokens|prompt evaluation completed|generated .* tokens in|production-timeout leg|RealModelSmoke" | tail -n 80 || true
+              timeout -k 2 10 adb logcat -c 2>/dev/null || true
+            done
+          fi
 
           stage "stop frame + logcat capture"
           kill $CAPTURE_PID 2>/dev/null || true
           kill $LOGCAT_PID 2>/dev/null || true
           sleep 1
+          # Preserve the main instrumentation result as this step's outcome;
+          # the diagnostic legs above must not mask or soften it.
+          exit "$INSTRUMENTATION_RC"
       - name: Select evidence frames from capture
         if: always()
         shell: bash

@@ -335,8 +335,13 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
     // Chunk small enough that the between-decode timeout check below actually
     // preempts prompt evaluation: a single llama_decode cannot be interrupted,
     // so one oversized chunk (e.g. 512 tokens) can outlive the whole timeout
-    // budget on slow CPUs. Worst-case overrun is now one 32-token decode.
-    uint32_t n_batch = 32;
+    // budget on slow CPUs. Worst-case overrun is one chunk. The 32-token
+    // default bounds that overrun; VISION_PROMPT_EVAL_CHUNK exists only for
+    // CI diagnostics measuring the speed/preemption tradeoff (CMakeLists).
+#ifndef VISION_PROMPT_EVAL_CHUNK
+#define VISION_PROMPT_EVAL_CHUNK 32
+#endif
+    uint32_t n_batch = VISION_PROMPT_EVAL_CHUNK;
     for (size_t i = 0; i < prompt_tokens.size(); i += n_batch) {
         if (timeoutMs > 0) {
             auto now = std::chrono::steady_clock::now();

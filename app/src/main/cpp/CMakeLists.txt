@@ -85,3 +85,16 @@ target_link_libraries(vision_llama PRIVATE
     android
     log
 )
+
+# Scoped CI diagnostic, opt-in: prompt-eval chunk-size override on the JNI
+# wrapper target only (llama.cpp objects are untouched, so diagnostic rebuilds
+# stay cheap). Default 32 is byte-for-byte the production config; the
+# production-timeout measured legs rebuild with larger chunks to measure the
+# speed vs timeout-preemption tradeoff. Never set by production builds.
+set(VISION_CI_EVAL_CHUNK "32" CACHE STRING "CI diagnostic: prompt-eval chunk size in tokens")
+if (NOT VISION_CI_EVAL_CHUNK STREQUAL "32")
+    target_compile_definitions(vision_llama PRIVATE VISION_PROMPT_EVAL_CHUNK=${VISION_CI_EVAL_CHUNK})
+    message(STATUS "VISION_CI_EVAL_CHUNK=${VISION_CI_EVAL_CHUNK}: diagnostic prompt-eval chunk override")
+else()
+    message(STATUS "VISION_CI_EVAL_CHUNK=32: baseline prompt-eval chunk")
+endif()
