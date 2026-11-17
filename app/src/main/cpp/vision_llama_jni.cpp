@@ -282,6 +282,10 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         return nullptr;
     }
     JniStringChars grammar(env, gbnfGrammarStr);
+    if (grammar.c_str() == nullptr || grammar.c_str()[0] == '\0') {
+        LOGE("Missing mandatory grammar; refusing unconstrained generation");
+        return nullptr;
+    }
 
     const llama_vocab* vocab = llama_model_get_vocab(handle->model);
     if (vocab == nullptr) {

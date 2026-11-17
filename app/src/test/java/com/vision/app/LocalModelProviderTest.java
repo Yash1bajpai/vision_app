@@ -220,6 +220,40 @@ public class LocalModelProviderTest {
     }
 
     @Test
+    public void emptyCachedGrammarFailsClosedBeforeGeneration() throws Exception {
+        java.lang.reflect.Field grammar = LocalModelProvider.class.getDeclaredField("cachedGrammar");
+        grammar.setAccessible(true);
+        for (String empty : new String[]{"", " \t\n"}) {
+            grammar.set(provider, empty);
+            fakeBridge.returnText = "{\"type\":\"READ_TIME\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
+            assertNull(provider.propose("what time is it"));
+            assertEquals("missing constraints must prevent even valid-looking output", 0,
+                    fakeBridge.generateCallCount);
+            assertFalse(modelManager.isModelInUse());
+        }
+    }
+
+    @Test
+    public void grammarAssetFailureFailsClosedBeforeGeneration() {
+        Context brokenAssets = new android.content.ContextWrapper(context) {
+            @Override public Context getApplicationContext() { return this; }
+            @Override public android.content.res.AssetManager getAssets() {
+                throw new IllegalStateException("injected asset read failure");
+            }
+        };
+        LocalModelProvider broken = new LocalModelProvider(brokenAssets, modelManager, fakeBridge,
+                handler, new DirectExecutorService(), clock);
+        try {
+            fakeBridge.returnText = "{\"type\":\"READ_TIME\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}";
+            assertNull(broken.propose("what time is it"));
+            assertEquals(0, fakeBridge.generateCallCount);
+            assertFalse(modelManager.isModelInUse());
+        } finally {
+            broken.shutdown();
+        }
+    }
+
+    @Test
     public void loadThreadCountDefaultsToDerivedAndHonorsTestingOverride() {
         // Default: the production formula derives the count from device cores.
         provider.propose("turn on torch");
