@@ -75,8 +75,41 @@ import static org.junit.Assert.*;
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class RealModelInstrumentedTest {
     private static final String CATALOG_ID = "qwen2.5-1.5b-instruct-q4_k_m";
-    // The identical prompt production uses: built from the registry by the provider.
-    private static final String SYSTEM_PROMPT = LocalModelProvider.buildSystemPrompt();
+    // Production prompt by default; the opt-in experiment changes only this test's bridge encoding.
+    private static final String SYSTEM_PROMPT = diagnosticSystemPrompt();
+
+    // Opt-in experiment only. No production prompt, parser, budget, or assertion changes.
+    private static boolean compactPromptEnabled() {
+        return "true".equals(InstrumentationRegistry.getArguments().getString("visionPromptCompact"));
+    }
+
+    static String diagnosticSystemPrompt() {
+        if (!compactPromptEnabled()) return LocalModelProvider.buildSystemPrompt();
+        StringBuilder sb = new StringBuilder(
+                "Return only JSON with exactly \"type\",\"target\",\"text\",\"channel\". Choose one action below. "
+                + "Fields not specified are \"\". Each row is type: meaning; target rule; optional text/channel rules.\n");
+        for (VisionToolRegistry.Tool tool : VisionToolRegistry.all()) {
+            sb.append(tool.type.name()).append(": ").append(tool.description)
+                    .append("; ").append(tool.targetRule);
+            if (!"empty".equals(tool.textRule)) sb.append("; text=").append(tool.textRule);
+            if (!"empty".equals(tool.channelRule)) sb.append("; channel=").append(tool.channelRule);
+            sb.append('\n');
+        }
+        sb.append("Unsupported, ambiguous, or multiple actions: "
+                + "{\"type\":\"UNKNOWN\",\"target\":\"\",\"text\":\"\",\"channel\":\"\"}\n");
+        sb.append("\"turn torch on\": "
+                + "{\"type\":\"TOGGLE_TORCH\",\"target\":\"on\",\"text\":\"\",\"channel\":\"\"}");
+        return sb.toString();
+    }
+
+    private static class DiagnosticBridge extends LlamaBridge {
+        @Override public String formatChat(long handle, String hint, String system, String request) {
+            String original = LocalModelProvider.buildSystemPrompt();
+            String encoded = compactPromptEnabled() && system.startsWith(original)
+                    ? SYSTEM_PROMPT + system.substring(original.length()) : system;
+            return super.formatChat(handle, hint, encoded, request);
+        }
+    }
     // Thread count for real-model loads in these diagnostics: every processor the
     // test device exposes (the CI workflow sizes the emulator per dispatch and
     // fail-closed checks the guest count, so this matches the intended
@@ -106,6 +139,8 @@ public class RealModelInstrumentedTest {
 
     @BeforeClass
     public static void snapshotModelsDir() {
+        System.out.println("RealModelSmoke compact-prompt diagnostic=" + compactPromptEnabled()
+                + " systemChars=" + SYSTEM_PROMPT.length() + " timeoutMs=" + LocalModelProvider.TIMEOUT_MS);
         ModelManager mm = new ModelManager(
                 InstrumentationRegistry.getInstrumentation().getTargetContext());
         String[] names = mm.getModelsDir().list();
@@ -193,7 +228,7 @@ public class RealModelInstrumentedTest {
     public void test2_torchCommandYieldsValidatorAcceptedTorchOn() throws Exception {
         assertNotNull("test1 must install the model first", installedFile);
         String grammar = readAsset("grammar/action_proposal.gbnf");
-        LlamaBridge bridge = new LlamaBridge();
+        LlamaBridge bridge = new DiagnosticBridge();
         long handle = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue("real model must load through the JNI bridge", handle != 0L);
         try {
@@ -222,7 +257,7 @@ public class RealModelInstrumentedTest {
     public void test3_timeQueryAfterUnloadReloadYieldsValidatorAcceptedReadTime() throws Exception {
         assertNotNull("test1 must install the model first", installedFile);
         String grammar = readAsset("grammar/action_proposal.gbnf");
-        LlamaBridge bridge = new LlamaBridge();
+        LlamaBridge bridge = new DiagnosticBridge();
         long first = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue(first != 0L);
         bridge.unload(first);
@@ -255,7 +290,7 @@ public class RealModelInstrumentedTest {
                         .getString("visionProductionSmoke")));
         assertNotNull("test1 must install the model first", installedFile);
         String grammar = readAsset("grammar/action_proposal.gbnf");
-        LlamaBridge bridge = new LlamaBridge();
+        LlamaBridge bridge = new DiagnosticBridge();
         long handle = bridge.load(installedFile.getAbsolutePath(), 1024, DIAGNOSTIC_LOAD_THREADS);
         assertTrue("real model must load through the JNI bridge", handle != 0L);
         try {
@@ -341,7 +376,7 @@ public class RealModelInstrumentedTest {
         assertNotNull("test1 must install the model first", installedFile);
         android.content.Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
         ModelManager mm = new ModelManager(ctx);
-        LocalModelProvider provider = new LocalModelProvider(ctx, mm, new LlamaBridge(),
+        LocalModelProvider provider = new LocalModelProvider(ctx, mm, new DiagnosticBridge(),
                 new android.os.Handler(android.os.Looper.getMainLooper()));
         try {
             provider.setForcedLoadThreadsForTesting(DIAGNOSTIC_LOAD_THREADS);
