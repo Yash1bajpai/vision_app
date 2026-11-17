@@ -358,6 +358,38 @@ public class LocalModelProviderTest {
         assertEquals(4, fakeBridge.unloadCallCount);
     }
 
+    @Test
+    public void setupFailuresStillUnloadAfterFiveIdleMinutes() throws Exception {
+        // Each fixture starts cold, then loads without reaching generation.
+        for (int failure = 0; failure < 4; failure++) {
+            provider.unload();
+            fakeBridge.returnFormatChat = failure == 0 ? null : "<formatted>";
+            if (failure == 1) fakeBridge.countTokensQueue.add(-1);
+            java.lang.reflect.Field grammar = LocalModelProvider.class.getDeclaredField("cachedGrammar");
+            grammar.setAccessible(true);
+            grammar.set(provider, failure == 2 ? "" : null);
+            fakeBridge.interruptOnLoad = failure == 3;
+            int generated = fakeBridge.generateCallCount;
+            String result;
+            try {
+                result = provider.propose("what time is it");
+            } finally {
+                Thread.interrupted(); // only the injected interruption is cleared in this test
+            }
+            assertNull(result);
+            assertEquals(generated, fakeBridge.generateCallCount);
+            assertTrue("fixture must leave resident weights", provider.isLoaded());
+            assertFalse(modelManager.isModelInUse());
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(
+                    LocalModelProvider.IDLE_UNLOAD_MS - 1, java.util.concurrent.TimeUnit.MILLISECONDS);
+            assertTrue("existing grace period must remain unchanged", provider.isLoaded());
+            int unloaded = fakeBridge.unloadCallCount;
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(1, java.util.concurrent.TimeUnit.MILLISECONDS);
+            assertFalse("setup failure must not pin resident weights", provider.isLoaded());
+            assertEquals(unloaded + 1, fakeBridge.unloadCallCount);
+        }
+    }
+
     // 10. ProviderSelector ON_DEVICE registration rules
     @Test
     public void providerSelectorRegistrationRules() {

@@ -422,6 +422,13 @@ public class LocalModelProvider implements ReasoningProvider {
             return trimmed;
         } finally {
             modelManager.setModelInUse(false);
+            // A request may load weights and then fail before generation (formatting,
+            // exact-fit, grammar, or cancellation). Every resident exit must re-arm
+            // the existing five-minute policy, including callbacks skipped while busy.
+            if (nativeHandle != 0) {
+                lastGenerationTimeMs = SystemClock.elapsedRealtime();
+                scheduleIdleUnload();
+            }
         }
     }
 
@@ -431,9 +438,6 @@ public class LocalModelProvider implements ReasoningProvider {
             out = bridge.generate(handle, prompt, grammar, MAX_TOKENS, timeoutMs);
         } catch (Throwable t) {
             Log.e(TAG, "Local model generation threw exception", t);
-        } finally {
-            lastGenerationTimeMs = SystemClock.elapsedRealtime();
-            scheduleIdleUnload();
         }
         return out;
     }
