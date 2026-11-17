@@ -13,6 +13,10 @@ on:
         description: 'Optimized x86_64 native build (-O3) plus the production-timeout (8s) diagnostic case; default runs keep the baseline config and skip it'
         type: boolean
         default: false
+      prompt_compaction:
+        description: 'Test-only full-registry prompt encoding; one 8s leg, no chunk sweep, no production adoption'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -205,11 +209,17 @@ jobs:
             echo "production-smoke configuration: optimized x86_64 native build + production-timeout diagnostic"
             PROD_SMOKE_GRADLE_ARGS="-PvisionProductionSmoke"
           fi
+          COMPACT_PROMPT_ARGS=""
+          if [ "${{ inputs.prompt_compaction }}" = "true" ]; then
+            test "${{ inputs.production_smoke }}" = "true"
+            COMPACT_PROMPT_ARGS="-Pandroid.testInstrumentationRunnerArguments.visionPromptCompact=true"
+          fi
           INSTRUMENTATION_RC=0
           timeout -k 30 1200 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
             $SIMD_GRADLE_ARGS \
             $PROD_SMOKE_GRADLE_ARGS \
+            $COMPACT_PROMPT_ARGS \
             connectedDebugAndroidTest || INSTRUMENTATION_RC=$?
           stage "instrumentation finished (rc=$INSTRUMENTATION_RC)"
 
@@ -218,7 +228,7 @@ jobs:
           # only the real-model class to measure the speed vs timeout-preemption
           # tradeoff. These legs never gate: failures are logged, not fatal,
           # and the job result still comes from the main run + count gate.
-          if [ "${{ inputs.production_smoke }}" = "true" ]; then
+          if [ "${{ inputs.production_smoke }}" = "true" ] && [ "${{ inputs.prompt_compaction }}" != "true" ]; then
             for CHUNK in 128 256; do
               stage "chunk diagnostic leg: ${CHUNK}-token prompt-eval chunks (diagnostic only, not gated)"
               timeout -k 30 1500 gradle --console=plain \
