@@ -13,6 +13,10 @@ on:
         description: 'Optimized x86_64 native build (-O3) plus the production-timeout (8s) diagnostic case; default runs keep the baseline config and skip it'
         type: boolean
         default: false
+      final_logits_only:
+        description: 'Diagnostic only: skip unused intermediate prompt logits; requires production_smoke; no prompt edits'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -205,6 +209,10 @@ jobs:
             echo "production-smoke configuration: optimized x86_64 native build + production-timeout diagnostic"
             PROD_SMOKE_GRADLE_ARGS="-PvisionProductionSmoke"
           fi
+          if [ "${{ inputs.final_logits_only }}" = "true" ]; then
+            test "${{ inputs.production_smoke }}" = "true"
+            PROD_SMOKE_GRADLE_ARGS="$PROD_SMOKE_GRADLE_ARGS -PvisionCiFinalLogitsOnly"
+          fi
           INSTRUMENTATION_RC=0
           timeout -k 30 1200 gradle --console=plain \
             "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
@@ -213,26 +221,8 @@ jobs:
             connectedDebugAndroidTest || INSTRUMENTATION_RC=$?
           stage "instrumentation finished (rc=$INSTRUMENTATION_RC)"
 
-          # Diagnostic-only measured legs (production_smoke dispatches only):
-          # rebuild the JNI wrapper with larger prompt-eval chunks and re-run
-          # only the real-model class to measure the speed vs timeout-preemption
-          # tradeoff. These legs never gate: failures are logged, not fatal,
-          # and the job result still comes from the main run + count gate.
-          if [ "${{ inputs.production_smoke }}" = "true" ]; then
-            for CHUNK in 128 256; do
-              stage "chunk diagnostic leg: ${CHUNK}-token prompt-eval chunks (diagnostic only, not gated)"
-              timeout -k 30 1500 gradle --console=plain \
-                "-Pandroid.aapt2FromMavenOverride=$ANDROID_HOME/build-tools/34.0.0/aapt2" \
-                $SIMD_GRADLE_ARGS \
-                -PvisionProductionSmoke \
-                "-PvisionCiEvalChunk=$CHUNK" \
-                connectedDebugAndroidTest \
-                "-Pandroid.testInstrumentationRunnerArguments.class=com.vision.app.RealModelInstrumentedTest" \
-                || echo "chunk-$CHUNK leg failed (diagnostic only, not gated)"
-              timeout -k 5 60 adb logcat -d 2>/dev/null | grep -E "prompt chunk tokens|prompt evaluation completed|generated .* tokens in|production-timeout leg|RealModelSmoke" | tail -n 80 || true
-              timeout -k 2 10 adb logcat -c 2>/dev/null || true
-            done
-          fi
+          # This isolated experiment keeps the original prompt and 32-token chunks.
+          # No extra chunk sweep: the complete suite above is the only measured leg.
 
           stage "stop frame + logcat capture"
           kill $CAPTURE_PID 2>/dev/null || true
