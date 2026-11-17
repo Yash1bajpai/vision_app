@@ -98,3 +98,9 @@ if (NOT VISION_CI_EVAL_CHUNK STREQUAL "32")
 else()
     message(STATUS "VISION_CI_EVAL_CHUNK=32: baseline prompt-eval chunk")
 endif()
+
+# Opt-in investigation only. Default OFF, no shipped-target behavior change.
+option(VISION_CI_FINAL_LOGITS_ONLY "CI-only: skip unused intermediate prompt logits" OFF)
+if (VISION_CI_FINAL_LOGITS_ONLY AND CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+    target_compile_definitions(vision_llama PRIVATE VISION_CI_FINAL_LOGITS_ONLY=1)
+endif()
