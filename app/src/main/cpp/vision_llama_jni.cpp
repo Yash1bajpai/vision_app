@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <exception>
 #include <mutex>
+#include <memory>
 
 #define TAG "VisionLlama"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -120,7 +121,8 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
     auto load_start = std::chrono::steady_clock::now();
     try {
         llama_model_params mparams = llama_model_default_params();
-        llama_model* model = llama_model_load_from_file(path.c_str(), mparams);
+        std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
+                llama_model_load_from_file(path.c_str(), mparams), llama_model_free);
         if (model == nullptr) {
             LOGE("Failed to load llama_model from file");
             return 0;
@@ -131,10 +133,10 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
         cparams.n_threads = threads > 0 ? (int32_t)threads : 4;
         cparams.n_threads_batch = threads > 0 ? (int32_t)threads : 4;
 
-        llama_context* ctx = llama_init_from_model(model, cparams);
+        std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
+                llama_init_from_model(model.get(), cparams), llama_free);
         if (ctx == nullptr) {
             LOGE("Failed to create llama_context from model");
-            llama_model_free(model);
             return 0;
         }
 
@@ -143,8 +145,8 @@ Java_com_vision_app_LlamaBridge_nativeLoad(
         LOGI("nativeLoad completed: %ld ms, n_ctx=%d, threads=%d",
                 (long)load_ms, (int)cparams.n_ctx, (int)cparams.n_threads);
         auto* handle = new VisionLlamaHandle();
-        handle->model = model;
-        handle->ctx = ctx;
+        handle->model = model.release();
+        handle->ctx = ctx.release();
         return reinterpret_cast<jlong>(handle);
     } catch (const std::exception& e) {
         LOGE("Exception in nativeLoad: %s", e.what());
