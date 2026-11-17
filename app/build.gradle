@@ -36,6 +36,7 @@ android {
                 arguments "-DVISION_PRODUCTION_SMOKE=" + (project.hasProperty("visionProductionSmoke") ? "ON" : "OFF")
                 // CI-only diagnostic: prompt-eval chunk size, default 32
                 // (see src/main/cpp/CMakeLists.txt); never set by production builds.
+                arguments "-DVISION_CI_FINAL_LOGITS_ONLY=" + (project.hasProperty("visionCiFinalLogitsOnly") ? "ON" : "OFF")
                 arguments "-DVISION_CI_EVAL_CHUNK=" + (project.hasProperty("visionCiEvalChunk") ? project.property("visionCiEvalChunk") : "32")
             }
         }
