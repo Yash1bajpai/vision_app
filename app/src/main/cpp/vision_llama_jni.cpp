@@ -353,6 +353,14 @@ Java_com_vision_app_LlamaBridge_nativeGenerate(
         }
         size_t chunk_size = std::min((size_t)n_batch, prompt_tokens.size() - i);
         llama_batch batch = llama_batch_get_one(prompt_tokens.data() + i, (int32_t)chunk_size);
+#ifdef VISION_CI_FINAL_LOGITS_ONLY
+        // Diagnostic only: KV evaluation still covers every prompt token, but
+        // only the last prompt token's logits are consumed by the sampler.
+        // An explicit all-zero mask avoids an unused output on earlier chunks.
+        std::vector<int8_t> prompt_logits(chunk_size, 0);
+        if (i + chunk_size == prompt_tokens.size()) prompt_logits.back() = 1;
+        batch.logits = prompt_logits.data();
+#endif
         auto chunk_start = std::chrono::steady_clock::now();
         int decode_rc = llama_decode(handle->ctx, batch);
         auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
