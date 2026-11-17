@@ -281,6 +281,10 @@ public class LocalModelProvider implements ReasoningProvider {
             }
 
             String grammar = loadGrammar();
+            if (grammar == null || grammar.trim().isEmpty()) {
+                Log.e(TAG, "Mandatory action grammar unavailable; no generation");
+                return null;
+            }
 
             if (Thread.currentThread().isInterrupted()) {
                 Log.w(TAG, "Request interrupted before first generation; no generation");
@@ -559,4 +563,4 @@ public class LocalModelProvider implements ReasoningProvider {
     public void shutdown() {
         unloadAsync(() -> modelExecutor.shutdown());
     }
-}
+            }
