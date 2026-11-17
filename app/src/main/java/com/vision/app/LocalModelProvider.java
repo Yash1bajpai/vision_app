@@ -563,4 +563,4 @@ public class LocalModelProvider implements ReasoningProvider {
     public void shutdown() {
         unloadAsync(() -> modelExecutor.shutdown());
     }
-            }
+}
